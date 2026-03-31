@@ -55,6 +55,11 @@ export type Env = {
     RICHMENU_MEMBER_HOME?: string;
     RICHMENU_GUIDE?: string;
     RICHMENU_QANDA?: string;
+    GAS_DEPLOY_ID?: string;
+    FIREBASE_DATABASE_URL?: string;
+    STRIPE_SECRET_KEY?: string;
+    GEMINI_API_KEY?: string;
+    GITHUB_PAT?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };

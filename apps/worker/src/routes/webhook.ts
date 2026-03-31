@@ -18,8 +18,14 @@ import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { handleRichMenuSwitch, linkDefaultRichMenuOnFollow } from '../furim/rich-menu.js';
 import type { RichMenuEnv } from '../furim/rich-menu.js';
+import { handleFurimAction, actionFurimanCoupon, actionExtendTrial } from '../furim/actions.js';
+import type { FurimActionsEnv } from '../furim/actions.js';
+import { handleButtonAction } from '../furim/button-actions.js';
+import { handleKeywordAction } from '../furim/keyword-actions.js';
+import { handleAIChat } from '../furim/ai-chat.js';
+import { getAiMode } from '../furim/firebase-client.js';
 
-type WebhookEnv = RichMenuEnv & { LIFF_URL?: string };
+type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GAS_DEPLOY_ID?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string };
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -216,18 +222,62 @@ async function handleEvent(
       .bind(logId, friend.id, incomingText, now)
       .run();
 
+    // 【ボタン】アクション
+    if (incomingText.includes('【ボタン】') && env?.GAS_DEPLOY_ID) {
+      await handleButtonAction(lineClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY });
+      return;
+    }
+
     // リッチメニュー切り替え: 【リッチメニュー】プレフィックスのメッセージを処理
     if (env) {
-      const handled = await handleRichMenuSwitch(db, lineClient, userId, friend.id, incomingText, env);
-      if (handled) return;
+      const richMenuHandled = await handleRichMenuSwitch(db, lineClient, userId, friend.id, incomingText, event.replyToken, env);
+      if (richMenuHandled) return;
+    }
+
+    // FurimAutoアクション: GAS連携等の業務処理
+    if (env?.GAS_DEPLOY_ID) {
+      const furimHandled = await handleFurimAction(lineClient, userId, event.replyToken, incomingText, {
+        GAS_DEPLOY_ID: env.GAS_DEPLOY_ID,
+        FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL,
+        STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+      });
+      if (furimHandled) return;
+    }
+
+    // 【キーワード】アクション
+    if (incomingText.includes('【キーワード】') && env?.GAS_DEPLOY_ID) {
+      await handleKeywordAction(lineClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY });
+      return;
+    }
+
+    // AIチャットモード
+    if (env?.FIREBASE_DATABASE_URL && env?.GEMINI_API_KEY && env?.GITHUB_PAT) {
+      const isAIMode = await getAiMode(env.FIREBASE_DATABASE_URL, userId);
+      if (isAIMode) {
+        await handleAIChat(lineClient, userId, event.replyToken, incomingText, { GEMINI_API_KEY: env.GEMINI_API_KEY, GITHUB_PAT: env.GITHUB_PAT });
+        return;
+      }
+    }
+
+    // Furimanですクーポン
+    if ((incomingText.includes('furimanです') || incomingText.includes('Furimanです')) && env?.GAS_DEPLOY_ID && env?.STRIPE_SECRET_KEY) {
+      await actionFurimanCoupon(lineClient, userId, event.replyToken, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY });
+      return;
+    }
+
+    // 解説見た/解説みたキーワード
+    if ((incomingText.trim() === '解説見た' || incomingText.trim() === '解説みた') && env?.GAS_DEPLOY_ID) {
+      await actionExtendTrial(lineClient, userId, event.replyToken, env.GAS_DEPLOY_ID);
+      return;
     }
 
     // チャットを作成/更新（ユーザーの自発的メッセージのみ unread にする）
     // ボタンタップ等の自動応答キーワードは除外
     const autoKeywords = ['料金', '機能', 'API', 'フォーム', 'ヘルプ', 'UUID', 'UUID連携について教えて', 'UUID連携を確認', '配信時間', '導入支援を希望します', 'アカウント連携を見る', '体験を完了する', 'BAN対策を見る', '連携確認'];
+    const isRichMenuMessage = incomingText.startsWith('【リッチメニュー】');
     const isAutoKeyword = autoKeywords.some(k => incomingText === k);
     const isTimeCommand = /(?:配信時間|配信|届けて|通知)[はを]?\s*\d{1,2}\s*時/.test(incomingText);
-    if (!isAutoKeyword && !isTimeCommand) {
+    if (!isAutoKeyword && !isTimeCommand && !isRichMenuMessage) {
       await upsertChatOnMessage(db, friend.id);
     }
 
