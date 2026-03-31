@@ -8,7 +8,7 @@
     "dev:remote": "REMOTE=true vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy": "vite build && wrangler deploy",
+    "deploy": "vite build && wrangler deploy --config dist/line_harness/wrangler.json",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

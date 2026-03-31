@@ -8,6 +8,7 @@
     "dev:worker": "pnpm --filter worker dev",
     "dev:web": "pnpm --filter web dev",
     "build": "pnpm -r build",
+    "deploy": "pnpm --filter worker deploy",
     "deploy:worker": "pnpm --filter worker deploy",
     "deploy:web": "pnpm --filter web build",
     "db:migrate": "wrangler d1 execute line-crm --file=packages/db/schema.sql",
