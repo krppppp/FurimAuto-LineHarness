@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
+    "dev:remote": "REMOTE=true vite dev",
     "build": "vite build",
     "preview": "vite preview",
     "deploy": "vite build && wrangler deploy",
