@@ -51,6 +51,10 @@ export type Env = {
     LINE_LOGIN_CHANNEL_SECRET: string;
     WORKER_URL: string;
     X_HARNESS_URL?: string;  // Optional: X Harness API URL for account linking
+    RICHMENU_DEFAULT_HOME?: string;
+    RICHMENU_MEMBER_HOME?: string;
+    RICHMENU_GUIDE?: string;
+    RICHMENU_QANDA?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };

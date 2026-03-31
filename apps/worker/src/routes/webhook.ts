@@ -16,6 +16,10 @@ import {
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
+import { handleRichMenuSwitch, linkDefaultRichMenuOnFollow } from '../furim/rich-menu.js';
+import type { RichMenuEnv } from '../furim/rich-menu.js';
+
+type WebhookEnv = RichMenuEnv & { LIFF_URL?: string };
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -66,7 +70,7 @@ webhook.post('/webhook', async (c) => {
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin);
+        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env);
       } catch (err) {
         console.error('Error handling webhook event:', err);
       }
@@ -85,6 +89,7 @@ async function handleEvent(
   lineAccessToken: string,
   lineAccountId: string | null = null,
   workerUrl?: string,
+  env?: WebhookEnv,
 ): Promise<void> {
   if (event.type === 'follow') {
     const userId =
@@ -172,6 +177,9 @@ async function handleEvent(
       }
     }
 
+    // リッチメニュー: フォロー時にデフォルト（非会員ホーム）をリンク
+    if (env) await linkDefaultRichMenuOnFollow(lineClient, userId, env);
+
     // イベントバス発火: friend_add（replyToken は Step 0 で使用済みの可能性あり）
     await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId);
     return;
@@ -207,6 +215,12 @@ async function handleEvent(
       )
       .bind(logId, friend.id, incomingText, now)
       .run();
+
+    // リッチメニュー切り替え: 【リッチメニュー】プレフィックスのメッセージを処理
+    if (env) {
+      const handled = await handleRichMenuSwitch(db, lineClient, userId, friend.id, incomingText, env);
+      if (handled) return;
+    }
 
     // チャットを作成/更新（ユーザーの自発的メッセージのみ unread にする）
     // ボタンタップ等の自動応答キーワードは除外
@@ -282,7 +296,7 @@ async function handleEvent(
               footer: { type: 'box', layout: 'vertical', paddingAll: '16px',
                 contents: [
                   { type: 'button', action: { type: 'message', label: '導入について相談する', text: '導入支援を希望します' }, style: 'primary', color: '#06C755' },
-                  ...(c.env.LIFF_URL ? [{ type: 'button', action: { type: 'uri', label: 'フィードバックを送る', uri: `${c.env.LIFF_URL}?page=form` }, style: 'secondary', margin: 'sm' }] : []),
+                  ...(env?.LIFF_URL ? [{ type: 'button', action: { type: 'uri', label: 'フィードバックを送る', uri: `${env.LIFF_URL}?page=form` }, style: 'secondary', margin: 'sm' }] : []),
                 ],
               },
             }))]);
