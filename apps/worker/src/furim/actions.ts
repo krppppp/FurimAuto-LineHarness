@@ -499,7 +499,7 @@ export async function actionFurimanCoupon(
       const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('Furimanです').first<{ id: string }>();
       if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friend.id, tag.id).run();
       const currentSeg7 = await getCurrentSegment(db, friend.id);
-      if (currentSeg7 !== null && currentSeg7 >= 5) await switchSegmentTag(db, friend.id, 7);
+      if (currentSeg7 !== null && currentSeg7 >= 5 && currentSeg7 < 7) await switchSegmentTag(db, friend.id, 7);
     }
   }
 
@@ -544,7 +544,7 @@ export async function actionExtendTrial(
 
         // セグメント8 へ昇格（解説見た）— seg4+5 達成済みの場合のみ
         const currentSeg8 = await getCurrentSegment(db, existing.id);
-        if (currentSeg8 !== null && currentSeg8 >= 5) await switchSegmentTag(db, existing.id, 8);
+        if (currentSeg8 !== null && currentSeg8 >= 5 && currentSeg8 < 8) await switchSegmentTag(db, existing.id, 8);
 
         console.log(`[furim] kaisetsu flag set for ${lineUserId}, trial_end=${meta.trial_end}`);
       }
