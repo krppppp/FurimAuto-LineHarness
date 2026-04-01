@@ -1,10 +1,14 @@
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
 import { copyTicketFlexMessage } from './messages.js';
+import { getFriendByLineUserId, completeFriendActiveScenarios, getScenarioByName, enrollFriendInScenario } from '@line-crm/db';
+
+const REFERRAL_SCENARIO_NAME = 'FurimAuto 紹介 ステップ配信（セグメント1: アンケート未回答）';
 
 export type KeywordActionsEnv = {
   GAS_DEPLOY_ID: string;
   STRIPE_SECRET_KEY?: string;
+  DB?: D1Database;
 };
 
 export async function handleKeywordAction(
@@ -13,12 +17,13 @@ export async function handleKeywordAction(
   replyToken: string,
   rawText: string,
   env: KeywordActionsEnv,
+  db?: D1Database,
 ): Promise<boolean> {
   if (!rawText.includes('【キーワード】')) return false;
   const text = rawText.replace('【キーワード】', '');
 
   if (text.includes('登録URL発行')) {
-    const data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLIFFCheckoutUrl', message: text, lineUserId }) as Record<string, string>;
+    const data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLIFFCheckoutUrl', message: text.trim(), lineUserId }) as Record<string, string>;
     await lineClient.replyMessage(replyToken, [{
       type: 'imagemap',
       baseUrl: 'https://storage.googleapis.com/furimauto_line/images/checkout_image',
@@ -97,6 +102,52 @@ export async function handleKeywordAction(
       pushText += '数多くのご紹介のご協力、誠に感謝いたします。';
     }
     await lineClient.pushMessage(data.ambassadorLineID, [{ type: 'text', text: pushText } as never]);
+
+    // シナリオ切り替え: 通常シナリオを完了させ、Referralシナリオに登録
+    const targetDb = db ?? env.DB;
+    if (targetDb) {
+      try {
+        const friend = await getFriendByLineUserId(targetDb, lineUserId);
+        if (friend) {
+          await completeFriendActiveScenarios(targetDb, friend.id);
+          const referralScenario = await getScenarioByName(targetDb, REFERRAL_SCENARIO_NAME);
+          if (referralScenario?.is_active) {
+            await enrollFriendInScenario(targetDb, friend.id, referralScenario.id);
+            console.log(`[furim] Referral scenario enrolled: ${friend.id}`);
+          }
+
+          // 紹介経由タグ付与（紹介されたお友達）
+          const introTag = await targetDb.prepare('SELECT id FROM tags WHERE name = ?').bind('紹介経由').first<{ id: string }>();
+          if (introTag) await targetDb.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friend.id, introTag.id).run();
+        }
+
+        // アンバサダーLvタグ更新（アンバサダー本人）
+        if (data.ambassadorLineID) {
+          const ambassadorFriend = await getFriendByLineUserId(targetDb, data.ambassadorLineID);
+          if (ambassadorFriend) {
+            const ambassadorInfo = await gasGet(env.GAS_DEPLOY_ID, { method: 'getAmbassadorInfo', lineUserId: data.ambassadorLineID }) as { numberIntroduced?: number };
+            const count = ambassadorInfo?.numberIntroduced ?? 0;
+
+            // 既存アンバサダーLvタグを全削除
+            for (const lv of ['アンバサダーLv.1', 'アンバサダーLv.5', 'アンバサダーLv.10']) {
+              const lvTag = await targetDb.prepare('SELECT id FROM tags WHERE name = ?').bind(lv).first<{ id: string }>();
+              if (lvTag) await targetDb.prepare('DELETE FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(ambassadorFriend.id, lvTag.id).run();
+            }
+
+            // 新しいLvタグ付与
+            const newLv = count >= 10 ? 'アンバサダーLv.10' : count >= 5 ? 'アンバサダーLv.5' : count >= 1 ? 'アンバサダーLv.1' : null;
+            if (newLv) {
+              const newLvTag = await targetDb.prepare('SELECT id FROM tags WHERE name = ?').bind(newLv).first<{ id: string }>();
+              if (newLvTag) await targetDb.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(ambassadorFriend.id, newLvTag.id).run();
+              console.log(`[furim] Ambassador ${data.ambassadorLineID} → ${newLv} (count=${count})`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[furim] Referral scenario enrollment error:', err);
+      }
+    }
+
     return true;
   }
 

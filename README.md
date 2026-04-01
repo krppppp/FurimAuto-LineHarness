@@ -32,10 +32,15 @@ pnpm dev
 
 ### Worker（API）
 
+リポジトリルートから実行：
+
 ```bash
-cd apps/worker
-pnpm run deploy
+pnpm deploy
 ```
+
+> **注意**: `apps/worker/` 内で `wrangler deploy` を直接実行しないこと。
+> `wrangler.toml` 経由のesbuildバンドルが使われ、viteビルド出力が無視される。
+> 必ず上記コマンド（`vite build && wrangler deploy --config dist/line_harness/wrangler.json`）を経由すること。
 
 → `https://line-harness.furimuato.workers.dev`
 

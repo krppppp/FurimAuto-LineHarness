@@ -291,6 +291,24 @@ export function buildMessage(messageType: string, messageContent: string, altTex
     }
   }
 
+  if (messageType === 'video') {
+    try {
+      const parsed = JSON.parse(messageContent) as {
+        originalContentUrl: string;
+        previewImageUrl: string;
+        trackingId?: string;
+      };
+      return {
+        type: 'video',
+        originalContentUrl: parsed.originalContentUrl,
+        previewImageUrl: parsed.previewImageUrl,
+        ...(parsed.trackingId ? { trackingId: parsed.trackingId } : {}),
+      } as unknown as Message;
+    } catch {
+      return { type: 'text', text: messageContent };
+    }
+  }
+
   if (messageType === 'flex') {
     try {
       const contents = JSON.parse(messageContent);

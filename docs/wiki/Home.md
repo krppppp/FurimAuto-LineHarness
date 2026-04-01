@@ -96,6 +96,11 @@ LINE Harness は、LINE公式アカウント向けのオープンソース CRM /
 16. **[CV Tracking and Affiliates](17-CV-Tracking-and-Affiliates.md)** — コンバージョン計測、アフィリエイト
 17. **[Multi-Account and BAN](18-Multi-Account-and-BAN.md)** — UUID連携、マルチアカウント、BAN復旧
 
+### FurimAuto 固有
+
+- **[FurimAuto Scenarios](FurimAuto-Scenarios.md)** — 12シナリオ設計・登録・本番構築手順、セグメント判定ロジック
+- **[FurimAuto Tags](FurimAuto-Tags.md)** — 24タグ一覧・付与タイミング設計・未実装リスト
+
 ### リファレンス
 
 18. **[SDK Reference](19-SDK-Reference.md)** — @line-harness/sdk 全API

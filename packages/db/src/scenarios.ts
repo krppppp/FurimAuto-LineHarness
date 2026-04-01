@@ -49,6 +49,18 @@ export interface FriendScenario {
 
 export type ScenarioWithStepCount = Scenario & { step_count: number };
 
+export async function getScenarioByName(db: D1Database, name: string): Promise<Scenario | null> {
+  return db.prepare(`SELECT * FROM scenarios WHERE name = ? LIMIT 1`).bind(name).first<Scenario>();
+}
+
+export async function completeFriendActiveScenarios(db: D1Database, friendId: string): Promise<void> {
+  const now = jstNow();
+  await db
+    .prepare(`UPDATE friend_scenarios SET status = 'completed', next_delivery_at = NULL, updated_at = ? WHERE friend_id = ? AND status = 'active'`)
+    .bind(now, friendId)
+    .run();
+}
+
 export async function getScenarios(db: D1Database): Promise<ScenarioWithStepCount[]> {
   const result = await db
     .prepare(

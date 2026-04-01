@@ -7,6 +7,7 @@ import {
   copyTicketFlexMessage,
   surveyButton,
 } from './messages.js';
+import { completeFriendActiveScenarios } from '@line-crm/db';
 
 export type FurimActionsEnv = {
   GAS_DEPLOY_ID?: string;
@@ -161,12 +162,32 @@ function buildReceivedListFlex(sentBatchNos: number[]) {
 
 // ── メインディスパッチャー ─────────────────────────────────────
 
+async function getCurrentSegment(db: D1Database, friendId: string): Promise<number | null> {
+  for (let seg = 8; seg >= 1; seg--) {
+    const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(`セグメント${seg}`).first<{ id: string }>();
+    if (!tag) continue;
+    const has = await db.prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(friendId, tag.id).first();
+    if (has) return seg;
+  }
+  return null;
+}
+
+async function switchSegmentTag(db: D1Database, friendId: string, newSeg: number): Promise<void> {
+  for (const name of ['セグメント1', 'セグメント2', 'セグメント3', 'セグメント4', 'セグメント5', 'セグメント6', 'セグメント7', 'セグメント8']) {
+    const t = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(name).first<{ id: string }>();
+    if (t) await db.prepare('DELETE FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(friendId, t.id).run();
+  }
+  const newTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(`セグメント${newSeg}`).first<{ id: string }>();
+  if (newTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friendId, newTag.id).run();
+}
+
 export async function handleFurimAction(
   lineClient: LineClient,
   lineUserId: string,
   replyToken: string,
   text: string,
   env: ResolvedEnv,
+  db?: D1Database,
 ): Promise<boolean> {
   if (!text.startsWith(PREFIX)) return false;
   if (!env.GAS_DEPLOY_ID) return false;
@@ -176,7 +197,7 @@ export async function handleFurimAction(
   try {
     switch (action) {
       case 'キーコード発行':
-        await actionKeycodeIssue(lineClient, lineUserId, replyToken, resolvedEnv);
+        await actionKeycodeIssue(lineClient, lineUserId, replyToken, resolvedEnv, db);
         return true;
       case 'チケット注文':
         await lineClient.replyMessage(replyToken, [ticketOrderTemplate as never]);
@@ -256,6 +277,7 @@ async function actionKeycodeIssue(
   lineUserId: string,
   replyToken: string,
   env: ResolvedEnv,
+  db?: D1Database,
 ) {
   const data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getKeyCode', lineUserId }) as Record<string, string>;
   console.log('[furim] getKeyCode response:', data);
@@ -279,6 +301,16 @@ async function actionKeycodeIssue(
   }
 
   await lineClient.replyMessage(replyToken, messages as never[]);
+
+  // セグメント3 へ昇格（キーコード発行済み）
+  if (db) {
+    try {
+      const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
+      if (friend) await switchSegmentTag(db, friend.id, 3);
+    } catch (err) {
+      console.error('[furim] segment upgrade error (keycode issue):', err);
+    }
+  }
 }
 
 async function actionMemberPage(
@@ -294,7 +326,7 @@ async function actionMemberPage(
   }
 
   const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getStripeIDwithLINEID', lineUserId }) as Record<string, string>;
-  const stripeCustomerId = gasData?.stripeCustomerId || gasData?.stripeID || gasData?.data;
+  const stripeCustomerId = gasData?.customer_stripe_id || gasData?.stripeCustomerId || gasData?.stripeID || gasData?.data;
 
   if (!stripeCustomerId) {
     await lineClient.replyMessage(replyToken, [{ type: 'text', text: '会員情報が見つかりませんでした。' } as never]);
@@ -430,6 +462,7 @@ export async function actionFurimanCoupon(
   lineUserId: string,
   replyToken: string,
   env: ResolvedEnv,
+  db?: D1Database,
 ): Promise<void> {
   if (!env.STRIPE_SECRET_KEY) {
     await lineClient.replyMessage(replyToken, [{ type: 'text', text: '申し訳ございません。クーポン処理中にエラーが発生しました。' } as never]);
@@ -458,6 +491,18 @@ export async function actionFurimanCoupon(
     body: new URLSearchParams({ coupon: data.eligibleCouponId }).toString(),
   });
   await gasPost(env.GAS_DEPLOY_ID, { method: 'setFurimanCoupon', lineUserId, couponName: data.eligibleCouponName });
+
+  // Furimanですタグ付与 + セグメント7 へ昇格（Youtubeクーポン取得）
+  if (db) {
+    const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
+    if (friend) {
+      const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('Furimanです').first<{ id: string }>();
+      if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friend.id, tag.id).run();
+      const currentSeg7 = await getCurrentSegment(db, friend.id);
+      if (currentSeg7 !== null && currentSeg7 >= 5) await switchSegmentTag(db, friend.id, 7);
+    }
+  }
+
   await lineClient.replyMessage(replyToken, [{ type: 'text', text: `【自動送信】\nYoutubeのキーワードありがとうございます！\n\n"${data.eligibleCouponName}"\nを付与いたしました！\n\n有料会員のお客様はリッチメニューの月額会員ページから、\n次回の支払額についてクーポン値引きが適用されているのを確認してください😄\n\n無料期間中のお客様は、\n初月料金をお得にご利用いただき\nFurimAutoを最大限活用して\nプラン選択に役立ててください💰💰💰` } as never]);
 }
 
@@ -466,6 +511,7 @@ export async function actionExtendTrial(
   lineUserId: string,
   replyToken: string,
   gasDeployId: string,
+  db?: D1Database,
 ): Promise<void> {
   const result = await gasPost(gasDeployId, { method: 'setExtendTrialByKeyword', lineUserId }) as Record<string, string>;
   const messages: Record<string, string> = {
@@ -476,4 +522,34 @@ export async function actionExtendTrial(
   };
   const text = messages[result?.result] ?? '申し訳ございません。処理中にエラーが発生しました。';
   await lineClient.replyMessage(replyToken, [{ type: 'text', text } as never]);
+
+  // kaisetsu フラグを書き込む（extended1w / extended3d のみ）
+  if (db && (result?.result === 'extended1w' || result?.result === 'extended3d')) {
+    try {
+      const existing = await db.prepare('SELECT id, metadata FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string; metadata: string }>();
+      if (existing) {
+        const daysToAdd = result.result === 'extended1w' ? 7 : 3;
+        const trialEnd = new Date(Date.now() + 9 * 60 * 60_000 + daysToAdd * 24 * 60 * 60_000);
+        const meta = JSON.parse(existing.metadata || '{}');
+        meta.kaisetsu = true;
+        meta.trial_end = trialEnd.toISOString().slice(0, 10);
+        await db.prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
+          .bind(JSON.stringify(meta), existing.id).run();
+        // 解説見たユーザーは通常シナリオを停止し、kaisetsu cron による有料案内に切り替える
+        await completeFriendActiveScenarios(db, existing.id);
+
+        // 解説見たタグ付与
+        const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('解説見た').first<{ id: string }>();
+        if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(existing.id, tag.id).run();
+
+        // セグメント8 へ昇格（解説見た）— seg4+5 達成済みの場合のみ
+        const currentSeg8 = await getCurrentSegment(db, existing.id);
+        if (currentSeg8 !== null && currentSeg8 >= 5) await switchSegmentTag(db, existing.id, 8);
+
+        console.log(`[furim] kaisetsu flag set for ${lineUserId}, trial_end=${meta.trial_end}`);
+      }
+    } catch (err) {
+      console.error('[furim] kaisetsu metadata write error:', err);
+    }
+  }
 }

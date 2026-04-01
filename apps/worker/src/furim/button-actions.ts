@@ -27,12 +27,32 @@ const FEATURE_VIDEOS: Record<string, { url: string; manual: string }> = {
   'メルカリToラクマコピー出品機能(コピー出品チケット)': { url: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%83%A1%E3%83%AB%E3%82%AB%E3%83%AATo%E3%83%A9%E3%82%AF%E3%83%9E%E3%82%B3%E3%83%92%E3%82%9A%E3%83%BC%E5%87%BA%E5%93%81.mov', manual: 'https://furimauto.com/howto/#mCopyToRakuma' },
 };
 
+async function getCurrentSegment(db: D1Database, friendId: string): Promise<number | null> {
+  for (let seg = 8; seg >= 1; seg--) {
+    const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(`セグメント${seg}`).first<{ id: string }>();
+    if (!tag) continue;
+    const has = await db.prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(friendId, tag.id).first();
+    if (has) return seg;
+  }
+  return null;
+}
+
+async function switchSegmentTag(db: D1Database, friendId: string, newSeg: number): Promise<void> {
+  for (const name of ['セグメント1', 'セグメント2', 'セグメント3', 'セグメント4', 'セグメント5', 'セグメント6', 'セグメント7', 'セグメント8']) {
+    const t = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(name).first<{ id: string }>();
+    if (t) await db.prepare('DELETE FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(friendId, t.id).run();
+  }
+  const newTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(`セグメント${newSeg}`).first<{ id: string }>();
+  if (newTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friendId, newTag.id).run();
+}
+
 export async function handleButtonAction(
   lineClient: LineClient,
   lineUserId: string,
   replyToken: string,
   rawText: string,
   env: ButtonActionsEnv,
+  db?: D1Database,
 ): Promise<boolean> {
   if (!rawText.includes('【ボタン】')) return false;
   const text = rawText.replace('【ボタン】', '');
@@ -86,6 +106,12 @@ export async function handleButtonAction(
       await lineClient.pushMessage(lineUserId, [{ type: 'text', text: `📣お友達からの紹介で登録してくれたお客様へ\n\nFurimAutoへようこそ🙇\n\nご紹介いただいたお友達から紹介コードをいただいていましたらこのLINEトークルームにコピペしてお送りください！\n\n以下のようにカッコで囲まれたテキストを何もいじることなく\n'そのまま'コピーして送信してください！\n\n【キーワード】友達紹介コード:XXXXXXXXXXXX\n\nそれだけで\n✅無料期間は2週間に延長\n✅初回月額料金半額クーポン付与` } as never]);
     }
     await gasPost(env.GAS_DEPLOY_ID, { method: 'setSurveyResult', lineUserId, surveyResult });
+
+    // セグメント2 へ昇格（アンケート回答済み）
+    if (db) {
+      const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
+      if (friend) await switchSegmentTag(db, friend.id, 2);
+    }
     return true;
   }
 
@@ -146,6 +172,13 @@ export async function handleButtonAction(
 
   if (text.includes('コピー出品チケット30枚GET')) {
     await gasPost(env.GAS_DEPLOY_ID, { method: 'setFree30CopyTickets', lineUserId });
+    if (db) {
+      const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
+      if (friend) {
+        const currentSeg = await getCurrentSegment(db, friend.id);
+        if (currentSeg !== null && currentSeg >= 5) await switchSegmentTag(db, friend.id, 6);
+      }
+    }
     await lineClient.replyMessage(replyToken, [
       { type: 'text', text: `タップありがとうございます。\n\nコピー出品チケット\n30枚プレゼントいたしました！\n(通算1回のみ有効です。2回目以降は無効となっております。)\n\n一度キーコードの入力ボタンを押して\nOKになったら、以下の動画を参考にコピー出品してみてください！` } as never,
       { type: 'video', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%83%A1%E3%83%AB%E3%82%AB%E3%83%AATo%E3%83%A9%E3%82%AF%E3%83%9E%E3%82%B3%E3%83%92%E3%82%9A%E3%83%BC%E5%87%BA%E5%93%81.mp4', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png' } as never,
