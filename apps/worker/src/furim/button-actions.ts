@@ -1,6 +1,7 @@
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
 import { carouselTemplate, surveyTemplate, copyTicketFlexMessage } from './messages.js';
+import { logOutgoing } from '../utils/message-log.js';
 
 export type ButtonActionsEnv = {
   GAS_DEPLOY_ID: string;
@@ -102,15 +103,19 @@ export async function handleButtonAction(
       },
     ];
     await lineClient.replyMessage(replyToken, messages as never[]);
+    const referralPushText = `📣お友達からの紹介で登録してくれたお客様へ\n\nFurimAutoへようこそ🙇\n\nご紹介いただいたお友達から紹介コードをいただいていましたらこのLINEトークルームにコピペしてお送りください！\n\n以下のようにカッコで囲まれたテキストを何もいじることなく\n'そのまま'コピーして送信してください！\n\n【キーワード】友達紹介コード:XXXXXXXXXXXX\n\nそれだけで\n✅無料期間は2週間に延長\n✅初回月額料金半額クーポン付与`;
     if (surveyResult === '紹介') {
-      await lineClient.pushMessage(lineUserId, [{ type: 'text', text: `📣お友達からの紹介で登録してくれたお客様へ\n\nFurimAutoへようこそ🙇\n\nご紹介いただいたお友達から紹介コードをいただいていましたらこのLINEトークルームにコピペしてお送りください！\n\n以下のようにカッコで囲まれたテキストを何もいじることなく\n'そのまま'コピーして送信してください！\n\n【キーワード】友達紹介コード:XXXXXXXXXXXX\n\nそれだけで\n✅無料期間は2週間に延長\n✅初回月額料金半額クーポン付与` } as never]);
+      await lineClient.pushMessage(lineUserId, [{ type: 'text', text: referralPushText } as never]);
     }
     await gasPost(env.GAS_DEPLOY_ID, { method: 'setSurveyResult', lineUserId, surveyResult });
 
     // セグメント2 へ昇格（アンケート回答済み）
     if (db) {
       const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
-      if (friend) await switchSegmentTag(db, friend.id, 2);
+      if (friend) {
+        await switchSegmentTag(db, friend.id, 2);
+        if (surveyResult === '紹介') await logOutgoing(db, friend.id, 'text', referralPushText);
+      }
     }
     return true;
   }

@@ -1,4 +1,5 @@
 import type { LineClient } from '@line-crm/line-sdk';
+import { logOutgoing } from '../utils/message-log.js';
 
 type KaisetsuMeta = {
   kaisetsu: boolean;
@@ -127,6 +128,7 @@ export async function processKaisetsuDeliveries(
       if (!text) continue;
 
       await lineClient.pushMessage(friend.line_user_id, [{ type: 'text', text } as never]);
+      await logOutgoing(db, friend.id, 'text', text);
 
       meta.kaisetsu_last_sent = today;
       await db.prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')

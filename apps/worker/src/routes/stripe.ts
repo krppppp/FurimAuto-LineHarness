@@ -8,6 +8,7 @@ import {
 } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from '../furim/gas-client.js';
+import { logOutgoing } from '../utils/message-log.js';
 import type { Env } from '../index.js';
 
 const stripe = new Hono<Env>();
@@ -316,6 +317,17 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
         // タグ更新（新規・継続共通）
         const friend = await getFriendByLineUserId(db, resolvedLineUserId);
         if (friend) {
+          // 送信済みメッセージをログ
+          if (isNewSubscription) {
+            await logOutgoing(db, friend.id, 'text', `【自動送信】\n月額プランへのご登録ありがとうございました🌟\nまた、それに伴いましてお客様のキーコードが更新されましたので、お手数ですがリッチメニューから新しいキーコードを発行の上、拡張機能に再入力してください。\n\n引き続き仕様変更への迅速な対応、ユーザー様の声をできる限り汲んで運営してまいりますので\nよろしくお願いいたします。`);
+            await logOutgoing(db, friend.id, 'image', JSON.stringify({ originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ambassador.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ambassador.png' }));
+            await logOutgoing(db, friend.id, 'text', `【アンバサダー制度でお得にご利用いただけます💡】\n      \n「FurimAutoオススメだよ!!」\nとお友達にご紹介していただけましたら\n双方にとって絶対にお得なプログラムとなっております✨\n\nご興味ございましたらリッチメニューの\nアンバサダー制度\nをタップしてください😆\n\nFurimAutoが皆様の物販事業\n底上げに繋がるように\n引き続き開発を続けて参りますので、\nどうぞ末長くよろしくお願いいたします。`);
+          } else {
+            await logOutgoing(db, friend.id, 'text', `【自動送信】\nご登録いただいております月額プランへの継続課金成功のお知らせをお知らせいたします。\n内容のご確認をご希望のお客様は、メニュー下部の"会員情報の確認"クリックしてご確認してください。\n\nまた、それに伴いましてお客様のキーコードが更新されましたので、お手数ですがリッチメニューから新しいキーコードを発行の上、ブラウザにて再入力してください。\n\nそれでは、これからもFurimAutoを存分に活用してください♪`);
+            await logOutgoing(db, friend.id, 'image', JSON.stringify({ originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/coupon_get.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/coupon_get.png' }));
+            await logOutgoing(db, friend.id, 'text', `【割引告知】\nお客様のご利用にあたり、\n次回の継続課金の際に適用可能な割引クーポンのご案内です💰\n\n詳しくはリッチメニューの\n1️⃣ガイドタブ\n2️⃣クーポンGET\nを順番にタップしてご確認ください🎆`);
+          }
+
           // 月額会員タグ付与
           const memberTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('月額会員').first<{ id: string }>();
           if (memberTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, memberTag.id, jstNow()).run();
@@ -390,10 +402,10 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
         if (resolvedLineUserId) {
           const lineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
           try {
-            await lineClient.pushMessage(resolvedLineUserId, [{
-              type: 'text',
-              text: `【自動送信】\nお客様の月額プランへのお支払いが確認できませんでした。\n\nリッチメニューのホームタブ「月額会員ページ」から、お支払い方法のご確認・変更をお願いいたします。\n\nお支払いが確認できない場合、サービスのご利用ができなくなる場合がございます。`,
-            } as never]);
+            const failedText = `【自動送信】\nお客様の月額プランへのお支払いが確認できませんでした。\n\nリッチメニューのホームタブ「月額会員ページ」から、お支払い方法のご確認・変更をお願いいたします。\n\nお支払いが確認できない場合、サービスのご利用ができなくなる場合がございます。`;
+            await lineClient.pushMessage(resolvedLineUserId, [{ type: 'text', text: failedText } as never]);
+            const failedFriend = await getFriendByLineUserId(db, resolvedLineUserId);
+            if (failedFriend) await logOutgoing(db, failedFriend.id, 'text', failedText);
             console.log(`[stripe/payment_failed] LINE通知送信完了 lineUserId=${resolvedLineUserId}`);
           } catch (e) {
             console.error('[stripe/payment_failed] pushMessage failed:', e);
@@ -449,11 +461,9 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
         }
 
         // 解約通知
+        const cancelledText = `【自動送信】\nご登録いただいておりました月額プランを解消しました。\n現時点でキーコードは使用不可となります。\n\nFurimAutoでは日々開発を進め今後も機能面はもちろん、利用可能になるプラットフォームを広げていきますので、またの機会がございましたら再度と月額プラン登録の手順を踏んでください。\n\nまたのご利用をお待ちしております！`;
         try {
-          await lineClient.pushMessage(resolvedLineUserId, [{
-            type: 'text',
-            text: `【自動送信】\nご登録いただいておりました月額プランを解消しました。\n現時点でキーコードは使用不可となります。\n\nFurimAutoでは日々開発を進め今後も機能面はもちろん、利用可能になるプラットフォームを広げていきますので、またの機会がございましたら再度と月額プラン登録の手順を踏んでください。\n\nまたのご利用をお待ちしております！`,
-          } as never]);
+          await lineClient.pushMessage(resolvedLineUserId, [{ type: 'text', text: cancelledText } as never]);
         } catch (e) {
           console.error('[stripe/subscription.deleted] pushMessage failed:', e);
         }
@@ -461,6 +471,8 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
         // タグ操作（DB内部IDが必要）
         const friend = await getFriendByLineUserId(db, resolvedLineUserId);
         if (friend) {
+          await logOutgoing(db, friend.id, 'text', cancelledText);
+
           const cancelledTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('キャンセル済み').first<{ id: string }>();
           if (cancelledTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, cancelledTag.id, jstNow()).run();
 
@@ -497,11 +509,11 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
           }
 
           const lineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
+          const ticketText = `🎉【チケット購入完了】🎉\n\nコピー出品チケット ${quantity}枚の購入が完了しました！\n\nキーコードの入力ボタンを押して、チケット枚数を取得してください。\nFurimAutoのコピー出品機能でご利用いただけます。\n\n引き続きFurimAutoをよろしくお願いします。`;
           try {
-            await lineClient.pushMessage(ticketLineUserId, [{
-              type: 'text',
-              text: `🎉【チケット購入完了】🎉\n\nコピー出品チケット ${quantity}枚の購入が完了しました！\n\nキーコードの入力ボタンを押して、チケット枚数を取得してください。\nFurimAutoのコピー出品機能でご利用いただけます。\n\n引き続きFurimAutoをよろしくお願いします。`,
-            } as never]);
+            await lineClient.pushMessage(ticketLineUserId, [{ type: 'text', text: ticketText } as never]);
+            const ticketFriend = await getFriendByLineUserId(db, ticketLineUserId);
+            if (ticketFriend) await logOutgoing(db, ticketFriend.id, 'text', ticketText);
           } catch (e) {
             console.error('[stripe/ticket] pushMessage failed:', e);
           }
