@@ -98,8 +98,13 @@ LINE Harness は、LINE公式アカウント向けのオープンソース CRM /
 
 ### FurimAuto 固有
 
-- **[FurimAuto Scenarios](FurimAuto-Scenarios.md)** — 12シナリオ設計・登録・本番構築手順、セグメント判定ロジック
-- **[FurimAuto Tags](FurimAuto-Tags.md)** — 24タグ一覧・付与タイミング設計・未実装リスト
+FurimAuto固有のドキュメントは `docs/furimauto/` に移動しました。
+
+- **[FurimAuto README](../furimauto/README.md)** — 現状・残作業・よく使うコマンド（次セッションはここから）
+- **[FurimAuto Scenarios](../furimauto/scenarios.md)** — 14シナリオ設計・登録・本番構築手順、セグメント判定ロジック
+- **[FurimAuto Tags](../furimauto/tags.md)** — 28タグ一覧・付与タイミング設計
+- **[FurimAuto Production Deploy](../furimauto/production-deploy.md)** — 本番環境構築手順（STEP1〜9）
+- **[devlog/](../furimauto/devlog/)** — 作業ログ（日付ごと）
 
 ### リファレンス
 
