@@ -1,6 +1,20 @@
 import { jstNow } from './utils.js';
 // アクション自動化 (IF-THEN ルール) クエリヘルパー
 
+export interface AutomationActionRow {
+  id: string;
+  automation_id: string;
+  step_order: number;
+  action_type: string;
+  params: string;        // JSON
+  condition_json: string | null;
+  on_error: 'continue' | 'abort';
+  is_active: number;
+  label: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AutomationRow {
   id: string;
   name: string;
@@ -93,6 +107,106 @@ export async function createAutomationLog(
   const now = jstNow();
   await db.prepare(`INSERT INTO automation_logs (id, automation_id, friend_id, event_data, actions_result, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .bind(id, input.automationId, input.friendId ?? null, input.eventData ?? null, input.actionsResult ?? null, input.status, now).run();
+}
+
+// --- オートメーションアクション ---
+
+export async function getAutomationActions(db: D1Database, automationId: string): Promise<AutomationActionRow[]> {
+  const result = await db
+    .prepare(`SELECT * FROM automation_actions WHERE automation_id = ? AND is_active = 1 ORDER BY step_order ASC`)
+    .bind(automationId)
+    .all<AutomationActionRow>();
+  return result.results;
+}
+
+export async function createAutomationAction(
+  db: D1Database,
+  input: {
+    automationId: string;
+    stepOrder: number;
+    actionType: string;
+    params?: Record<string, unknown>;
+    conditionJson?: Record<string, unknown> | null;
+    onError?: 'continue' | 'abort';
+    label?: string;
+  },
+): Promise<AutomationActionRow> {
+  const id = crypto.randomUUID();
+  const now = jstNow();
+  await db
+    .prepare(
+      `INSERT INTO automation_actions (id, automation_id, step_order, action_type, params, condition_json, on_error, label, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      input.automationId,
+      input.stepOrder,
+      input.actionType,
+      JSON.stringify(input.params ?? {}),
+      input.conditionJson ? JSON.stringify(input.conditionJson) : null,
+      input.onError ?? 'continue',
+      input.label ?? null,
+      now,
+      now,
+    )
+    .run();
+  return (await db.prepare(`SELECT * FROM automation_actions WHERE id = ?`).bind(id).first<AutomationActionRow>())!;
+}
+
+export async function updateAutomationAction(
+  db: D1Database,
+  id: string,
+  updates: Partial<{ stepOrder: number; actionType: string; params: Record<string, unknown>; conditionJson: Record<string, unknown> | null; onError: 'continue' | 'abort'; isActive: boolean; label: string }>,
+): Promise<void> {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (updates.stepOrder !== undefined) { sets.push('step_order = ?'); values.push(updates.stepOrder); }
+  if (updates.actionType !== undefined) { sets.push('action_type = ?'); values.push(updates.actionType); }
+  if (updates.params !== undefined) { sets.push('params = ?'); values.push(JSON.stringify(updates.params)); }
+  if ('conditionJson' in updates) { sets.push('condition_json = ?'); values.push(updates.conditionJson ? JSON.stringify(updates.conditionJson) : null); }
+  if (updates.onError !== undefined) { sets.push('on_error = ?'); values.push(updates.onError); }
+  if (updates.isActive !== undefined) { sets.push('is_active = ?'); values.push(updates.isActive ? 1 : 0); }
+  if (updates.label !== undefined) { sets.push('label = ?'); values.push(updates.label); }
+  if (sets.length === 0) return;
+  sets.push('updated_at = ?');
+  values.push(jstNow());
+  values.push(id);
+  await db.prepare(`UPDATE automation_actions SET ${sets.join(', ')} WHERE id = ?`).bind(...values).run();
+}
+
+export async function deleteAutomationAction(db: D1Database, id: string): Promise<void> {
+  await db.prepare(`DELETE FROM automation_actions WHERE id = ?`).bind(id).run();
+}
+
+export async function bulkCreateAutomationActions(
+  db: D1Database,
+  automationId: string,
+  actions: Array<{ actionType: string; params?: Record<string, unknown>; conditionJson?: Record<string, unknown> | null; onError?: 'continue' | 'abort'; label?: string }>,
+): Promise<void> {
+  const now = jstNow();
+  for (let i = 0; i < actions.length; i++) {
+    const a = actions[i];
+    const id = crypto.randomUUID();
+    await db
+      .prepare(
+        `INSERT INTO automation_actions (id, automation_id, step_order, action_type, params, condition_json, on_error, label, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        id,
+        automationId,
+        i,
+        a.actionType,
+        JSON.stringify(a.params ?? {}),
+        a.conditionJson ? JSON.stringify(a.conditionJson) : null,
+        a.onError ?? 'continue',
+        a.label ?? null,
+        now,
+        now,
+      )
+      .run();
+  }
 }
 
 /** イベントタイプに一致するアクティブな自動化ルールを取得（優先度順） */

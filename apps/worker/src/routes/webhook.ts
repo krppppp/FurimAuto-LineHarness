@@ -404,7 +404,11 @@ async function handleEvent(
     // タグ付与・リッチメニュー設定は friend_add Automation で管理
 
     // イベントバス発火: friend_add（replyToken は Step 0 で使用済みの可能性あり）
-    await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId);
+    await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId, {
+      lineAccessToken,
+      gasDeployId: env?.GAS_DEPLOY_ID,
+      stripeSecretKey: env?.STRIPE_SECRET_KEY,
+    });
     return;
   }
 
@@ -656,7 +660,11 @@ async function handleEvent(
       friendId: friend.id,
       eventData: { text: incomingText, matched },
       replyToken: replyTokenConsumed ? undefined : event.replyToken,
-    }, lineAccessToken, lineAccountId);
+    }, lineAccessToken, lineAccountId, {
+      lineAccessToken,
+      gasDeployId: env?.GAS_DEPLOY_ID,
+      stripeSecretKey: env?.STRIPE_SECRET_KEY,
+    });
 
     return;
   }
