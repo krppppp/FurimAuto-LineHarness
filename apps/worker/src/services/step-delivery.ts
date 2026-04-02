@@ -113,6 +113,17 @@ async function processSingleDelivery(
     await completeFriendScenario(db, fs.id);
     return;
   }
+
+  // 月額会員はステップ配信をスキップして完了
+  const isMember = await db
+    .prepare('SELECT 1 FROM friend_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.friend_id = ? AND t.name = ?')
+    .bind(friend.id, '月額会員')
+    .first();
+  if (isMember) {
+    await completeFriendScenario(db, fs.id);
+    return;
+  }
+
   const metadata = JSON.parse((friend as { metadata?: string }).metadata || '{}') as Record<string, unknown>;
   const preferredHour = typeof metadata.preferred_hour === 'number' ? metadata.preferred_hour : undefined;
 
@@ -162,33 +173,50 @@ async function processSingleDelivery(
     }
   }
 
-  // Expand template variables ({{name}}, {{uid}}, {{auth_url:CHANNEL_ID}}, etc.)
-  const expandedContent = expandVariables(currentStep.message_content, friend, workerUrl);
-  // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
-  let trackedType: string = currentStep.message_type;
-  let trackedContent = expandedContent;
-  if (workerUrl) {
-    const { autoTrackContent } = await import('./auto-track.js');
-    const tracked = await autoTrackContent(db, currentStep.message_type, expandedContent, workerUrl);
-    trackedType = tracked.messageType;
-    trackedContent = tracked.content;
-  }
-  const message = buildMessage(trackedType, trackedContent);
-  await lineClient.pushMessage(friend.line_user_id, [message]);
-
-  // Log outgoing message
-  const logId = crypto.randomUUID();
-  await db
-    .prepare(
-      `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
-       VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, ?)`,
-    )
-    .bind(logId, friend.id, currentStep.message_type, currentStep.message_content, currentStep.id, jstNow())
-    .run();
-
-  // Determine next step (find the step after currentStep in the sorted list)
+  // delay=0 の後続ステップをまとめてバッチ送信（同日のコンパニオンメッセージ）
   const currentIndex = steps.indexOf(currentStep);
-  const nextStep = currentIndex + 1 < steps.length ? steps[currentIndex + 1] : null;
+  const batchSteps = [currentStep];
+  for (let i = currentIndex + 1; i < steps.length; i++) {
+    if (steps[i].delay_minutes === 0 && !steps[i].condition_type) {
+      batchSteps.push(steps[i]);
+    } else {
+      break;
+    }
+  }
+
+  // バッチ内の全ステップのメッセージを構築
+  const messages: Message[] = [];
+  for (const step of batchSteps) {
+    const expandedContent = expandVariables(step.message_content, friend, workerUrl);
+    let trackedType: string = step.message_type;
+    let trackedContent = expandedContent;
+    if (workerUrl) {
+      const { autoTrackContent } = await import('./auto-track.js');
+      const tracked = await autoTrackContent(db, step.message_type, expandedContent, workerUrl);
+      trackedType = tracked.messageType;
+      trackedContent = tracked.content;
+    }
+    messages.push(buildMessage(trackedType, trackedContent));
+  }
+
+  await lineClient.pushMessage(friend.line_user_id, messages);
+
+  // バッチ内の全ステップをログ記録
+  for (const step of batchSteps) {
+    const logId = crypto.randomUUID();
+    await db
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
+         VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, ?)`,
+      )
+      .bind(logId, friend.id, step.message_type, step.message_content, step.id, jstNow())
+      .run();
+  }
+
+  // バッチの最後のステップの次を探してスケジュール
+  const lastBatchIndex = currentIndex + batchSteps.length - 1;
+  const nextStep = lastBatchIndex + 1 < steps.length ? steps[lastBatchIndex + 1] : null;
+  const lastBatchStep = batchSteps[batchSteps.length - 1];
 
   if (nextStep) {
     // Schedule next delivery with stealth jitter + delivery window enforcement
@@ -196,7 +224,7 @@ async function processSingleDelivery(
     nextDeliveryDate.setMinutes(nextDeliveryDate.getMinutes() + nextStep.delay_minutes);
     const windowedDate = enforceDeliveryWindow(nextDeliveryDate, preferredHour);
     const jitteredDate = jitterDeliveryTime(windowedDate);
-    await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+    await advanceFriendScenario(db, fs.id, lastBatchStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
   } else {
     // This was the last step
     await completeFriendScenario(db, fs.id);

@@ -4,6 +4,7 @@ import {
   getStripeEventByStripeId,
   createStripeEvent,
   getFriendByLineUserId,
+  completeFriendActiveScenarios,
   jstNow,
 } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
@@ -331,6 +332,11 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
           // 月額会員タグ付与
           const memberTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('月額会員').first<{ id: string }>();
           if (memberTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, memberTag.id, jstNow()).run();
+
+          // 新規月額会員: アクティブなステップ配信をすべて完了させる
+          if (isNewSubscription) {
+            await completeFriendActiveScenarios(db, friend.id);
+          }
 
           // 有料会員化に伴い不要タグを削除
           const removeTags = ['セグメント1','セグメント2','セグメント3','セグメント4','セグメント5','セグメント6','セグメント7','セグメント8','無料試用期間中','解説見た','Furimanです','キャンセル済み'];
