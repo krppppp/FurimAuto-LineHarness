@@ -67,6 +67,7 @@ export type FriendListParams = {
   limit?: string
   tagId?: string
   accountId?: string
+  search?: string
 }
 
 export type FriendWithTags = Friend & { tags: Tag[] }
@@ -79,6 +80,7 @@ export const api = {
       if (params?.limit) query.limit = params.limit
       if (params?.tagId) query.tagId = params.tagId
       if (params?.accountId) query.lineAccountId = params.accountId
+      if (params?.search) query.search = params.search
       return fetchApi<ApiResponse<PaginatedResponse<FriendWithTags>>>(
         '/api/friends?' + new URLSearchParams(query)
       )
