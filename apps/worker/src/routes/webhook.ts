@@ -399,23 +399,9 @@ async function handleEvent(
           console.error('[follow] replyMessage welcome error:', err);
         }
 
-        // デフォルトリッチメニューをリンク
-        await linkDefaultRichMenuOnFollow(lineClient, userId, env);
-
-        // 無料試用期間中 + セグメント1 タグ付与
-        const trialTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('無料試用期間中').first<{ id: string }>();
-        if (trialTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, trialTag.id, jstNow()).run();
-        const seg1Tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('セグメント1').first<{ id: string }>();
-        if (seg1Tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, seg1Tag.id, jstNow()).run();
       }
-    } else {
-      // GAS未設定: シンプルな処理
-      if (isNewUser) {
-        const trialTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('無料試用期間中').first<{ id: string }>();
-        if (trialTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, trialTag.id, jstNow()).run();
-      }
-      if (env) await linkDefaultRichMenuOnFollow(lineClient, userId, env);
     }
+    // タグ付与・リッチメニュー設定は friend_add Automation で管理
 
     // イベントバス発火: friend_add（replyToken は Step 0 で使用済みの可能性あり）
     await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId);
