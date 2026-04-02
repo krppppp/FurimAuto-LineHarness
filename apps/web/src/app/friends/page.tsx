@@ -28,7 +28,7 @@ const ccPrompts = [
   },
 ]
 
-const PAGE_SIZE = 20
+const PAGE_SIZE_OPTIONS = [20, 50, 100, 0] // 0 = ALL
 
 export default function FriendsPage() {
   const { selectedAccountId } = useAccount()
@@ -36,6 +36,7 @@ export default function FriendsPage() {
   const [allTags, setAllTags] = useState<Tag[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   const [hasNextPage, setHasNextPage] = useState(false)
   const [selectedTagId, setSelectedTagId] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
@@ -55,9 +56,10 @@ export default function FriendsPage() {
     setLoading(true)
     setError('')
     try {
+      const limit = pageSize || 9999
       const params: Record<string, string> = {
-        offset: String((page - 1) * PAGE_SIZE),
-        limit: String(PAGE_SIZE),
+        offset: String((page - 1) * limit),
+        limit: String(limit),
       }
       if (selectedTagId) params.tagId = selectedTagId
       if (selectedAccountId) params.accountId = selectedAccountId
@@ -76,7 +78,7 @@ export default function FriendsPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, selectedTagId, selectedAccountId, searchQuery])
+  }, [page, pageSize, selectedTagId, selectedAccountId, searchQuery])
 
   useEffect(() => {
     loadTags()
@@ -84,7 +86,7 @@ export default function FriendsPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [selectedTagId, selectedAccountId, searchQuery])
+  }, [selectedTagId, selectedAccountId, searchQuery, pageSize])
 
   useEffect(() => {
     loadFriends()
@@ -93,6 +95,8 @@ export default function FriendsPage() {
   const handleTagFilter = (tagId: string) => {
     setSelectedTagId(tagId)
   }
+
+  const effectivePageSize = pageSize || 9999
 
   return (
     <div>
@@ -119,6 +123,18 @@ export default function FriendsPage() {
             <option value="">すべて</option>
             {allTags.map((tag) => (
               <option key={tag.id} value={tag.id}>{tag.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-gray-600 font-medium whitespace-nowrap">表示件数:</label>
+          <select
+            className="text-sm border border-gray-300 rounded-lg px-3 py-2 min-h-[44px] bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+            value={pageSize}
+            onChange={(e) => setPageSize(Number(e.target.value))}
+          >
+            {PAGE_SIZE_OPTIONS.map((size) => (
+              <option key={size} value={size}>{size === 0 ? 'ALL' : size}</option>
             ))}
           </select>
         </div>
@@ -159,10 +175,10 @@ export default function FriendsPage() {
       )}
 
       {/* Pagination */}
-      {!loading && total > 0 && (
+      {!loading && total > 0 && pageSize !== 0 && (
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mt-4">
           <p className="text-sm text-gray-500">
-            {((page - 1) * PAGE_SIZE) + 1}〜{Math.min(page * PAGE_SIZE, total)} 件 / 全{total.toLocaleString('ja-JP')}件
+            {((page - 1) * effectivePageSize) + 1}〜{Math.min(page * effectivePageSize, total)} 件 / 全{total.toLocaleString('ja-JP')}件
           </p>
           <div className="flex items-center gap-2">
             <button
