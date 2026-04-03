@@ -5,18 +5,13 @@ import {
   upsertFriend,
   updateFriendFollowStatus,
   getFriendByLineUserId,
-  getScenarios,
-  enrollFriendInScenario,
-  getScenarioSteps,
-  advanceFriendScenario,
-  completeFriendScenario,
   upsertChatOnMessage,
   getLineAccounts,
   jstNow,
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
-import { handleRichMenuSwitch, linkDefaultRichMenuOnFollow } from '../furim/rich-menu.js';
+import { handleRichMenuSwitch } from '../furim/rich-menu.js';
 import type { RichMenuEnv } from '../furim/rich-menu.js';
 import { handleFurimAction, actionFurimanCoupon, actionExtendTrial } from '../furim/actions.js';
 import type { FurimActionsEnv } from '../furim/actions.js';
@@ -24,8 +19,6 @@ import { handleButtonAction } from '../furim/button-actions.js';
 import { handleKeywordAction } from '../furim/keyword-actions.js';
 import { handleAIChat } from '../furim/ai-chat.js';
 import { getAiMode } from '../furim/firebase-client.js';
-import { gasGet, gasPost } from '../furim/gas-client.js';
-import { surveyButton } from '../furim/messages.js';
 
 type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GAS_DEPLOY_ID?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string };
 import type { Env } from '../index.js';
@@ -129,282 +122,10 @@ async function handleEvent(
         .bind(lineAccountId, friend.id).run();
     }
 
-    // friend_add シナリオに登録（このアカウントのシナリオのみ）
-    const scenarios = await getScenarios(db);
-    for (const scenario of scenarios) {
-      // Only trigger scenarios belonging to this account (or unassigned for backward compat)
-      const scenarioAccountMatch = !scenario.line_account_id || !lineAccountId || scenario.line_account_id === lineAccountId;
-      if (scenario.trigger_type === 'friend_add' && scenario.is_active && scenarioAccountMatch) {
-        try {
-          const existing = await db
-            .prepare(`SELECT id FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ?`)
-            .bind(friend.id, scenario.id)
-            .first<{ id: string }>();
-          if (!existing) {
-            const friendScenario = await enrollFriendInScenario(db, friend.id, scenario.id);
+    // タグ付与・リッチメニュー設定・ウェルカムメッセージ・リフォロー処理は friend_add Automation で管理
 
-            // Immediate delivery: if the first step has delay=0, send it now via replyMessage (free)
-            // Skip when GAS_DEPLOY_ID is set — replyToken is used for the GAS follow flow
-            const steps = await getScenarioSteps(db, scenario.id);
-            const firstStep = steps[0];
-            if (firstStep && firstStep.delay_minutes === 0 && friendScenario.status === 'active' && !env?.GAS_DEPLOY_ID) {
-              try {
-                const expandedContent = expandVariables(firstStep.message_content, friend as { id: string; display_name: string | null; user_id: string | null });
-                const message = buildMessage(firstStep.message_type, expandedContent);
-                await lineClient.replyMessage(event.replyToken, [message]);
-                console.log(`Immediate delivery: sent step ${firstStep.id} to ${userId}`);
-
-                // Log outgoing message (replyMessage = 無料)
-                const logId = crypto.randomUUID();
-                await db
-                  .prepare(
-                    `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, created_at)
-                     VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, 'reply', ?)`,
-                  )
-                  .bind(logId, friend.id, firstStep.message_type, firstStep.message_content, firstStep.id, jstNow())
-                  .run();
-
-                // Advance or complete the friend_scenario
-                const secondStep = steps[1] ?? null;
-                if (secondStep) {
-                  const nextDeliveryDate = new Date(Date.now() + 9 * 60 * 60_000);
-                  nextDeliveryDate.setMinutes(nextDeliveryDate.getMinutes() + secondStep.delay_minutes);
-                  // Enforce 9:00-21:00 JST delivery window
-                  const h = nextDeliveryDate.getUTCHours();
-                  if (h < 9 || h >= 21) {
-                    if (h >= 21) nextDeliveryDate.setUTCDate(nextDeliveryDate.getUTCDate() + 1);
-                    nextDeliveryDate.setUTCHours(9, 0, 0, 0);
-                  }
-                  await advanceFriendScenario(db, friendScenario.id, firstStep.step_order, nextDeliveryDate.toISOString().slice(0, -1) + '+09:00');
-                } else {
-                  await completeFriendScenario(db, friendScenario.id);
-                }
-              } catch (err) {
-                console.error('Failed immediate delivery for scenario', scenario.id, err);
-              }
-            }
-          }
-        } catch (err) {
-          console.error('Failed to enroll friend in scenario', scenario.id, err);
-        }
-      }
-    }
-
-    // ブロックタグ削除（新規・ブロック解除どちらも）
-    const blockTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('ブロック').first<{ id: string }>();
-    if (blockTag) await db.prepare('DELETE FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(friend.id, blockTag.id).run();
-
-    if (env?.GAS_DEPLOY_ID) {
-      // ===== GASベースのフォローフロー（旧CloudFunctions eventFollow.ts 再現） =====
-      let isUnblockedUser = false;
-      try {
-        const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getStripeIDwithLINEID', lineUserId: userId }) as Record<string, string>;
-        if (gasData?.customer_stripe_id) isUnblockedUser = true;
-      } catch (err) {
-        console.error('[follow] GAS getStripeIDwithLINEID error:', err);
-      }
-
-      if (isUnblockedUser) {
-        // ブロック解除ユーザー: デフォルトリッチメニュー → サブスク確認 → リフォロー返信
-        await linkDefaultRichMenuOnFollow(lineClient, userId, env);
-        try {
-          const keyData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getKeyCode', lineUserId: userId }) as Record<string, string>;
-          if (keyData?.expiredDate && keyData.expiredDate !== '') {
-            const expiredDate = new Date(keyData.expiredDate);
-            if (expiredDate.getTime() >= Date.now() && env.RICHMENU_MEMBER_HOME) {
-              await lineClient.linkRichMenuToUser(userId, env.RICHMENU_MEMBER_HOME);
-            }
-          }
-        } catch (err) {
-          console.error('[follow] GAS getKeyCode error:', err);
-        }
-        try {
-          await lineClient.replyMessage(event.replyToken, [{
-            type: 'text',
-            text: '以前に友達登録されていらしたかと思いますので、キーコード無料利用期間の対象外になってしまっておりますm(_ _)m\n\nが、是非是非使っていただきたいのでもしご興味があれば"無料で試してみたい"と一言ください！',
-          } as never]);
-        } catch (err) {
-          console.error('[follow] replyMessage re-follow error:', err);
-        }
-      } else {
-        // 新規ユーザー: Stripe顧客作成 → GAS登録 → ウェルカムメッセージ5通
-        let stripeCustomerId = '';
-        if (env.STRIPE_SECRET_KEY) {
-          try {
-            const stripeRes = await fetch('https://api.stripe.com/v1/customers', {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
-              body: new URLSearchParams({
-                name: profile?.displayName ?? userId,
-                'metadata[lineUserId]': userId,
-                'address[country]': 'JP',
-                'address[postal_code]': '1050001',
-                'preferred_locales[]': 'ja',
-              }).toString(),
-            });
-            const stripeData = await stripeRes.json() as { id?: string };
-            stripeCustomerId = stripeData.id ?? '';
-          } catch (err) {
-            console.error('[follow] Stripe customer create error:', err);
-          }
-        }
-
-        // GAS setCustomerData (フォロー日時 + 試用期間終了日時)
-        const nowJst = new Date(Date.now() + 9 * 60 * 60_000);
-        const trialEndJst = new Date(nowJst.getTime() + 7 * 24 * 60 * 60_000);
-        const fmtJst = (d: Date) => d.toISOString().replace('T', ' ').slice(0, 19);
-        try {
-          await gasPost(env.GAS_DEPLOY_ID, {
-            method: 'setCustomerData',
-            followEventDateTime: fmtJst(nowJst),
-            lineUserDisplayName: profile?.displayName ?? '',
-            lineUserId: userId,
-            stripeCustomerId,
-            trialFinishedDateTime: fmtJst(trialEndJst),
-          });
-        } catch (err) {
-          console.error('[follow] GAS setCustomerData error:', err);
-        }
-
-        // ウェルカムメッセージ 5通
-        const welcomeMessages: never[] = [];
-
-        // ① YouTube紹介動画 Flex
-        welcomeMessages.push({
-          type: 'flex',
-          altText: 'FurimAuto紹介動画',
-          contents: {
-            type: 'bubble',
-            hero: {
-              type: 'image',
-              url: 'https://img.youtube.com/vi/uQjheVeAuww/maxresdefault.jpg',
-              size: 'full',
-              aspectRatio: '16:9',
-              aspectMode: 'cover',
-              action: { type: 'uri', uri: 'https://www.youtube.com/watch?v=uQjheVeAuww' },
-            },
-            body: {
-              type: 'box',
-              layout: 'vertical',
-              contents: [
-                { type: 'text', text: 'FurimAuto紹介動画', weight: 'bold', size: 'xl', wrap: true },
-                {
-                  type: 'text',
-                  text: '1番初めに見るべき動画はコレ👆👆👆\n\n長ったらしい説明はナシ！です🙅‍♀️\n\nFurimAutoの使い方と\n他者ツールと比べた特徴を\n1分でまとめました!!\n\n断言しますが\nこのツールより簡単で\n全局面での自動化を実現した\n自動化ツールはこの世にはないです🤫',
-                  size: 'sm', color: '#666666', margin: 'md', wrap: true,
-                },
-              ],
-            },
-            footer: {
-              type: 'box',
-              layout: 'vertical',
-              spacing: 'sm',
-              contents: [{
-                type: 'button',
-                style: 'primary',
-                height: 'sm',
-                action: { type: 'uri', label: 'YouTubeで見る', uri: 'https://www.youtube.com/watch?v=uQjheVeAuww' },
-                color: '#FF0000',
-              }],
-            },
-          },
-        } as never);
-
-        // ② テキスト（友達登録感謝 + 無料期間開始）
-        welcomeMessages.push({
-          type: 'text',
-          text: '/／\n🗣 友達登録ありがとうございます！\n\\＼\n╭△━━━━━━━━━━━━━━━╮\nたった今から、\n1週間の無料試用期間が\n開始となります！🎉\n╰━━━━━━━━━━━━━━━━╯\n\nFurimAuto(フリマート)は\nメルカリを中心に、\nそのフリマサイト上で自動化を実現する\nChrome拡張機能型ツールです！💻\n\n---------------------------------------------------\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢\n\n👆どんな使い方をするのか、\n👆サクッと基本を知るには\n👆上の動画\n\n👇1週間の無料期間での\n👇ベストな使い方を知るには\n👇下の動画\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢',
-        } as never);
-
-        // ③ 動画 (meet.mp4)
-        welcomeMessages.push({
-          type: 'video',
-          originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/meet.mp4',
-          previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png',
-          trackingId: 'setup',
-        } as never);
-
-        // ④ 15大特典 Flex
-        welcomeMessages.push({
-          type: 'flex',
-          altText: '🎁 無料期間中に15大特典をGETしよう！',
-          contents: {
-            type: 'bubble',
-            hero: {
-              type: 'image',
-              url: 'https://furimauto.com/lp0/images/special_offer.png',
-              size: 'full',
-              aspectRatio: '1:1',
-              aspectMode: 'cover',
-            },
-            body: {
-              type: 'box',
-              layout: 'vertical',
-              spacing: 'md',
-              contents: [
-                { type: 'text', text: '🎁 無料期間中に15大特典をGETしよう！', weight: 'bold', size: 'lg', wrap: true, color: '#FF6B35' },
-                { type: 'text', text: '友達登録から1週間の無料試用期間中に、段階的に15種類の特典をプレゼントします！', size: 'sm', color: '#555555', wrap: true, margin: 'sm' },
-                { type: 'separator', margin: 'md' },
-                {
-                  type: 'box', layout: 'vertical', margin: 'md', spacing: 'xs',
-                  contents: [
-                    { type: 'text', text: '📦 今すぐもらえる特典', weight: 'bold', size: 'sm', color: '#333333' },
-                    { type: 'button', style: 'link', height: 'sm', margin: 'xs', action: { type: 'uri', label: '① ロードマップ❶ ダウンロード', uri: 'https://storage.googleapis.com/furimauto_line/tokuten/%E7%89%B9%E5%85%B81%E3%83%AD%E3%83%BC%E3%83%88%E3%82%99%E3%83%9E%E3%83%83%E3%83%95%E3%82%9A%E2%9D%B6.pdf' } },
-                    { type: 'button', style: 'link', height: 'sm', action: { type: 'uri', label: '② ロードマップ❷ ダウンロード', uri: 'https://storage.googleapis.com/furimauto_line/tokuten/%E7%89%B9%E5%85%B82%E3%83%AD%E3%83%BC%E3%83%88%E3%82%99%E3%83%9E%E3%83%83%E3%83%95%E3%82%9A%E2%9D%B7.pdf' } },
-                  ],
-                },
-                {
-                  type: 'box', layout: 'vertical', margin: 'md', spacing: 'xs',
-                  contents: [
-                    { type: 'text', text: '🔓 使うほどもらえる特典（リッチメニューから）', weight: 'bold', size: 'sm', color: '#333333', wrap: true },
-                    { type: 'text', text: '③ ロードマップ❸', size: 'sm', color: '#444444', margin: 'xs', wrap: true },
-                    { type: 'text', text: '④ ロードマップ❹', size: 'sm', color: '#444444', margin: 'xs', wrap: true },
-                    { type: 'text', text: '⑤ 撮影方法マニュアル前編', size: 'sm', color: '#444444', wrap: true },
-                    { type: 'text', text: '⑥ 撮影方法マニュアル後編', size: 'sm', color: '#444444', wrap: true },
-                    { type: 'text', text: '⑦ 外注化マニュアル前編', size: 'sm', color: '#444444', wrap: true },
-                    { type: 'text', text: '⑧ 外注化マニュアル後編', size: 'sm', color: '#444444', wrap: true },
-                    { type: 'text', text: '⑨ 外注募集テンプレート', size: 'sm', color: '#444444' },
-                    { type: 'text', text: '⑩ 外注先業務委託契約書テンプレ', size: 'sm', color: '#444444', wrap: true },
-                    { type: 'text', text: '⑪ コメントセールの手法と効果の解説', size: 'sm', color: '#444444', wrap: true },
-                    { type: 'text', text: '⑫ 売れるブランドリスト', size: 'sm', color: '#444444' },
-                    { type: 'text', text: '⑬ 売れるアカウント説明&プロフィール解説', size: 'sm', color: '#444444', wrap: true },
-                  ],
-                },
-                {
-                  type: 'box', layout: 'vertical', margin: 'md', spacing: 'xs',
-                  contents: [
-                    { type: 'text', text: '🎬 YouTubeを視聴の上キーワード入力でもらえる特典', weight: 'bold', size: 'sm', color: '#333333', wrap: true },
-                    { type: 'text', text: '⑭ 初月半額クーポン', size: 'sm', color: '#444444', margin: 'xs' },
-                    { type: 'text', text: '⑮ 無料試用期間1週間延長', size: 'sm', color: '#444444' },
-                  ],
-                },
-                { type: 'separator', margin: 'md' },
-                { type: 'text', text: 'リッチメニューの', size: 'xs', color: '#888888', wrap: true, margin: 'md' },
-                { type: 'text', text: '「限定特典GET」をタップ', size: 'xs', weight: 'bold', color: '#333333', wrap: true },
-                { type: 'text', text: 'すると、あなたの利用状況に応じて次の特典が届きます！', size: 'xs', color: '#888888', wrap: true, margin: 'md' },
-              ],
-            },
-          },
-        } as never);
-
-        // ⑤ アンケートボタン
-        welcomeMessages.push(surveyButton('【無料お試し期間が始まりました！】') as never);
-
-        try {
-          await lineClient.replyMessage(event.replyToken, welcomeMessages);
-        } catch (err) {
-          console.error('[follow] replyMessage welcome error:', err);
-        }
-
-      }
-    }
-    // タグ付与・リッチメニュー設定は friend_add Automation で管理
-
-    // イベントバス発火: friend_add（replyToken は Step 0 で使用済みの可能性あり）
-    await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name } }, lineAccessToken, lineAccountId, {
+    // イベントバス発火: friend_add（replyToken を渡してオートメーション内で使用）
+    await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name, isNewUser }, replyToken: event.replyToken }, lineAccessToken, lineAccountId, {
       lineAccessToken,
       gasDeployId: env?.GAS_DEPLOY_ID,
       stripeSecretKey: env?.STRIPE_SECRET_KEY,
@@ -419,15 +140,10 @@ async function handleEvent(
 
     await updateFriendFollowStatus(db, userId, false);
 
-    // ブロックタグ付与 + 無料試用期間中タグ削除
+    // タグ操作・通知は unfollow Automation で管理
     const unfollowedFriend = await getFriendByLineUserId(db, userId);
     if (unfollowedFriend) {
-      const [blockTag2, trialTag2] = await Promise.all([
-        db.prepare('SELECT id FROM tags WHERE name = ?').bind('ブロック').first<{ id: string }>(),
-        db.prepare('SELECT id FROM tags WHERE name = ?').bind('無料試用期間中').first<{ id: string }>(),
-      ]);
-      if (blockTag2) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(unfollowedFriend.id, blockTag2.id, jstNow()).run();
-      if (trialTag2) await db.prepare('DELETE FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(unfollowedFriend.id, trialTag2.id).run();
+      await fireEvent(db, 'unfollow', { friendId: unfollowedFriend.id, eventData: {} }, lineAccessToken, lineAccountId, { lineAccessToken });
     }
     return;
   }

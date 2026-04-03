@@ -12,6 +12,7 @@ export * from './calendar';
 export * from './reminders';
 export * from './scoring';
 export * from './templates';
+export * from './messages';
 export * from './chats';
 export * from './notifications';
 export * from './stripe';

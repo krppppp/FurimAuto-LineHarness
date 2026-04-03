@@ -25,6 +25,7 @@ export interface ScenarioStep {
   condition_type: string | null;
   condition_value: string | null;
   next_step_on_false: number | null;
+  template_id: string | null;
   created_at: string;
 }
 
@@ -199,8 +200,9 @@ export interface CreateScenarioStepInput {
   scenarioId: string;
   stepOrder: number;
   delayMinutes?: number;
-  messageType: MessageType;
-  messageContent: string;
+  messageType?: MessageType;
+  messageContent?: string;
+  templateId?: string | null;
   conditionType?: string | null;
   conditionValue?: string | null;
   nextStepOnFalse?: number | null;
@@ -215,16 +217,17 @@ export async function createScenarioStep(
 
   await db
     .prepare(
-      `INSERT INTO scenario_steps (id, scenario_id, step_order, delay_minutes, message_type, message_content, condition_type, condition_value, next_step_on_false, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO scenario_steps (id, scenario_id, step_order, delay_minutes, message_type, message_content, template_id, condition_type, condition_value, next_step_on_false, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
       input.scenarioId,
       input.stepOrder,
       input.delayMinutes ?? 0,
-      input.messageType,
-      input.messageContent,
+      input.messageType ?? 'text',
+      input.messageContent ?? '',
+      input.templateId ?? null,
       input.conditionType ?? null,
       input.conditionValue ?? null,
       input.nextStepOnFalse ?? null,
@@ -239,7 +242,7 @@ export async function createScenarioStep(
 }
 
 export type UpdateScenarioStepInput = Partial<
-  Pick<ScenarioStep, 'step_order' | 'delay_minutes' | 'message_type' | 'message_content' | 'condition_type' | 'condition_value' | 'next_step_on_false'>
+  Pick<ScenarioStep, 'step_order' | 'delay_minutes' | 'message_type' | 'message_content' | 'template_id' | 'condition_type' | 'condition_value' | 'next_step_on_false'>
 >;
 
 export async function updateScenarioStep(
@@ -265,6 +268,10 @@ export async function updateScenarioStep(
   if (updates.message_content !== undefined) {
     fields.push('message_content = ?');
     values.push(updates.message_content);
+  }
+  if (updates.template_id !== undefined) {
+    fields.push('template_id = ?');
+    values.push(updates.template_id);
   }
   if (updates.condition_type !== undefined) {
     fields.push('condition_type = ?');

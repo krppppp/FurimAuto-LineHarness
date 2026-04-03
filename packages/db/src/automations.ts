@@ -111,11 +111,11 @@ export async function createAutomationLog(
 
 // --- オートメーションアクション ---
 
-export async function getAutomationActions(db: D1Database, automationId: string): Promise<AutomationActionRow[]> {
-  const result = await db
-    .prepare(`SELECT * FROM automation_actions WHERE automation_id = ? AND is_active = 1 ORDER BY step_order ASC`)
-    .bind(automationId)
-    .all<AutomationActionRow>();
+export async function getAutomationActions(db: D1Database, automationId: string, activeOnly = true): Promise<AutomationActionRow[]> {
+  const sql = activeOnly
+    ? `SELECT * FROM automation_actions WHERE automation_id = ? AND is_active = 1 ORDER BY step_order ASC`
+    : `SELECT * FROM automation_actions WHERE automation_id = ? ORDER BY step_order ASC`;
+  const result = await db.prepare(sql).bind(automationId).all<AutomationActionRow>();
   return result.results;
 }
 

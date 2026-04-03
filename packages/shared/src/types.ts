@@ -650,6 +650,20 @@ export interface AutomationLog {
   createdAt: string;
 }
 
+export interface AutomationActionItem {
+  id: string;
+  automationId: string;
+  stepOrder: number;
+  actionType: string;
+  params: Record<string, unknown>;
+  conditionJson: Record<string, unknown> | null;
+  onError: "continue" | "abort";
+  isActive: boolean;
+  label: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // -----------------------------------------------------------------------------
 // スタッフ (StaffMember)
 // -----------------------------------------------------------------------------

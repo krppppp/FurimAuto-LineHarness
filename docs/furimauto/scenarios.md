@@ -4,21 +4,21 @@ FurimAutoに特化したステップ配信シナリオの設計・登録・本�
 
 ---
 
-## シナリオ体系
+## シナリオ体系（2026-04-02 統合済み）
 
-**12シナリオ構成（通常×6 + 紹介×6）**
+**6シナリオ構成（通常/紹介を統合）**
 
-| シナリオ名 | trigger_type | 対象ユーザー |
-|-----------|-------------|------------|
-| 通常 セグメント1: アンケート未回答 | `friend_add` | 友達登録したが未アンケート |
-| 通常 セグメント2: アンケート回答済み | `manual` | アンケート済み・キーコード未発行 |
-| 通常 セグメント3: キーコード発行済み | `manual` | キーコード発行済み・拡張未インストール |
-| 通常 セグメント4: 拡張インストール済み | `manual` | インストール済み・Free30未取得 |
-| 通常 セグメント5: Free30取得済み | `manual` | Free30取得済み・解説動画未視聴・試用期間内 |
-| 通常 セグメント6: アクティブ上級ユーザー | `manual` | Free30取得済み・解説動画視聴済み（Youtubeクーポンあり）・試用期間内 |
-| 紹介 セグメント1〜6 | `manual` | 友達紹介経由（14日試用）の各セグメント |
+通常・紹介ともに同じシナリオを使用。1日=1ステップ、毎朝9時配信。
+試用期間の差（7日/14日）はGAS側のセグメント切り替えタイミングで吸収する。
 
-通常は7日間試用、紹介は14日間試用。紹介版は日程が非連続（day 0,1,4,6,8,10,12,13など）。
+| シナリオ名 | trigger_type | ステップ数 |
+|-----------|-------------|-----------|
+| FurimAuto セグメント1: アンケート未回答 | `friend_add` | 7（Day0〜6） |
+| FurimAuto セグメント2: アンケート回答済み | `manual` | 7（Day0〜6） |
+| FurimAuto セグメント3: キーコード発行済み | `manual` | 8（Day0〜7） |
+| FurimAuto セグメント4: 拡張インストール済み | `manual` | 8（Day0〜7） |
+| FurimAuto セグメント5: Free30取得済み | `manual` | 7（Day0〜6） |
+| FurimAuto セグメント6: 試用期間終了 | `manual` | 1（Day0のみ） |
 
 ---
 
@@ -119,20 +119,30 @@ npx wrangler d1 execute line-crm --remote --file=../../packages/db/migrations/01
 npx wrangler d1 execute line-crm --remote --file=../../packages/db/migrations/011_staff_members.sql
 npx wrangler d1 execute line-crm --remote --file=../../packages/db/migrations/012_alt_text.sql
 npx wrangler d1 execute line-crm --remote --file=../../packages/db/migrations/013_video_message_type.sql
+npx wrangler d1 execute line-crm --remote --file=../../packages/db/migrations/014_automation_actions.sql
+npx wrangler d1 execute line-crm --remote --file=../../packages/db/migrations/015_messages_and_template_messages.sql
+npx wrangler d1 execute line-crm --remote --file=../../packages/db/migrations/016_template_categories.sql
+npx wrangler d1 execute line-crm --remote --file=../../packages/db/migrations/017_video_in_templates.sql
 ```
 
 001_round2, 002_round3, 009_delivery_type は schema.sql と重複するためスキップでOK（重複カラムエラーが出る）。
 
-### 2. シナリオ登録（remote D1 に直接SQL）
+### 2. シナリオ + テンプレート登録（remote D1 に直接SQL）
 
 ```bash
 cd LineHarness  # リポジトリルート
-node scripts/generate-scenarios-sql.mjs > /tmp/furimauto-scenarios.sql
+node scripts/generate-furimauto-templates-sql.mjs > /tmp/furimauto-templates.sql
 cd apps/worker
-npx wrangler d1 execute line-crm --remote --file=/tmp/furimauto-scenarios.sql
+npx wrangler d1 execute line-crm --remote --file=/tmp/furimauto-templates.sql
 ```
 
-注意: `generate-scenarios-sql.mjs` を実行するたびにUUIDが変わる。既存データがある場合は既にある旧シナリオを削除する DELETE 文が先頭に入っている。
+このスクリプトは以下を一括処理する:
+- 既存 FurimAuto シナリオ・ステップ・テンプレートを名前パターンで全削除
+- 6シナリオ（通常/紹介統合）の再作成
+- 各ステップ（1日=1ステップ）に対応する templates / messages / template_messages の作成（categories=["scenario"]）
+- kaisetsu セクション7の3テンプレート作成（cronドリブン・シナリオには非紐付け）
+
+注意: 実行するたびにUUIDが変わる。`--remote` のみ使用（`--local` は使わない）。
 
 ### 3. Worker デプロイ
 

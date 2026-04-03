@@ -6,6 +6,7 @@ import { api, type ApiBroadcast } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import BroadcastForm from '@/components/broadcasts/broadcast-form'
+import CreateTemplateModal from '@/components/templates/create-template-modal'
 import CcPromptButton from '@/components/cc-prompt-button'
 
 const ccPrompts = [
@@ -55,6 +56,7 @@ export default function BroadcastsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [showCreate, setShowCreate] = useState(false)
+  const [showCreateTemplate, setShowCreateTemplate] = useState(false)
   const [sendingId, setSendingId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -110,13 +112,21 @@ export default function BroadcastsPage() {
       <Header
         title="一斉配信"
         action={
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
-            style={{ backgroundColor: '#06C755' }}
-          >
-            + 新規配信
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowCreateTemplate(true)}
+              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              + テンプレート作成
+            </button>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
+              style={{ backgroundColor: '#06C755' }}
+            >
+              + 新規配信
+            </button>
+          </div>
         }
       />
 
@@ -268,6 +278,14 @@ export default function BroadcastsPage() {
           </table>
           </div>
         </div>
+      )}
+
+      {showCreateTemplate && (
+        <CreateTemplateModal
+          defaultCategories={['broadcast']}
+          onCreated={() => setShowCreateTemplate(false)}
+          onCancel={() => setShowCreateTemplate(false)}
+        />
       )}
 
       <CcPromptButton prompts={ccPrompts} />

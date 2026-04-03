@@ -6,7 +6,12 @@ import {
   updateAutomation,
   deleteAutomation,
   getAutomationLogs,
+  getAutomationActions,
+  createAutomationAction,
+  updateAutomationAction,
+  deleteAutomationAction,
 } from '@line-crm/db';
+import type { AutomationActionRow } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 const automations = new Hono<Env>();
@@ -153,6 +158,113 @@ automations.delete('/api/automations/:id', async (c) => {
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/automations/:id error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// ========== オートメーションアクションCRUD ==========
+
+function mapAction(r: AutomationActionRow) {
+  return {
+    id: r.id,
+    automationId: r.automation_id,
+    stepOrder: r.step_order,
+    actionType: r.action_type,
+    params: JSON.parse(r.params) as Record<string, unknown>,
+    conditionJson: r.condition_json ? JSON.parse(r.condition_json) as Record<string, unknown> : null,
+    onError: r.on_error,
+    isActive: Boolean(r.is_active),
+    label: r.label,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+automations.get('/api/automations/:id/actions', async (c) => {
+  try {
+    const rows = await getAutomationActions(c.env.DB, c.req.param('id'), false);
+    return c.json({ success: true, data: rows.map(mapAction) });
+  } catch (err) {
+    console.error('GET /api/automations/:id/actions error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+automations.post('/api/automations/:id/actions', async (c) => {
+  try {
+    const automationId = c.req.param('id');
+    const body = await c.req.json<{
+      actionType: string;
+      params?: Record<string, unknown>;
+      conditionJson?: Record<string, unknown> | null;
+      onError?: 'continue' | 'abort';
+      label?: string;
+      stepOrder?: number;
+    }>();
+    if (!body.actionType) {
+      return c.json({ success: false, error: 'actionType is required' }, 400);
+    }
+    // Append at end by default
+    let stepOrder = body.stepOrder;
+    if (stepOrder === undefined) {
+      const existing = await getAutomationActions(c.env.DB, automationId);
+      stepOrder = existing.length;
+    }
+    const row = await createAutomationAction(c.env.DB, {
+      automationId,
+      stepOrder,
+      actionType: body.actionType,
+      params: body.params ?? {},
+      conditionJson: body.conditionJson ?? null,
+      onError: body.onError ?? 'continue',
+      label: body.label,
+    });
+    return c.json({ success: true, data: mapAction(row) }, 201);
+  } catch (err) {
+    console.error('POST /api/automations/:id/actions error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+automations.put('/api/automations/:id/actions/:actionId', async (c) => {
+  try {
+    const actionId = c.req.param('actionId');
+    const body = await c.req.json<{
+      actionType?: string;
+      params?: Record<string, unknown>;
+      conditionJson?: Record<string, unknown> | null;
+      onError?: 'continue' | 'abort';
+      label?: string;
+      stepOrder?: number;
+      isActive?: boolean;
+    }>();
+    await updateAutomationAction(c.env.DB, actionId, {
+      actionType: body.actionType,
+      params: body.params,
+      conditionJson: body.conditionJson !== undefined ? body.conditionJson : undefined,
+      onError: body.onError,
+      label: body.label,
+      stepOrder: body.stepOrder,
+      isActive: body.isActive,
+    });
+    const updated = await c.env.DB
+      .prepare('SELECT * FROM automation_actions WHERE id = ?')
+      .bind(actionId)
+      .first<AutomationActionRow>();
+    if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
+    return c.json({ success: true, data: mapAction(updated) });
+  } catch (err) {
+    console.error('PUT /api/automations/:id/actions/:actionId error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+automations.delete('/api/automations/:id/actions/:actionId', async (c) => {
+  try {
+    await deleteAutomationAction(c.env.DB, c.req.param('actionId'));
+    return c.json({ success: true, data: null });
+  } catch (err) {
+    console.error('DELETE /api/automations/:id/actions/:actionId error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

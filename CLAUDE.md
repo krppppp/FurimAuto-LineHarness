@@ -33,10 +33,21 @@ docs/
 ## 重要な落とし穴
 
 ### デプロイ
-```bash
-# ルートから（これだけ使う）
-pnpm deploy
 
+**コードを変更したら必ず該当レイヤーをデプロイまで完結させる。**
+
+```bash
+# バックエンド（apps/worker）を変更した場合
+cd apps/worker && npm run deploy
+
+# フロントエンド（apps/web）を変更した場合
+cd apps/web && npm run build
+wrangler pages deploy out --project-name line-harness-admin --commit-message "..." --commit-dirty=true
+
+# 両方変更した場合は両方実行する
+```
+
+```bash
 # NG: wrangler.toml 経由になり古いコードが使われる
 npx wrangler deploy
 ```
@@ -53,14 +64,18 @@ URLを直接入れるとパースエラー。必ずJSON文字列で:
 {"originalContentUrl": "https://...", "previewImageUrl": "https://..."}
 ```
 
+### 動作確認環境
+
+**ローカル環境は使わない。** 全ての動作確認は Dev 環境（リモート）で行う。
+
+- フロントエンド: https://furim-dev.line-harness-admin-7je.pages.dev/
+- Worker: https://line-harness.furimuato.workers.dev
+- D1: `--remote` フラグ必須
+
+`wrangler d1 execute` は必ず `--remote` を付ける。`--local` は絶対に使わない。
+
 ### D1マイグレーション
 `packages/db/migrations/` を全て順番に適用する。`--remote` フラグを忘れずに。
-
-### ローカルWorker起動
-```bash
-# apps/worker/ で実行（pnpm --filter worker dev はフロントエンド用）
-npx wrangler dev --remote
-```
 
 ---
 

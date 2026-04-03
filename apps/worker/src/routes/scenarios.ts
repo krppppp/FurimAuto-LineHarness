@@ -49,6 +49,7 @@ function serializeStep(row: DbScenarioStep) {
     conditionType: row.condition_type ?? null,
     conditionValue: row.condition_value ?? null,
     nextStepOnFalse: row.next_step_on_false ?? null,
+    templateId: row.template_id ?? null,
     createdAt: row.created_at,
   };
 }
@@ -216,18 +217,16 @@ scenarios.post('/api/scenarios/:id/steps', async (c) => {
     const body = await c.req.json<{
       stepOrder: number;
       delayMinutes?: number;
-      messageType: MessageType;
-      messageContent: string;
+      messageType?: MessageType;
+      messageContent?: string;
+      templateId?: string | null;
       conditionType?: string | null;
       conditionValue?: string | null;
       nextStepOnFalse?: number | null;
     }>();
 
-    if (body.stepOrder === undefined || !body.messageType || !body.messageContent) {
-      return c.json(
-        { success: false, error: 'stepOrder, messageType, and messageContent are required' },
-        400,
-      );
+    if (body.stepOrder === undefined) {
+      return c.json({ success: false, error: 'stepOrder is required' }, 400);
     }
 
     const step = await createScenarioStep(c.env.DB, {
@@ -236,6 +235,7 @@ scenarios.post('/api/scenarios/:id/steps', async (c) => {
       delayMinutes: body.delayMinutes ?? 0,
       messageType: body.messageType,
       messageContent: body.messageContent,
+      templateId: body.templateId ?? null,
       conditionType: body.conditionType ?? null,
       conditionValue: body.conditionValue ?? null,
       nextStepOnFalse: body.nextStepOnFalse ?? null,
@@ -257,6 +257,7 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
       delayMinutes?: number;
       messageType?: MessageType;
       messageContent?: string;
+      templateId?: string | null;
       conditionType?: string | null;
       conditionValue?: string | null;
       nextStepOnFalse?: number | null;
@@ -267,6 +268,7 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
       delay_minutes: body.delayMinutes,
       message_type: body.messageType,
       message_content: body.messageContent,
+      template_id: body.templateId,
       condition_type: body.conditionType,
       condition_value: body.conditionValue,
       next_step_on_false: body.nextStepOnFalse,

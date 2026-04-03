@@ -21,6 +21,8 @@ import {
   addTagToFriend,
   removeTagFromFriend,
   enrollFriendInScenario,
+  completeFriendActiveScenarios,
+  resolveTemplateMessages,
   jstNow,
   getFriendScore,
 } from '@line-crm/db';
@@ -247,7 +249,54 @@ function matchConditions(
     if (!text || !text.includes(conditions.keyword as string)) return false;
   }
 
+  // isNewUser チェック（friend_add イベント用）
+  if (conditions.isNewUser !== undefined && payload.eventData) {
+    if (payload.eventData.isNewUser !== conditions.isNewUser) return false;
+  }
+
   return true;
+}
+
+/** GAS引数のテンプレート変数展開 */
+async function resolveGasArgs(
+  db: D1Database,
+  args: Record<string, unknown>,
+  friendId: string | undefined,
+  payload: EventPayload,
+): Promise<Record<string, unknown>> {
+  const friend = friendId
+    ? await db
+        .prepare('SELECT id, line_user_id, display_name, metadata FROM friends WHERE id = ?')
+        .bind(friendId)
+        .first<{ id: string; line_user_id: string; display_name: string | null; metadata: string }>()
+    : null;
+  const nowJst = new Date(Date.now() + 9 * 60 * 60_000);
+  const trialEndJst = new Date(nowJst.getTime() + 7 * 24 * 60 * 60_000);
+  const fmtJst = (d: Date) => d.toISOString().replace('T', ' ').slice(0, 19);
+  const resolved: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (typeof v === 'string') {
+      const meta = friend ? (JSON.parse(friend.metadata || '{}') as Record<string, string>) : {};
+      let s = v;
+      if (friend) {
+        s = s
+          .replace('{{friend_id}}', friend.id)
+          .replace('{{line_user_id}}', friend.line_user_id)
+          .replace('{{display_name}}', friend.display_name ?? '')
+          .replace('{{stripe_customer_id}}', meta.stripeCustomerId ?? '')
+          .replace('{{now_jst}}', fmtJst(nowJst))
+          .replace('{{trial_end_jst}}', fmtJst(trialEndJst));
+      }
+      // {{eventData.KEY}} — payload.eventData から動的展開
+      s = s.replace(/\{\{eventData\.([^}]+)\}\}/g, (_m, key: string) =>
+        String(payload.eventData?.[key] ?? ''),
+      );
+      resolved[k] = s;
+    } else {
+      resolved[k] = v;
+    }
+  }
+  return resolved;
 }
 
 /** アクション実行 */
@@ -259,7 +308,8 @@ async function executeAction(
 ): Promise<void> {
   const lineAccessToken = env.lineAccessToken;
   const friendId = payload.friendId;
-  if (!friendId && action.type !== 'send_webhook') {
+  const noFriendActions = ['send_webhook', 'code_managed'];
+  if (!friendId && !noFriendActions.includes(action.type)) {
     throw new Error('friendId is required for this action');
   }
 
@@ -365,31 +415,97 @@ async function executeAction(
       break;
     }
 
-    case 'call_gas': {
+    case 'call_gas':
+    case 'call_gas_post': {
       const gasDeployId = env.gasDeployId;
       if (!gasDeployId) break;
-      const { gasPost, gasGet } = await import('../furim/gas-client.js');
+      const { gasPost } = await import('../furim/gas-client.js');
       const method = action.params.method as string;
       const args = (action.params.args ?? {}) as Record<string, unknown>;
-      // {{friend_id}}, {{line_user_id}} などのテンプレートを展開
-      const friend = friendId
-        ? await db.prepare('SELECT id, line_user_id, metadata FROM friends WHERE id = ?').bind(friendId).first<{ id: string; line_user_id: string; metadata: string }>()
-        : null;
-      const resolvedArgs: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(args)) {
-        if (typeof v === 'string' && friend) {
-          resolvedArgs[k] = v
-            .replace('{{friend_id}}', friend.id)
-            .replace('{{line_user_id}}', friend.line_user_id);
-        } else {
-          resolvedArgs[k] = v;
-        }
+      const resolvedArgs = await resolveGasArgs(db, args, friendId, payload);
+      await gasPost(gasDeployId, { method, ...resolvedArgs });
+      break;
+    }
+
+    case 'call_gas_get': {
+      const gasDeployId = env.gasDeployId;
+      if (!gasDeployId) break;
+      const { gasGet } = await import('../furim/gas-client.js');
+      const method = action.params.method as string;
+      const args = (action.params.args ?? {}) as Record<string, unknown>;
+      const setVariable = action.params.set_variable as string;
+      const responseField = action.params.response_field as string | undefined;
+      const operator = (action.params.operator as string | undefined) ?? 'truthy';
+      const compareValue = action.params.compare_value as string | undefined;
+      const resolvedArgs = await resolveGasArgs(db, args, friendId, payload);
+      const response = await gasGet(gasDeployId, { method, ...resolvedArgs }) as Record<string, unknown>;
+      const fieldValue = responseField ? response[responseField] : response;
+      let result: boolean;
+      switch (operator) {
+        case 'not_empty': result = !!fieldValue && fieldValue !== ''; break;
+        case 'empty':     result = !fieldValue || fieldValue === ''; break;
+        case 'equals':    result = String(fieldValue) === compareValue; break;
+        case 'not_equals':result = String(fieldValue) !== compareValue; break;
+        case 'falsy':     result = !fieldValue; break;
+        default:          result = !!fieldValue; break;
       }
-      const httpMethod = (action.params.http_method as string | undefined)?.toUpperCase() ?? 'POST';
-      if (httpMethod === 'GET') {
-        await gasGet(gasDeployId, { method, ...resolvedArgs });
+      if (!payload.eventData) payload.eventData = {};
+      payload.eventData[setVariable] = result;
+      break;
+    }
+
+    case 'send_messages': {
+      if (!lineAccessToken || !friendId) break;
+      const friend = await db
+        .prepare('SELECT line_user_id FROM friends WHERE id = ?')
+        .bind(friendId)
+        .first<{ line_user_id: string }>();
+      if (!friend) break;
+      const lineClient = new LineClient(lineAccessToken);
+      const expandContent = (s: string) =>
+        s.replace(/\{\{eventData\.([^}]+)\}\}/g, (_m, key: string) => String(payload.eventData?.[key] ?? ''));
+
+      const buildLineMessages = (cfgs: Array<{ messageType: string; content: string; altText?: string | null }>): Message[] =>
+        cfgs.map((cfg) => {
+          const content = expandContent(cfg.content);
+          if (cfg.messageType === 'flex') {
+            const contents = JSON.parse(content) as unknown;
+            return { type: 'flex', altText: cfg.altText || extractFlexAltText(contents), contents } as Message;
+          }
+          if (cfg.messageType === 'image') {
+            const parsed = JSON.parse(content) as { originalContentUrl: string; previewImageUrl: string };
+            return { type: 'image', originalContentUrl: parsed.originalContentUrl, previewImageUrl: parsed.previewImageUrl } as Message;
+          }
+          if (cfg.messageType === 'video') {
+            const parsed = JSON.parse(content) as { originalContentUrl: string; previewImageUrl: string; trackingId?: string };
+            return { type: 'video', originalContentUrl: parsed.originalContentUrl, previewImageUrl: parsed.previewImageUrl, ...(parsed.trackingId ? { trackingId: parsed.trackingId } : {}) } as Message;
+          }
+          return { type: 'text', text: content } as Message;
+        });
+
+      let messages: Message[];
+      const templateId = action.params.template_id as string | undefined;
+      if (templateId) {
+        const msgRows = await resolveTemplateMessages(db, templateId);
+        messages = buildLineMessages(msgRows.map((m) => ({ messageType: m.message_type, content: m.content, altText: m.alt_text })));
       } else {
-        await gasPost(gasDeployId, { method, ...resolvedArgs });
+        const msgConfigs = action.params.messages as Array<{ messageType: string; content: string; altText?: string }>;
+        messages = buildLineMessages(msgConfigs);
+      }
+      if (payload.replyToken) {
+        try {
+          await lineClient.replyMessage(payload.replyToken, messages);
+          payload.replyToken = undefined;
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          if (errMsg.includes('400') || errMsg.includes('Invalid reply token')) {
+            await lineClient.pushMessage(friend.line_user_id, messages);
+          } else {
+            throw err;
+          }
+        }
+      } else {
+        await lineClient.pushMessage(friend.line_user_id, messages);
       }
       break;
     }
@@ -425,6 +541,34 @@ async function executeAction(
       }
       break;
     }
+
+    case 'add_tag_by_name': {
+      if (!friendId) break;
+      const tagName = p.tagName;
+      if (!tagName) break;
+      const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+      if (tag) await addTagToFriend(db, friendId, tag.id);
+      break;
+    }
+
+    case 'remove_tag_by_name': {
+      if (!friendId) break;
+      const tagName = p.tagName;
+      if (!tagName) break;
+      const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+      if (tag) await removeTagFromFriend(db, friendId, tag.id);
+      break;
+    }
+
+    case 'complete_active_scenarios': {
+      if (!friendId) break;
+      await completeFriendActiveScenarios(db, friendId);
+      break;
+    }
+
+    case 'code_managed':
+      // コード管理アクション: 実行はwebhook.tsのコードに委ねる（GUI表示専用）
+      break;
 
     default:
       console.warn(`未知のアクションタイプ: ${action.type}`);
