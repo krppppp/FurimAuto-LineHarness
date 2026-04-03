@@ -12,6 +12,7 @@ import type {
   Template,
   Automation,
   AutomationLog,
+  AutomationActionItem,
   Chat,
   Reminder,
   ReminderStep,
@@ -26,6 +27,37 @@ import type {
 } from '@line-crm/shared'
 
 import type { Broadcast } from '@line-crm/shared'
+
+export interface ApiMessage {
+  id: string
+  messageType: 'text' | 'image' | 'flex' | 'video'
+  content: string
+  altText: string | null
+  tags: string[]
+  label: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ApiTemplate {
+  id: string
+  name: string
+  category: string
+  categories: string[]
+  messageType: string
+  messageContent: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ApiTemplateMessage {
+  id: string
+  templateId: string
+  messageId: string
+  stepOrder: number
+  createdAt: string
+  message: Omit<ApiMessage, 'createdAt' | 'updatedAt'>
+}
 
 /** Broadcast type from API (now camelCase after worker serialization) */
 export type ApiBroadcast = Broadcast
@@ -49,6 +81,18 @@ function getApiKey(): string {
   return ''
 }
 
+export interface EntryRouteItem {
+  id: string
+  refCode: string
+  name: string
+  tagId: string | null
+  scenarioId: string | null
+  redirectUrl: string | null
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
+}
+
 export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
@@ -66,6 +110,7 @@ export type FriendListParams = {
   offset?: string
   limit?: string
   tagId?: string
+  tagIds?: string
   accountId?: string
   search?: string
 }
@@ -79,6 +124,7 @@ export const api = {
       if (params?.offset) query.offset = params.offset
       if (params?.limit) query.limit = params.limit
       if (params?.tagId) query.tagId = params.tagId
+      if (params?.tagIds) query.tagIds = params.tagIds
       if (params?.accountId) query.lineAccountId = params.accountId
       if (params?.search) query.search = params.search
       return fetchApi<ApiResponse<PaginatedResponse<FriendWithTags>>>(
@@ -131,7 +177,7 @@ export const api = {
       }),
     delete: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/scenarios/${id}`, { method: 'DELETE' }),
-    addStep: (id: string, data: Omit<ScenarioStep, 'id' | 'scenarioId' | 'createdAt'>) =>
+    addStep: (id: string, data: { stepOrder: number; delayMinutes?: number; templateId?: string | null; messageType?: string; messageContent?: string }) =>
       fetchApi<ApiResponse<ScenarioStep>>(`/api/scenarios/${id}/steps`, {
         method: 'POST',
         body: JSON.stringify(data),
@@ -139,7 +185,7 @@ export const api = {
     updateStep: (
       id: string,
       stepId: string,
-      data: Partial<Omit<ScenarioStep, 'id' | 'scenarioId' | 'createdAt'>>
+      data: { stepOrder?: number; delayMinutes?: number; templateId?: string | null; messageType?: string; messageContent?: string }
     ) =>
       fetchApi<ApiResponse<ScenarioStep>>(`/api/scenarios/${id}/steps/${stepId}`, {
         method: 'PUT',
@@ -281,25 +327,37 @@ export const api = {
   },
   templates: {
     list: (category?: string) =>
-      fetchApi<ApiResponse<{ id: string; name: string; category: string; messageType: string; messageContent: string; createdAt: string; updatedAt: string }[]>>(
+      fetchApi<ApiResponse<ApiTemplate[]>>(
         '/api/templates' + (category ? '?' + new URLSearchParams({ category }) : ''),
       ),
     get: (id: string) =>
-      fetchApi<ApiResponse<{ id: string; name: string; category: string; messageType: string; messageContent: string; createdAt: string; updatedAt: string }>>(
-        `/api/templates/${id}`,
-      ),
-    create: (data: { name: string; category: string; messageType: string; messageContent: string }) =>
-      fetchApi<ApiResponse<{ id: string; name: string; category: string; messageType: string; messageContent: string; createdAt: string; updatedAt: string }>>(
-        '/api/templates',
-        { method: 'POST', body: JSON.stringify(data) },
-      ),
-    update: (id: string, data: Partial<{ name: string; category: string; messageType: string; messageContent: string }>) =>
-      fetchApi<ApiResponse<{ id: string; name: string; category: string; messageType: string; messageContent: string; createdAt: string; updatedAt: string }>>(
-        `/api/templates/${id}`,
-        { method: 'PUT', body: JSON.stringify(data) },
-      ),
+      fetchApi<ApiResponse<ApiTemplate>>(`/api/templates/${id}`),
+    create: (data: { name: string; categories?: string[] }) =>
+      fetchApi<ApiResponse<ApiTemplate>>('/api/templates', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Partial<{ name: string; categories: string[] }>) =>
+      fetchApi<ApiResponse<ApiTemplate>>(`/api/templates/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) =>
       fetchApi<ApiResponse<null>>(`/api/templates/${id}`, { method: 'DELETE' }),
+    getMessages: (id: string) =>
+      fetchApi<ApiResponse<ApiTemplateMessage[]>>(`/api/templates/${id}/messages`),
+    addMessage: (id: string, data: { messageId: string; stepOrder: number }) =>
+      fetchApi<ApiResponse<null>>(`/api/templates/${id}/messages`, { method: 'POST', body: JSON.stringify(data) }),
+    removeMessage: (id: string, messageId: string) =>
+      fetchApi<ApiResponse<null>>(`/api/templates/${id}/messages/${messageId}`, { method: 'DELETE' }),
+  },
+  messages: {
+    list: (params?: { type?: string; tag?: string }) => {
+      const query: Record<string, string> = {}
+      if (params?.type) query.type = params.type
+      if (params?.tag) query.tag = params.tag
+      return fetchApi<ApiResponse<ApiMessage[]>>('/api/messages?' + new URLSearchParams(query))
+    },
+    get: (id: string) => fetchApi<ApiResponse<ApiMessage>>(`/api/messages/${id}`),
+    create: (data: { messageType: string; content: string; altText?: string | null; tags?: string[]; label?: string | null }) =>
+      fetchApi<ApiResponse<ApiMessage>>('/api/messages', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Partial<{ messageType: string; content: string; altText: string | null; tags: string[]; label: string | null }>) =>
+      fetchApi<ApiResponse<ApiMessage>>(`/api/messages/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: string) => fetchApi<ApiResponse<null>>(`/api/messages/${id}`, { method: 'DELETE' }),
   },
   automations: {
     list: (params?: { accountId?: string }) => {
@@ -331,6 +389,36 @@ export const api = {
       fetchApi<ApiResponse<AutomationLog[]>>(
         `/api/automations/${id}/logs` + (limit ? `?limit=${limit}` : ''),
       ),
+    actions: {
+      list: (automationId: string) =>
+        fetchApi<ApiResponse<AutomationActionItem[]>>(`/api/automations/${automationId}/actions`),
+      create: (automationId: string, data: {
+        actionType: string;
+        params?: Record<string, unknown>;
+        conditionJson?: Record<string, unknown> | null;
+        onError?: 'continue' | 'abort';
+        label?: string;
+      }) =>
+        fetchApi<ApiResponse<AutomationActionItem>>(`/api/automations/${automationId}/actions`, {
+          method: 'POST',
+          body: JSON.stringify(data),
+        }),
+      update: (automationId: string, actionId: string, data: Partial<{
+        actionType: string;
+        params: Record<string, unknown>;
+        conditionJson: Record<string, unknown> | null;
+        onError: 'continue' | 'abort';
+        label: string;
+        stepOrder: number;
+        isActive: boolean;
+      }>) =>
+        fetchApi<ApiResponse<AutomationActionItem>>(`/api/automations/${automationId}/actions/${actionId}`, {
+          method: 'PUT',
+          body: JSON.stringify(data),
+        }),
+      delete: (automationId: string, actionId: string) =>
+        fetchApi<ApiResponse<null>>(`/api/automations/${automationId}/actions/${actionId}`, { method: 'DELETE' }),
+    },
   },
   chats: {
     list: (params?: { status?: string; operatorId?: string; accountId?: string }) => {
@@ -509,5 +597,23 @@ export const api = {
       fetchApi<ApiResponse<null>>(`/api/staff/${id}`, { method: 'DELETE' }),
     regenerateKey: (id: string) =>
       fetchApi<ApiResponse<{ apiKey: string }>>(`/api/staff/${id}/regenerate-key`, { method: 'POST' }),
+  },
+  entryRoutes: {
+    list: () =>
+      fetchApi<ApiResponse<EntryRouteItem[]>>('/api/entry-routes'),
+    get: (id: string) =>
+      fetchApi<ApiResponse<EntryRouteItem & { trackingCount: number }>>(`/api/entry-routes/${id}`),
+    create: (data: { refCode: string; name: string; tagId?: string | null; scenarioId?: string | null; redirectUrl?: string | null; isActive?: boolean }) =>
+      fetchApi<ApiResponse<EntryRouteItem>>('/api/entry-routes', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: { refCode?: string; name?: string; tagId?: string | null; scenarioId?: string | null; redirectUrl?: string | null; isActive?: boolean }) =>
+      fetchApi<ApiResponse<EntryRouteItem>>(`/api/entry-routes/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    delete: (id: string) =>
+      fetchApi<ApiResponse<null>>(`/api/entry-routes/${id}`, { method: 'DELETE' }),
   },
 }

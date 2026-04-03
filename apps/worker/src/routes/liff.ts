@@ -62,26 +62,7 @@ liffRoutes.get('/auth/line', async (c) => {
   // It must NOT appear in LIFF URLs or QR codes that escape to external domains.
   const externalRef = ref.startsWith('xh:') ? '' : ref;
 
-  // Build LIFF URL with ref + ad params (for mobile → LINE app)
-  // Extract LIFF ID from URL and pass as query param so the app can init correctly
-  const liffIdMatch = liffUrl.match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
-  const liffParams = new URLSearchParams();
-  if (liffIdMatch) liffParams.set('liffId', liffIdMatch[1]);
-  if (externalRef) liffParams.set('ref', externalRef);
-  if (redirect) liffParams.set('redirect', redirect);
-  if (gclid) liffParams.set('gclid', gclid);
-  if (fbclid) liffParams.set('fbclid', fbclid);
-  if (twclid) liffParams.set('twclid', twclid);
-  if (ttclid) liffParams.set('ttclid', ttclid);
-  if (utmSource) liffParams.set('utm_source', utmSource);
-  const liffTarget = liffParams.toString()
-    ? `${liffUrl}?${liffParams.toString()}`
-    : liffUrl;
-
-  // Build OAuth URL (for desktop fallback)
-  // Pack all tracking params into state so they survive the OAuth redirect.
-  // The full ref (including xh: tokens) is stored in state — it is opaque to access.line.me
-  // and only decoded by this worker's /auth/callback handler.
+  // Build OAuth URL (LINE Login with bot_prompt=aggressive)
   const state = JSON.stringify({ ref, redirect, gclid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, account: accountParam, uid: uidParam });
   const encodedState = btoa(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
@@ -92,26 +73,37 @@ liffRoutes.get('/auth/line', async (c) => {
   loginUrl.searchParams.set('bot_prompt', 'aggressive');
   loginUrl.searchParams.set('state', encodedState);
 
-  // Build LIFF URL with params (opens LINE app directly on mobile + QR on PC)
-  // externalRef used — xh: tokens must not appear in QR codes or LIFF URLs
-  const qrParams = new URLSearchParams();
-  if (externalRef) qrParams.set('ref', externalRef);
-  if (uidParam) qrParams.set('uid', uidParam);
-  if (accountParam) qrParams.set('account', accountParam);
-  const qrUrl = qrParams.toString() ? `${liffUrl}?${qrParams.toString()}` : liffUrl;
-
-  // Mobile: redirect to LIFF URL (opens LINE app directly)
-  // Exception: cross-account links (account param) use OAuth directly
-  // because Account A's LIFF can't open from Account B's LINE chat
+  // Mobile: LIFF があれば LINE アプリを直接開く。なければ OAuth へ直接飛ばす
   const ua = (c.req.header('user-agent') || '').toLowerCase();
   const isMobile = /iphone|ipad|android|mobile/.test(ua);
   if (isMobile) {
-    if (accountParam) {
-      // Cross-account: use OAuth (LIFF won't work across accounts)
-      return c.redirect(loginUrl.toString());
+    if (liffUrl) {
+      const liffIdMatch = liffUrl.match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/);
+      const liffParams = new URLSearchParams();
+      if (liffIdMatch) liffParams.set('liffId', liffIdMatch[1]);
+      if (externalRef) liffParams.set('ref', externalRef);
+      if (redirect) liffParams.set('redirect', redirect);
+      if (gclid) liffParams.set('gclid', gclid);
+      if (fbclid) liffParams.set('fbclid', fbclid);
+      if (twclid) liffParams.set('twclid', twclid);
+      if (ttclid) liffParams.set('ttclid', ttclid);
+      if (utmSource) liffParams.set('utm_source', utmSource);
+      const liffTarget = liffParams.toString() ? `${liffUrl}?${liffParams.toString()}` : liffUrl;
+      if (!accountParam) return c.redirect(liffTarget);
     }
-    return c.redirect(qrUrl);
+    // LIFF 未設定 or クロスアカウント → OAuth へ直接
+    return c.redirect(loginUrl.toString());
   }
+
+  // PC: LIFF があれば QR コードページ、なければ OAuth URL の QR を表示
+  const qrTarget = (() => {
+    if (!liffUrl) return loginUrl.toString();
+    const qrParams = new URLSearchParams();
+    if (externalRef) qrParams.set('ref', externalRef);
+    if (uidParam) qrParams.set('uid', uidParam);
+    if (accountParam) qrParams.set('account', accountParam);
+    return qrParams.toString() ? `${liffUrl}?${qrParams.toString()}` : liffUrl;
+  })();
 
   // PC: show QR code page
   return c.html(`<!DOCTYPE html>
@@ -137,13 +129,113 @@ liffRoutes.get('/auth/line', async (c) => {
     <h1>全機能を使う（0円）</h1>
     <p class="sub">スマートフォンで QR コードを読み取ってください</p>
     <div class="qr">
-      <img src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(qrUrl)}" alt="QR Code">
+      <img src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(qrTarget)}" alt="QR Code">
     </div>
     <p class="hint">LINE アプリのカメラまたは<br>スマートフォンのカメラで読み取れます</p>
     <div class="badge">LINE Harness OSS</div>
   </div>
 </body>
 </html>`);
+});
+
+/**
+ * GET /liff — LIFF エンドポイント
+ * LINE アプリ内ブラウザで開かれる。LIFF SDK でプロフィール取得 → Worker に送信 → 完了画面
+ */
+liffRoutes.get('/liff', async (c) => {
+  const liffId = c.env.LIFF_URL?.match(/liff\.line\.me\/([0-9]+-[A-Za-z0-9]+)/)?.[1] ?? '';
+  return c.html(`<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FurimAuto</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Hiragino Sans', system-ui, sans-serif; background: #f9fafb; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 24px; }
+    .card { background: #fff; border-radius: 20px; padding: 40px 32px; text-align: center; max-width: 360px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
+    .icon { font-size: 48px; margin-bottom: 16px; }
+    h1 { font-size: 20px; font-weight: 700; color: #111; margin-bottom: 8px; }
+    p { font-size: 14px; color: #666; line-height: 1.6; }
+    .spinner { width: 40px; height: 40px; border: 3px solid #e5e7eb; border-top-color: #06C755; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="spinner"></div>
+    <p>読み込み中...</p>
+  </div>
+  <script>
+    const liffId = '${liffId}';
+    const params = new URLSearchParams(window.location.search);
+    const ref = params.get('ref') || '';
+    const workerUrl = '${new URL(c.req.url).origin}';
+
+    async function init() {
+      try {
+        await liff.init({ liffId });
+        if (!liff.isLoggedIn()) {
+          liff.login({ redirectUri: window.location.href });
+          return;
+        }
+        const profile = await liff.getProfile();
+        await fetch(workerUrl + '/api/liff/track', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lineUserId: profile.userId,
+            displayName: profile.displayName,
+            pictureUrl: profile.pictureUrl || null,
+            ref: ref,
+          }),
+        });
+        document.getElementById('card').innerHTML =
+          '<div class="icon">✅</div><h1>友だち追加完了！</h1><p>FurimAuto の LINE に登録されました。<br>LINEを閉じてください。</p>';
+      } catch (e) {
+        document.getElementById('card').innerHTML =
+          '<div class="icon">⚠️</div><h1>エラーが発生しました</h1><p>' + String(e) + '</p>';
+      }
+    }
+    init();
+  </script>
+</body>
+</html>`);
+});
+
+/**
+ * POST /api/liff/track — LIFF からの友だち登録・ref 記録
+ * 認証不要（LIFF 内から直接呼ばれる）
+ */
+liffRoutes.post('/api/liff/track', async (c) => {
+  try {
+    const { lineUserId, displayName, pictureUrl, ref } = await c.req.json<{
+      lineUserId: string;
+      displayName: string;
+      pictureUrl: string | null;
+      ref: string;
+    }>();
+
+    if (!lineUserId) return c.json({ success: false, error: 'lineUserId required' }, 400);
+
+    const { upsertFriend, getEntryRouteByRefCode, recordRefTracking, addTagToFriend, jstNow } = await import('@line-crm/db');
+    const db = c.env.DB;
+
+    const friend = await upsertFriend(db, { lineUserId, displayName, pictureUrl: pictureUrl ?? null, statusMessage: null });
+
+    if (ref) {
+      await db.prepare(`UPDATE friends SET ref_code = ? WHERE id = ? AND ref_code IS NULL`).bind(ref, friend.id).run();
+      const route = await getEntryRouteByRefCode(db, ref);
+      await recordRefTracking(db, { refCode: ref, friendId: friend.id, entryRouteId: route?.id ?? null });
+      if (route?.tag_id) await addTagToFriend(db, friend.id, route.tag_id);
+    }
+
+    return c.json({ success: true });
+  } catch (err) {
+    console.error('POST /api/liff/track error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
 });
 
 /**

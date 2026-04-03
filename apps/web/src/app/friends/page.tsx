@@ -38,7 +38,8 @@ export default function FriendsPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [hasNextPage, setHasNextPage] = useState(false)
-  const [selectedTagId, setSelectedTagId] = useState('')
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([])
+  const [showTagPanel, setShowTagPanel] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -61,9 +62,10 @@ export default function FriendsPage() {
         offset: String((page - 1) * limit),
         limit: String(limit),
       }
-      if (selectedTagId) params.tagId = selectedTagId
       if (selectedAccountId) params.accountId = selectedAccountId
       if (searchQuery.trim()) params.search = searchQuery.trim()
+
+      if (selectedTagIds.length > 0) params.tagIds = selectedTagIds.join(',')
 
       const res = await api.friends.list(params)
       if (res.success) {
@@ -78,7 +80,8 @@ export default function FriendsPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, pageSize, selectedTagId, selectedAccountId, searchQuery])
+  }, [page, pageSize, selectedTagIds, selectedAccountId, searchQuery])
+
 
   useEffect(() => {
     loadTags()
@@ -86,14 +89,16 @@ export default function FriendsPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [selectedTagId, selectedAccountId, searchQuery, pageSize])
+  }, [selectedTagIds, selectedAccountId, searchQuery, pageSize])
 
   useEffect(() => {
     loadFriends()
   }, [loadFriends])
 
-  const handleTagFilter = (tagId: string) => {
-    setSelectedTagId(tagId)
+  const toggleTag = (tagId: string) => {
+    setSelectedTagIds((prev) =>
+      prev.includes(tagId) ? prev.filter((id) => id !== tagId) : [...prev, tagId]
+    )
   }
 
   const effectivePageSize = pageSize || 9999
@@ -103,8 +108,8 @@ export default function FriendsPage() {
       <Header title="友だち管理" />
 
       {/* Filters */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 mb-4">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-2 mb-4">
+        <div className="flex flex-wrap items-center gap-2">
           <input
             type="text"
             placeholder="名前で検索..."
@@ -112,35 +117,60 @@ export default function FriendsPage() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
-        </div>
-        <div className="flex items-center gap-2">
-          <label className="text-sm text-gray-600 font-medium whitespace-nowrap">タグで絞り込み:</label>
-          <select
-            className="text-sm border border-gray-300 rounded-lg px-3 py-2 min-h-[44px] bg-white focus:outline-none focus:ring-2 focus:ring-green-500 flex-1 sm:flex-none"
-            value={selectedTagId}
-            onChange={(e) => handleTagFilter(e.target.value)}
+          <button
+            onClick={() => setShowTagPanel((v) => !v)}
+            className={`text-sm px-3 py-2 min-h-[44px] rounded-lg border transition-colors ${showTagPanel ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
           >
-            <option value="">すべて</option>
-            {allTags.map((tag) => (
-              <option key={tag.id} value={tag.id}>{tag.name}</option>
-            ))}
-          </select>
+            タグで絞り込み{selectedTagIds.length > 0 ? ` (${selectedTagIds.length})` : ''}
+          </button>
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-gray-600 font-medium whitespace-nowrap">表示件数:</label>
+            <select
+              className="text-sm border border-gray-300 rounded-lg px-3 py-2 min-h-[44px] bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+            >
+              {PAGE_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>{size === 0 ? 'ALL' : size}</option>
+              ))}
+            </select>
+          </div>
+          <span className="text-sm text-gray-500">
+            {loading ? '読み込み中...' : `${total.toLocaleString('ja-JP')} 件`}
+          </span>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="text-sm text-gray-600 font-medium whitespace-nowrap">表示件数:</label>
-          <select
-            className="text-sm border border-gray-300 rounded-lg px-3 py-2 min-h-[44px] bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
-            value={pageSize}
-            onChange={(e) => setPageSize(Number(e.target.value))}
-          >
-            {PAGE_SIZE_OPTIONS.map((size) => (
-              <option key={size} value={size}>{size === 0 ? 'ALL' : size}</option>
-            ))}
-          </select>
-        </div>
-        <span className="text-sm text-gray-500">
-          {loading ? '読み込み中...' : `${total.toLocaleString('ja-JP')} 件`}
-        </span>
+
+        {/* Tag panel */}
+        {showTagPanel && (
+          <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSelectedTagIds([])}
+                className="text-xs px-2 py-1 border border-gray-300 rounded bg-white hover:bg-gray-100"
+              >
+                選択を解除
+              </button>
+              {selectedTagIds.length > 0 && (
+                <span className="text-xs text-gray-500">{selectedTagIds.length}個選択中（AND検索）</span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {allTags.map((tag) => {
+                const selected = selectedTagIds.includes(tag.id)
+                return (
+                  <button
+                    key={tag.id}
+                    onClick={() => toggleTag(tag.id)}
+                    className={`text-xs px-3 py-1 rounded-full border transition-colors ${selected ? 'text-white border-transparent' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'}`}
+                    style={selected ? { backgroundColor: tag.color || '#4B5563' } : undefined}
+                  >
+                    {tag.name}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Error */}

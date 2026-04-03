@@ -50,6 +50,7 @@ friends.get('/api/friends', async (c) => {
     const limit = Number(c.req.query('limit') ?? '50');
     const offset = Number(c.req.query('offset') ?? '0');
     const tagId = c.req.query('tagId');
+    const tagIds = c.req.query('tagIds'); // カンマ区切りで複数タグ AND 検索
     const lineAccountId = c.req.query('lineAccountId');
     const search = c.req.query('search');
 
@@ -58,7 +59,14 @@ friends.get('/api/friends', async (c) => {
     // Build WHERE conditions
     const conditions: string[] = [];
     const binds: unknown[] = [];
-    if (tagId) {
+    if (tagIds) {
+      // 複数タグ AND: 全タグを持つ友だちのみ
+      const ids = tagIds.split(',').filter(Boolean);
+      for (const id of ids) {
+        conditions.push('EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = f.id AND ft.tag_id = ?)');
+        binds.push(id);
+      }
+    } else if (tagId) {
       conditions.push('EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = f.id AND ft.tag_id = ?)');
       binds.push(tagId);
     }

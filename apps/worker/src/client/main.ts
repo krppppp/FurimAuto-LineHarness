@@ -182,12 +182,19 @@ async function linkAndAddFlow() {
   try {
     const existingUuid = getSavedUuid();
 
-    // Get profile, ID token, and friendship status in parallel
-    const [profile, rawIdToken, friendship] = await Promise.all([
+    // Get profile and ID token
+    const [profile, rawIdToken] = await Promise.all([
       liff.getProfile(),
       Promise.resolve(liff.getIDToken()),
-      liff.getFriendship(),
     ]);
+
+    // getFriendship はボットリンク設定がないと失敗するためオプション扱い
+    let friendship = { friendFlag: false };
+    try {
+      friendship = await liff.getFriendship();
+    } catch {
+      // bot link 未設定の場合はスキップ（未追加扱いで friend-add ボタンを表示）
+    }
 
     // 1. UUID linking (always, regardless of friendship)
     const linkPromise = apiCall('/api/liff/link', {

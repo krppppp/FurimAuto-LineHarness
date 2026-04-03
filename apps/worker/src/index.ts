@@ -39,6 +39,8 @@ import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
 import { images } from './routes/images.js';
 import { furim } from './routes/furim.js';
+import { messagesRoute } from './routes/messages.js';
+import { entryRoutes } from './routes/entry-routes.js';
 
 export type Env = {
   Bindings: {
@@ -110,6 +112,8 @@ app.route('/', adPlatforms);
 app.route('/', staff);
 app.route('/', images);
 app.route('/', furim);
+app.route('/', messagesRoute);
+app.route('/', entryRoutes);
 
 // Short link: /r/:ref → landing page with LINE open button
 app.get('/r/:ref', (c) => {
