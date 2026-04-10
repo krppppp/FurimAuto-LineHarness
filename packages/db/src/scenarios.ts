@@ -15,6 +15,13 @@ export interface Scenario {
   updated_at: string;
 }
 
+export interface TriggerCondition {
+  type: 'delay_from_follow' | 'delay_from_previous' | 'on_tag_added';
+  minutes?: number;       // delay_from_follow / delay_from_previous 用
+  tag_id?: string;        // on_tag_added 用
+  delay_minutes?: number; // on_tag_added 後の追加ディレイ（分）
+}
+
 export interface ScenarioStep {
   id: string;
   scenario_id: string;
@@ -26,6 +33,7 @@ export interface ScenarioStep {
   condition_value: string | null;
   next_step_on_false: number | null;
   template_id: string | null;
+  trigger_condition: string | null;
   created_at: string;
 }
 
@@ -69,7 +77,7 @@ export async function getScenarios(db: D1Database): Promise<ScenarioWithStepCoun
        FROM scenarios s
        LEFT JOIN scenario_steps ss ON s.id = ss.scenario_id
        GROUP BY s.id
-       ORDER BY s.created_at DESC`,
+       ORDER BY s.name ASC`,
     )
     .all<ScenarioWithStepCount>();
   return result.results;
@@ -321,6 +329,16 @@ export async function getScenarioSteps(
 // Friend Scenario Enrollments
 // ============================================================
 
+/** JST delivery window enforcement (9:00-21:00). Date is already in JST epoch (+9h). */
+function enforceEnrollDeliveryWindow(date: Date): Date {
+  const hours = date.getUTCHours();
+  if (hours >= 9 && hours < 21) return date;
+  const result = new Date(date);
+  if (hours >= 21) result.setUTCDate(result.getUTCDate() + 1);
+  result.setUTCHours(9, 0, 0, 0);
+  return result;
+}
+
 export async function enrollFriendInScenario(
   db: D1Database,
   friendId: string,
@@ -328,17 +346,17 @@ export async function enrollFriendInScenario(
 ): Promise<FriendScenario> {
   const id = crypto.randomUUID();
   const now = jstNow();
+  const nowMs = Date.now();
 
-  // Get the first step to calculate next_delivery_at
-  const firstStep = await db
-    .prepare(
-      `SELECT * FROM scenario_steps WHERE scenario_id = ? ORDER BY step_order ASC LIMIT 1`,
-    )
+  // Get all steps ordered by step_order
+  const stepsResult = await db
+    .prepare(`SELECT * FROM scenario_steps WHERE scenario_id = ? ORDER BY step_order ASC`)
     .bind(scenarioId)
-    .first<{ step_order: number; delay_minutes: number }>();
+    .all<ScenarioStep>();
+  const steps = stepsResult.results;
 
-  // A scenario with no steps is immediately completed — no stuck active enrollment.
-  if (!firstStep) {
+  // No steps → immediately completed
+  if (steps.length === 0) {
     await db
       .prepare(
         `INSERT INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, updated_at)
@@ -346,21 +364,73 @@ export async function enrollFriendInScenario(
       )
       .bind(id, friendId, scenarioId, now, now)
       .run();
-
-    return (await db
-      .prepare(`SELECT * FROM friend_scenarios WHERE id = ?`)
-      .bind(id)
-      .first<FriendScenario>())!;
+    return (await db.prepare(`SELECT * FROM friend_scenarios WHERE id = ?`).bind(id).first<FriendScenario>())!;
   }
 
-  const rawDate = new Date(Date.now() + 9 * 60 * 60_000 + firstStep.delay_minutes * 60_000);
-  // Enforce 9:00-21:00 JST delivery window
-  const hours = rawDate.getUTCHours();
-  if (hours < 9 || hours >= 21) {
-    if (hours >= 21) rawDate.setUTCDate(rawDate.getUTCDate() + 1);
-    rawDate.setUTCHours(9, 0, 0, 0);
+  // Determine trigger type from the first step
+  const firstStepTrigger = parseTriggerCondition(steps[0]);
+
+  if (firstStepTrigger.type === 'delay_from_follow') {
+    // Get friend's follow date
+    const friend = await db.prepare(`SELECT created_at FROM friends WHERE id = ?`).bind(friendId).first<{ created_at: string }>();
+    const followMs = friend ? new Date(friend.created_at).getTime() : nowMs;
+    const elapsedMinutes = (nowMs - followMs) / 60_000;
+
+    // Find the first step not yet due (follow_date + step.minutes > now)
+    // Steps whose due time has already passed are considered "skipped"
+    let startStepIndex = steps.findIndex((s) => {
+      const tc = parseTriggerCondition(s);
+      return tc.type === 'delay_from_follow' && (tc.minutes ?? 0) > elapsedMinutes;
+    });
+
+    if (startStepIndex === -1) {
+      // All steps already passed → completed immediately
+      await db
+        .prepare(
+          `INSERT INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, updated_at)
+           VALUES (?, ?, ?, ?, 'completed', ?, NULL, ?)`,
+        )
+        .bind(id, friendId, scenarioId, steps[steps.length - 1].step_order, now, now)
+        .run();
+      return (await db.prepare(`SELECT * FROM friend_scenarios WHERE id = ?`).bind(id).first<FriendScenario>())!;
+    }
+
+    const pendingStep = steps[startStepIndex];
+    const tc = parseTriggerCondition(pendingStep);
+    const deliveryMs = followMs + (tc.minutes ?? 0) * 60_000;
+    const rawDate = new Date(deliveryMs + 9 * 60 * 60_000); // shift to JST epoch for window check
+    const windowedDate = enforceEnrollDeliveryWindow(rawDate);
+    const nextDeliveryAt = windowedDate.toISOString().slice(0, -1) + '+09:00';
+
+    // current_step_order = one before pendingStep so delivery finds pendingStep via step_order > current
+    const prevStepOrder = startStepIndex > 0 ? steps[startStepIndex - 1].step_order : pendingStep.step_order - 1;
+
+    await db
+      .prepare(
+        `INSERT INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, updated_at)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`,
+      )
+      .bind(id, friendId, scenarioId, prevStepOrder, now, nextDeliveryAt, now)
+      .run();
+    return (await db.prepare(`SELECT * FROM friend_scenarios WHERE id = ?`).bind(id).first<FriendScenario>())!;
   }
-  const nextDeliveryAt = rawDate.toISOString().slice(0, -1) + '+09:00';
+
+  if (firstStepTrigger.type === 'on_tag_added') {
+    // Event-driven: wait for tag — next_delivery_at = NULL
+    await db
+      .prepare(
+        `INSERT INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, updated_at)
+         VALUES (?, ?, ?, -1, 'active', ?, NULL, ?)`,
+      )
+      .bind(id, friendId, scenarioId, now, now)
+      .run();
+    return (await db.prepare(`SELECT * FROM friend_scenarios WHERE id = ?`).bind(id).first<FriendScenario>())!;
+  }
+
+  // Default: delay_from_previous (current behavior)
+  const rawDate = new Date(nowMs + 9 * 60 * 60_000 + steps[0].delay_minutes * 60_000);
+  const windowedDate = enforceEnrollDeliveryWindow(rawDate);
+  const nextDeliveryAt = windowedDate.toISOString().slice(0, -1) + '+09:00';
 
   await db
     .prepare(
@@ -370,10 +440,19 @@ export async function enrollFriendInScenario(
     .bind(id, friendId, scenarioId, now, nextDeliveryAt, now)
     .run();
 
-  return (await db
-    .prepare(`SELECT * FROM friend_scenarios WHERE id = ?`)
-    .bind(id)
-    .first<FriendScenario>())!;
+  return (await db.prepare(`SELECT * FROM friend_scenarios WHERE id = ?`).bind(id).first<FriendScenario>())!;
+}
+
+/** trigger_condition JSON をパース。NULL の場合は delay_from_previous として扱う */
+export function parseTriggerCondition(step: ScenarioStep): TriggerCondition {
+  if (!step.trigger_condition) {
+    return { type: 'delay_from_previous', minutes: step.delay_minutes };
+  }
+  try {
+    return JSON.parse(step.trigger_condition) as TriggerCondition;
+  } catch {
+    return { type: 'delay_from_previous', minutes: step.delay_minutes };
+  }
 }
 
 export async function getFriendScenariosDueForDelivery(

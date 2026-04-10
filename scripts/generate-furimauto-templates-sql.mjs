@@ -178,7 +178,21 @@ https://furimauto.com/lp0/#scroll_voice
 ▼アンケートはこちらから`),
         surveyFlex,
       ]},
-      { day: 5, label: 'Seg1 Day5: 明日終了', messages: [
+      { day: 5, label: 'Seg1 Day5: 残り2日', messages: [
+        txt(`【無料で使えるのはあと2日です！】
+
+FurimAutoです。
+
+残り2日！まだアンケートに回答されていない方へ
+
+1問だけ答えるだけでキーコードをゲットできます🔑
+特典③④のプレゼントもまだ間に合います🎁
+（特典①②はすでにお届け済みです）
+
+今すぐ回答してみてください👇`),
+        surveyFlex,
+      ]},
+      { day: 6, label: 'Seg1 Day6: 明日終了', messages: [
         img(I.only1day),
         txt(`【明日で無料期間が終了します！】
 
@@ -200,7 +214,7 @@ Meetは任意です。動画だけで十分わかります。
 ▼アンケートはこちらから`),
         surveyFlex,
       ]},
-      { day: 6, label: 'Seg1 Day6: 最終メッセージ', messages: [
+      { day: 7, label: 'Seg1 Day7: 最終メッセージ', messages: [
         img(I.bye),
         txt(`【本日が最後のメッセージです】
 
@@ -309,7 +323,20 @@ https://furimauto.com/lp0/#scroll_voice
 ✅上級編1
 https://youtu.be/-HmR263oHyk`),
       ]},
-      { day: 5, label: 'Seg2 Day5: 明日終了', messages: [
+      { day: 5, label: 'Seg2 Day5: 残り2日', messages: [
+        txt(`【無料で使えるのはあと2日です！】
+
+FurimAutoです。
+
+残り2日！キーコードの入力はお済みですか？
+
+キーコードを入力するとFurimAutoの全機能が使えます🔑
+特典⑤⑥の受け取りもまだ間に合います🎁
+
+入力方法の動画はこちら👇
+✅中級編2: https://youtu.be/-dlzv6sbh4o`),
+      ]},
+      { day: 6, label: 'Seg2 Day6: 明日終了', messages: [
         img(I.only1day),
         txt(`【明日で無料期間終了です！】
 
@@ -323,7 +350,7 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 ✅上級編3
 https://youtu.be/EbhveXLO1FI`),
       ]},
-      { day: 6, label: 'Seg2 Day6: 最終メッセージ', messages: [
+      { day: 7, label: 'Seg2 Day7: 最終メッセージ', messages: [
         img(I.bye),
         txt(`【本日が最後のメッセージです】
 
@@ -555,10 +582,144 @@ FurimAutoです。
   },
 
   {
-    name: 'FurimAuto セグメント5: Free30取得済み',
+    name: 'FurimAuto セグメント5: Free30未取得',
     triggerType: 'manual',
     days: [
-      { day: 0, label: 'Seg5 Day0: 特典⑨⑩取得・⑪へ', messages: [
+      { day: 0, label: 'Seg5 Day0: コピー出品チケットを使おう', messages: [
+        txt(`【無料コピー出品チケットが使えます！🎫】
+
+FurimAutoです。
+
+メルカリURLの設定ありがとうございます！
+
+次は【無料コピー出品チケット】を使ってみてください🎁
+リッチメニューの「限定特典GET」をタップするとチケットを受け取れます。
+
+コピー出品を使うと…
+✅ 売れた商品を1クリックで再出品
+✅ 出品数を一気に増やせる
+✅ 作業時間が激減！
+
+✅入門編1
+https://youtu.be/FY8GUB-CoaY
+
+✅入門編2
+https://youtu.be/vfJzKP8K0yY`),
+      ]},
+      { day: 1, label: 'Seg5 Day1: チケットリマインド', messages: [
+        txt(`【無料チケットを使いましたか？】
+
+FurimAutoです。
+
+「限定特典GET」からコピー出品チケットを受け取っていない方はぜひ今すぐ！
+
+✅初級編1
+https://youtu.be/HVHKhbnZe6M
+
+✅初級編2
+https://youtu.be/5q5SXWbDjPI
+
+✅初級編3
+https://youtu.be/TgnC29kkbW4`),
+      ]},
+      { day: 2, label: 'Seg5 Day2: フル活用tips', messages: [
+        txt(`【FurimAutoをもっと活用しよう】
+
+FurimAutoです。
+
+✅ コピー出品で出品数アップ
+✅ まとめ買い割引の自動設定
+✅ 売れ筋商品のリサーチ支援
+
+✅中級編1
+https://youtu.be/95ASUMEotMM
+
+✅中級編2
+https://youtu.be/-dlzv6sbh4o
+
+✅中級編3
+https://youtu.be/gAtxMiysWsY`),
+      ]},
+      { day: 3, label: 'Seg5 Day3: ユーザーの声', messages: [
+        txt(`【実際のユーザーの声をご紹介】
+
+FurimAutoです。
+
+✨「コピー出品で月の出品数が3倍になりました！」
+✨「チケットを使ったら売上がすぐ変わった！」
+✨「これなしではもう無理です笑」
+
+▼お客様の声
+https://furimauto.com/lp0/#scroll_voice
+
+残り4日！チケットをまだ使っていない方は今すぐ！`),
+      ]},
+      { day: 4, label: 'Seg5 Day4: 有料プラン案内', messages: [
+        txt(`【有料プランへの移行方法について】
+
+FurimAutoです。
+
+残り3日！有料プランなら…
+✅ コピー出品チケットが毎月もらえる
+✅ 全機能が無制限で使い放題
+✅ 自動値下げが無制限で稼働
+
+▼まずこちらをご覧ください
+https://www.youtube.com/watch?v=jhaCPxgE_Sk
+
+Meetなしで申し込みOK！
+▼料金表
+https://furimauto.com/lp0/#scroll_plan`),
+      ]},
+      { day: 5, label: 'Seg5 Day5: 残り2日', messages: [
+        txt(`【無料で使えるのはあと2日です！】
+
+FurimAutoです。
+
+残り2日！コピー出品チケットはお試しになりましたか？
+
+動画を見てキーワードをLINEに送ると…
+✨無料試用期間が延長されます
+✨限定特典⑫⑬もプレゼント！
+
+▼FurimAuto完全解説動画
+https://www.youtube.com/watch?v=jhaCPxgE_Sk`),
+      ]},
+      { day: 6, label: 'Seg5 Day6: 明日終了', messages: [
+        img(I.only1day),
+        txt(`【明日で無料期間終了！動画を見て延長しよう】
+
+FurimAutoです。
+
+https://www.youtube.com/watch?v=jhaCPxgE_Sk
+
+✨無料試用期間が延長されます✨
+✨限定特典⑫⑬もプレゼント✨`),
+      ]},
+      { day: 7, label: 'Seg5 Day7: 最終メッセージ', messages: [
+        img(I.bye),
+        txt(`【本日が最後のメッセージです】
+
+FurimAutoです。
+
+無料期間が終了します。
+
+少しでも気になっていただけているなら、
+ぜひこちらの解説動画だけ見てみてください👇
+https://www.youtube.com/watch?v=jhaCPxgE_Sk
+
+Meetなしでそのままご加入いただけます。
+
+またいつでもお声がけください😊`),
+      ]},
+    ],
+  },
+
+  {
+    name: 'FurimAuto セグメント6: Free30取得済み',
+    triggerType: 'manual',
+    days: [
+      { day: 0, label: 'Seg6 Day0: 特典⑨⑩取得・⑪へ', messages: [
         img(I.follow1),
         txt(`【特典⑨⑩受け取り完了！次は⑪をゲット！】
 
@@ -574,7 +735,7 @@ https://youtu.be/FY8GUB-CoaY
 ✅入門編2
 https://youtu.be/vfJzKP8K0yY`),
       ]},
-      { day: 1, label: 'Seg5 Day1: 1分解説シリーズ', messages: [
+      { day: 1, label: 'Seg6 Day1: 1分解説シリーズ', messages: [
         txt(`【1分解説シリーズで特典⑪をゲット！】
 
 FurimAutoです。
@@ -590,7 +751,7 @@ https://youtu.be/TgnC29kkbW4
 
 YoutubeのコメントにFurimAutoと入力してスクショをLINEに送ると特典⑪がもらえます🎁`),
       ]},
-      { day: 2, label: 'Seg5 Day2: フル活用', messages: [
+      { day: 2, label: 'Seg6 Day2: フル活用', messages: [
         txt(`【FurimAutoをフル活用しよう】
 
 FurimAutoです。
@@ -604,7 +765,7 @@ https://youtu.be/-dlzv6sbh4o
 ✅中級編3
 https://youtu.be/gAtxMiysWsY`),
       ]},
-      { day: 3, label: 'Seg5 Day3: 特典⑫⑬・解説動画', messages: [
+      { day: 3, label: 'Seg6 Day3: 特典⑫⑬・解説動画', messages: [
         txt(`【特典⑫⑬ゲットのチャンス！】
 
 FurimAutoです。
@@ -616,11 +777,12 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 ✨無料試用期間が延長されます
 ✨限定特典⑫⑬をプレゼント！`),
       ]},
-      { day: 4, label: 'Seg5 Day4: 有料プラン案内', messages: [
+      { day: 4, label: 'Seg6 Day4: 有料プラン案内', messages: [
         txt(`【有料プランへの移行方法について】
 
 FurimAutoです。
 
+残り3日！
 ▼まずこちらをご覧ください
 https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
@@ -628,7 +790,19 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 ▼料金表
 https://furimauto.com/lp0/#scroll_plan`),
       ]},
-      { day: 5, label: 'Seg5 Day5: 明日終了・延長', messages: [
+      { day: 5, label: 'Seg6 Day5: 残り2日', messages: [
+        txt(`【無料で使えるのはあと2日です！】
+
+FurimAutoです。
+
+残り2日！動画を見てキーワードをLINEに送ると試用期間が延長されます✨
+
+▼FurimAuto完全解説動画
+https://www.youtube.com/watch?v=jhaCPxgE_Sk
+
+✨限定特典⑫⑬もプレゼント！`),
+      ]},
+      { day: 6, label: 'Seg6 Day6: 明日終了・延長', messages: [
         img(I.only1day),
         txt(`【明日で無料期間終了！動画を見て延長しよう】
 
@@ -639,37 +813,68 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 ✨無料試用期間が延長されます✨
 ✨限定特典⑫⑬もプレゼント✨`),
       ]},
-      { day: 6, label: 'Seg5 Day6: ラストチャンス', messages: [
-        txt(`【試用期間延長 & 特典⑫⑬ゲットのラストチャンス】
+      { day: 7, label: 'Seg6 Day7: 最終メッセージ', messages: [
+        img(I.bye),
+        txt(`【本日が最後のメッセージです】
 
 FurimAutoです。
 
+気になっている方はこちらの動画だけでもご覧ください👇
 https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
-▼料金表
-https://furimauto.com/lp0/#scroll_plan`),
+Meetなしでそのままご加入いただけます。
+
+またいつでもお声がけお待ちしております😊`),
       ]},
     ],
   },
 
   {
-    name: 'FurimAuto セグメント6: 試用期間終了',
+    name: 'FurimAuto セグメント7: Youtubeクーポン取得済み',
     triggerType: 'manual',
     days: [
-      { day: 0, label: 'Seg6 Day0: 試用期間終了案内', messages: [
-        img(I.bye),
-        txt(`【無料期間終了のお知らせ】
+      { day: 0, label: 'Seg7 Day0: クーポン取得おめでとう', messages: [
+        txt(`【Youtubeクーポン取得ありがとうございます！🎉】
 
 FurimAutoです。
 
-無料期間が終了しました。
+クーポンをゲットしましたね！素晴らしいです✨
 
-「やっぱり続けたい！」という方はこちらから👇
+次は有料プランへの移行方法を確認してみてください👇
+https://www.youtube.com/watch?v=jhaCPxgE_Sk
+
+動画内で案内されるキーワードをLINEに送ると
+✨無料試用期間がさらに延長されます
+✨限定特典⑫⑬もプレゼント！`),
+      ]},
+      { day: 1, label: 'Seg7 Day1: 有料プラン案内', messages: [
+        txt(`【有料プランで物販を自動化しよう】
+
+FurimAutoです。
+
+✅ 自動値下げ無制限
+✅ コピー出品チケット毎月付与
+✅ 全機能フル活用
+
+今なら試用期間延長の特典も！
+▼今すぐ申し込む
 https://furimauto.com/lp0/#scroll_plan
 
-またいずれ、その時にお会いできることを楽しみにしております,,,!
+Meetなし・動画確認だけでご加入いただけます😊`),
+      ]},
+      { day: 2, label: 'Seg7 Day2: 解説動画ラストプッシュ', messages: [
+        txt(`【最後のご案内です】
 
-(いつでも有料プランへのお切り替えはお声がけください👍)`),
+FurimAutoです。
+
+まだ迷っている方は、この動画だけ見てみてください👇
+https://www.youtube.com/watch?v=jhaCPxgE_Sk
+
+料金・機能・申し込み手順、全部この動画に入っています。
+Meetなしでそのまま加入できます。
+
+「少し話を聞いてみたい」という方は
+このLINEに一言メッセージください。直接対応します😊`),
       ]},
     ],
   },
@@ -799,11 +1004,11 @@ for (const scenario of SCENARIOS) {
   lines.push(`-- === ${scenario.name} ===`);
   lines.push(`INSERT INTO scenarios (id, name, trigger_type, is_active, created_at, updated_at) VALUES ('${scenarioId}', '${esc(scenario.name)}', '${scenario.triggerType}', 1, '${NOW}', '${NOW}');`);
 
-  let prevDay = 0;
   for (let i = 0; i < scenario.days.length; i++) {
     const { day, label, messages } = scenario.days[i];
-    const delayMinutes = i === 0 ? 0 : (day - prevDay) * 1440;
-    prevDay = day;
+    // 友達登録からの絶対時間（分）= day * 1440
+    const absoluteMinutes = day * 1440;
+    const triggerCondition = JSON.stringify({ type: 'delay_from_follow', minutes: absoluteMinutes });
 
     const stepId = uuid();
     const tId   = uuid();
@@ -819,8 +1024,8 @@ for (const scenario of SCENARIOS) {
       lines.push(`INSERT INTO template_messages (id, template_id, message_id, step_order, created_at) VALUES ('${tmId}', '${tId}', '${mId}', ${j}, '${NOW}');`);
     }
 
-    // scenario_step: message_type/content は最初のメッセージを代表値として保持（後方互換）
-    lines.push(`INSERT INTO scenario_steps (id, scenario_id, step_order, delay_minutes, message_type, message_content, template_id, created_at) VALUES ('${stepId}', '${scenarioId}', ${i}, ${delayMinutes}, '${firstMsg.messageType}', '${esc(firstMsg.messageContent)}', '${tId}', '${NOW}');`);
+    // scenario_step: trigger_condition に delay_from_follow を設定
+    lines.push(`INSERT INTO scenario_steps (id, scenario_id, step_order, delay_minutes, message_type, message_content, template_id, trigger_condition, created_at) VALUES ('${stepId}', '${scenarioId}', ${i}, ${absoluteMinutes}, '${firstMsg.messageType}', '${esc(firstMsg.messageContent)}', '${tId}', '${esc(triggerCondition)}', '${NOW}');`);
   }
   lines.push('');
 }

@@ -168,8 +168,22 @@ app.notFound((c) => {
 async function scheduled(
   _event: ScheduledEvent,
   env: Env['Bindings'],
-  _ctx: ExecutionContext,
+  ctx: ExecutionContext,
 ): Promise<void> {
+  // 毎時0分のみ GAS の sendStepMessages を呼んでセグメント判定・シナリオ切替
+  // waitUntil で fire-and-forget（Worker のタイムアウトに影響しない）
+  const jstMinutes = new Date(Date.now() + 9 * 60 * 60_000).getUTCMinutes();
+  if (jstMinutes === 0 && env.GAS_DEPLOY_ID) {
+    const gasUrl = `https://script.google.com/macros/s/${env.GAS_DEPLOY_ID}/exec`;
+    ctx.waitUntil(
+      fetch(gasUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'sendStepMessages' }),
+      }).catch((err) => console.error('[cron] GAS sendStepMessages error:', err)),
+    );
+  }
+
   // Get all active accounts from DB, plus the default env account
   const dbAccounts = await getLineAccounts(env.DB);
   const activeTokens = new Set<string>();

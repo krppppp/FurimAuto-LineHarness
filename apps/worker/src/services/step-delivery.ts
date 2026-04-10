@@ -6,6 +6,7 @@ import {
   completeFriendScenario,
   getFriendById,
   getTemplateMessages,
+  parseTriggerCondition,
   jstNow,
 } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
@@ -50,6 +51,35 @@ export function expandVariables(
 /** Default delivery window: 9:00-23:00 JST. If outside, push to next 9:00 AM. */
 const DEFAULT_START_HOUR = 9;
 const DEFAULT_END_HOUR = 23;
+
+/**
+ * trigger_condition に基づいて次回配信日時を計算する。
+ * on_tag_added の場合は null を返す（タグ付与まで待機）。
+ */
+function calcNextDeliveryAt(
+  nextStep: { delay_minutes: number; trigger_condition?: string | null },
+  followDate: Date,
+  preferredHour?: number,
+): Date | null {
+  const trigger = parseTriggerCondition(nextStep as Parameters<typeof parseTriggerCondition>[0]);
+
+  if (trigger.type === 'on_tag_added') return null;
+
+  let baseMs: number;
+  let delayMs: number;
+
+  if (trigger.type === 'delay_from_follow') {
+    baseMs = followDate.getTime();
+    delayMs = (trigger.minutes ?? 0) * 60_000;
+  } else {
+    // delay_from_previous（デフォルト・後方互換）
+    baseMs = Date.now() + 9 * 60 * 60_000; // JST epoch
+    delayMs = (trigger.minutes ?? nextStep.delay_minutes) * 60_000;
+  }
+
+  const rawDate = new Date(baseMs + delayMs);
+  return enforceDeliveryWindow(rawDate, preferredHour);
+}
 
 function enforceDeliveryWindow(date: Date, preferredHour?: number): Date {
   // date is already shifted to JST epoch (+9h)
@@ -127,6 +157,7 @@ async function processSingleDelivery(
 
   const metadata = JSON.parse((friend as { metadata?: string }).metadata || '{}') as Record<string, unknown>;
   const preferredHour = typeof metadata.preferred_hour === 'number' ? metadata.preferred_hour : undefined;
+  const followDate = new Date(new Date((friend as { created_at: string }).created_at).getTime() + 9 * 60 * 60_000);
 
   // Get all steps for this scenario
   const steps = await getScenarioSteps(db, fs.scenario_id);
@@ -151,22 +182,18 @@ async function processSingleDelivery(
       if (currentStep.next_step_on_false !== null && currentStep.next_step_on_false !== undefined) {
         const jumpStep = steps.find((s) => s.step_order === currentStep.next_step_on_false);
         if (jumpStep) {
-          const nextDate = new Date(Date.now() + 9 * 60 * 60_000);
-          nextDate.setMinutes(nextDate.getMinutes() + jumpStep.delay_minutes);
-          const windowedDate = enforceDeliveryWindow(nextDate, preferredHour);
-          const jitteredDate = jitterDeliveryTime(windowedDate);
-          await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+          const nextDelivery = calcNextDeliveryAt(jumpStep, followDate, preferredHour);
+          const jitteredDate = nextDelivery ? jitterDeliveryTime(nextDelivery) : null;
+          await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate ? jitteredDate.toISOString().slice(0, -1) + '+09:00' : null);
           return;
         }
       }
       const nextIndex = steps.indexOf(currentStep) + 1;
       if (nextIndex < steps.length) {
         const nextStep = steps[nextIndex];
-        const nextDate = new Date(Date.now() + 9 * 60 * 60_000);
-        nextDate.setMinutes(nextDate.getMinutes() + nextStep.delay_minutes);
-        const windowedDate = enforceDeliveryWindow(nextDate, preferredHour);
-        const jitteredDate = jitterDeliveryTime(windowedDate);
-        await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+        const nextDelivery = calcNextDeliveryAt(nextStep, followDate, preferredHour);
+        const jitteredDate = nextDelivery ? jitterDeliveryTime(nextDelivery) : null;
+        await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate ? jitteredDate.toISOString().slice(0, -1) + '+09:00' : null);
       } else {
         await completeFriendScenario(db, fs.id);
       }
@@ -210,11 +237,9 @@ async function processSingleDelivery(
 
     const nextStep = currentIndex + 1 < steps.length ? steps[currentIndex + 1] : null;
     if (nextStep) {
-      const nextDeliveryDate = new Date(Date.now() + 9 * 60 * 60_000);
-      nextDeliveryDate.setMinutes(nextDeliveryDate.getMinutes() + nextStep.delay_minutes);
-      const windowedDate = enforceDeliveryWindow(nextDeliveryDate, preferredHour);
-      const jitteredDate = jitterDeliveryTime(windowedDate);
-      await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+      const nextDelivery = calcNextDeliveryAt(nextStep, followDate, preferredHour);
+      const jitteredDate = nextDelivery ? jitterDeliveryTime(nextDelivery) : null;
+      await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate ? jitteredDate.toISOString().slice(0, -1) + '+09:00' : null);
     } else {
       await completeFriendScenario(db, fs.id);
     }
@@ -261,11 +286,9 @@ async function processSingleDelivery(
     const lastBatchStep = batchSteps[batchSteps.length - 1];
 
     if (nextStep) {
-      const nextDeliveryDate = new Date(Date.now() + 9 * 60 * 60_000);
-      nextDeliveryDate.setMinutes(nextDeliveryDate.getMinutes() + nextStep.delay_minutes);
-      const windowedDate = enforceDeliveryWindow(nextDeliveryDate, preferredHour);
-      const jitteredDate = jitterDeliveryTime(windowedDate);
-      await advanceFriendScenario(db, fs.id, lastBatchStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+      const nextDelivery = calcNextDeliveryAt(nextStep, followDate, preferredHour);
+      const jitteredDate = nextDelivery ? jitterDeliveryTime(nextDelivery) : null;
+      await advanceFriendScenario(db, fs.id, lastBatchStep.step_order, jitteredDate ? jitteredDate.toISOString().slice(0, -1) + '+09:00' : null);
     } else {
       await completeFriendScenario(db, fs.id);
     }
@@ -380,11 +403,13 @@ export function buildMessage(messageType: string, messageContent: string, altTex
 
   if (messageType === 'flex') {
     try {
-      const contents = JSON.parse(messageContent);
+      const parsed = JSON.parse(messageContent);
+      // Support both raw bubble/carousel and full flex message wrapper
+      const contents = parsed.type === 'flex' ? parsed.contents : parsed;
+      const resolvedAltText = altText || (parsed.type === 'flex' ? parsed.altText : undefined) || extractFlexAltText(contents);
       // Remove empty text nodes (from {{#if_ref}} conditional blocks)
       cleanEmptyNodes(contents);
-      // Extract first text element for altText (shown in notifications)
-      return { type: 'flex', altText: altText || extractFlexAltText(contents), contents };
+      return { type: 'flex', altText: resolvedAltText, contents };
     } catch {
       return { type: 'text', text: messageContent };
     }
