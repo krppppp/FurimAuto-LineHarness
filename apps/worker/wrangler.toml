@@ -1,19 +1,9 @@
 name = "line-harness"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
-# nodejs_compat is required by @line-harness/update-engine which pulls in
-# `node:stream` (Readable.fromWeb), `node:zlib` (createGunzip), `node:crypto`
-# (createHash), and the `tar-stream` package for bundle parsing during the
-# /admin/update/* self-update flow. Without this flag the route imports
-# fail at runtime. compatibility_date 2024-09-23+ is required for the flag.
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
-
-# ═══════════════════════════════════════════════════════════════
-# デフォルト = テスト環境 (noda@)
-# 使い方: npx wrangler deploy
-# ═══════════════════════════════════════════════════════════════
-account_id = "YOUR_DEV_ACCOUNT_ID"
+account_id = "f2b335f4f9d276383643c76f1e5cc6f9"
 
 [assets]
 directory = "dist/client"
@@ -21,66 +11,38 @@ binding = "ASSETS"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "line-harness"
-database_id = "YOUR_DEV_D1_DATABASE_ID"
-
-[[r2_buckets]]
-binding = "IMAGES"
-bucket_name = "line-harness-images"
+database_name = "line-crm"
+database_id = "4b46e187-36e2-467f-87d4-24d07953d802"
 
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 
-# ═══════════════════════════════════════════════════════════════
-# Phase 5 self-update vars — consumed by /admin/update/*. Secrets
-# (CF_API_TOKEN, ADMIN_API_KEY) must be set via `wrangler secret put`
-# and are intentionally absent from this file.
-# ═══════════════════════════════════════════════════════════════
 [vars]
 WORKER_NAME = "line-harness"
 ADMIN_PAGES_PROJECT = "line-harness-admin"
 LIFF_PAGES_PROJECT = "line-harness-liff"
-D1_DATABASE_ID = "YOUR_DEV_D1_DATABASE_ID"
+D1_DATABASE_ID = "4b46e187-36e2-467f-87d4-24d07953d802"
 MANIFEST_URL = "https://github.com/Shudesu/line-harness-oss/releases/latest/download/release-manifest.json"
-WORKER_PUBLIC_URL = "https://line-harness.workers.dev"
-ADMIN_PUBLIC_URL = "https://line-harness-admin.pages.dev"
-LIFF_PUBLIC_URL = "https://line-harness-liff.pages.dev"
-CF_ACCOUNT_ID = "YOUR_DEV_ACCOUNT_ID"
+WORKER_PUBLIC_URL = "https://line-harness.furimuato.workers.dev"
+ADMIN_PUBLIC_URL = "https://furim-dev.line-harness-admin-7je.pages.dev"
+LIFF_PUBLIC_URL = "https://line-harness.furimuato.workers.dev"
+CF_ACCOUNT_ID = "f2b335f4f9d276383643c76f1e5cc6f9"
 
-# ═══════════════════════════════════════════════════════════════
-# 本番環境
-# 使い方: npx wrangler deploy --env production --name your-worker-name
-# D1:     npx wrangler d1 execute line-crm --env production --remote --file ...
-# ═══════════════════════════════════════════════════════════════
-[env.production]
-account_id = "YOUR_ACCOUNT_ID"
+[env.prod]
+workers_dev = true
 
-[env.production.assets]
-directory = "dist/client"
-binding = "ASSETS"
-
-[[env.production.d1_databases]]
+[[env.prod.d1_databases]]
 binding = "DB"
-database_name = "line-crm"
-database_id = "YOUR_D1_DATABASE_ID"
+database_name = "line-crm-prod"
+database_id = "24650d0d-e165-4220-9ebe-9a5fab202d7c"
 
-[[env.production.r2_buckets]]
-binding = "IMAGES"
-bucket_name = "line-harness-images"
-
-[env.production.triggers]
-crons = ["*/5 * * * *", "0 */6 * * *"]
-
-# Phase 5 self-update vars for production. Worker / Pages / D1 names point at
-# the prod resources. Secrets (CF_API_TOKEN, ADMIN_API_KEY) live in the
-# production secret store, set via `wrangler secret put --env production`.
-[env.production.vars]
-WORKER_NAME = "your-worker-name"
-ADMIN_PAGES_PROJECT = "line-harness-admin"
+[env.prod.vars]
+WORKER_NAME = "line-harness-prod"
+ADMIN_PAGES_PROJECT = "line-harness-admin-prod"
 LIFF_PAGES_PROJECT = "line-harness-liff"
-D1_DATABASE_ID = "YOUR_D1_DATABASE_ID"
+D1_DATABASE_ID = "24650d0d-e165-4220-9ebe-9a5fab202d7c"
 MANIFEST_URL = "https://github.com/Shudesu/line-harness-oss/releases/latest/download/release-manifest.json"
-WORKER_PUBLIC_URL = "https://your-worker-name.workers.dev"
-ADMIN_PUBLIC_URL = "https://line-harness-admin.pages.dev"
-LIFF_PUBLIC_URL = "https://line-harness-liff.pages.dev"
-CF_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
+WORKER_PUBLIC_URL = "https://line-harness-prod.furimuato.workers.dev"
+ADMIN_PUBLIC_URL = "https://line-harness-admin-prod-6mo.pages.dev"
+LIFF_PUBLIC_URL = "https://line-harness-prod.furimuato.workers.dev"
+CF_ACCOUNT_ID = "f2b335f4f9d276383643c76f1e5cc6f9"

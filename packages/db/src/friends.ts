@@ -139,6 +139,7 @@ export interface UpsertFriendInput {
   displayName?: string | null;
   pictureUrl?: string | null;
   statusMessage?: string | null;
+  createdAt?: string | null;
 }
 
 export async function upsertFriend(
@@ -183,7 +184,7 @@ export async function upsertFriend(
       input.displayName ?? null,
       input.pictureUrl ?? null,
       input.statusMessage ?? null,
-      now,
+      input.createdAt ?? now,
       now,
     )
     .run();

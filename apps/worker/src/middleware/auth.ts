@@ -154,6 +154,7 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/webhook' ||
     path === '/docs' ||
     path === '/openapi.json' ||
+    path === '/liff' ||
     path === '/api/affiliates/click' ||
     path.startsWith('/t/') ||
     path.startsWith('/r/') ||
