@@ -55,6 +55,9 @@ import { automations } from './routes/automations.js';
 import { richMenus } from './routes/rich-menus.js';
 import { trackedLinks } from './routes/tracked-links.js';
 import { entryRoutes } from './routes/entry-routes.js';
+import { furim } from './routes/furim.js';
+import { messagesRoute } from './routes/messages.js';
+import { processKaisetsuDeliveries } from './services/kaisetsu-delivery.js';
 import { forms } from './routes/forms.js';
 import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
@@ -113,6 +116,15 @@ export type Env = {
     WORKER_PUBLIC_URL?: string;
     ADMIN_PUBLIC_URL?: string;
     LIFF_PUBLIC_URL?: string;
+    GAS_DEPLOY_ID?: string;
+    FIREBASE_DATABASE_URL?: string;
+    STRIPE_SECRET_KEY?: string;
+    GEMINI_API_KEY?: string;
+    GITHUB_PAT?: string;
+    RICHMENU_DEFAULT_HOME?: string;
+    RICHMENU_MEMBER_HOME?: string;
+    RICHMENU_GUIDE?: string;
+    RICHMENU_QANDA?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -169,6 +181,8 @@ app.route('/', automations);
 app.route('/', richMenus);
 app.route('/', trackedLinks);
 app.route('/', entryRoutes);
+app.route('/', furim);
+app.route('/', messagesRoute);
 app.route('/', forms);
 app.route('/', adPlatforms);
 app.route('/', staff);
@@ -558,8 +572,21 @@ app.notFound(notFoundHandler);
 async function scheduled(
   event: ScheduledEvent,
   env: Env['Bindings'],
-  _ctx: ExecutionContext,
+  ctx: ExecutionContext,
 ): Promise<void> {
+  // FurimAuto: 毎時0分に GAS sendStepMessages（セグメント判定・シナリオ切替）
+  const jstMinutes = new Date(Date.now() + 9 * 60 * 60_000).getUTCMinutes();
+  if (jstMinutes === 0 && env.GAS_DEPLOY_ID) {
+    const gasUrl = `https://script.google.com/macros/s/${env.GAS_DEPLOY_ID}/exec`;
+    ctx.waitUntil(
+      fetch(gasUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'sendStepMessages' }),
+      }).catch((err) => console.error('[cron] GAS sendStepMessages error:', err)),
+    );
+  }
+
   // Get all active accounts from DB
   const dbAccounts = await getLineAccounts(env.DB);
 
@@ -580,6 +607,7 @@ async function scheduled(
     processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
     processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
     processReminderDeliveries(env.DB, defaultLineClient),
+    processKaisetsuDeliveries(env.DB, defaultLineClient),
   );
   // キュー処理は1回だけ実行（内部でアカウント別lineClientを解決する）
   // ロック解除: タイムアウトでstuckした配信を復旧

@@ -2,6 +2,7 @@ export { jstNow, toJstString, isTimeBefore } from './utils';
 export * from './friends';
 export * from './tags';
 export * from './scenarios';
+export * from './messages';
 export * from './scenario-schedule';
 export * from './scenario-resolve';
 export * from './broadcasts';
