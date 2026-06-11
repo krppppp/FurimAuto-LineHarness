@@ -7,16 +7,22 @@ import { extractFlexAltText } from '../utils/flex-alt-text.js';
  * 1. アクティブな送信Webhookへ通知
  * 2. スコアリングルール適用
  * 3. 自動化ルール(IF-THEN)実行
+ * 4. 通知ルール処理
  */
 
-import {
+import { AutomationActionRow, MessageRow,
   getActiveOutgoingWebhooksByEvent,
   applyScoring,
   getActiveAutomationsByEvent,
+  getAutomationActions,
   createAutomationLog,
+  getActiveNotificationRulesByEvent,
+  createNotification,
   addTagToFriend,
   removeTagFromFriend,
   enrollFriendInScenario,
+  completeFriendActiveScenarios,
+  resolveTemplateMessages,
   jstNow,
   getFriendScore,
 } from '@line-crm/db';
@@ -30,6 +36,12 @@ export interface EventPayload {
   conversionEventName?: string;
   conversionValue?: number;
   replyToken?: string;
+}
+
+export interface ActionEnv {
+  lineAccessToken?: string;
+  gasDeployId?: string;
+  stripeSecretKey?: string;
 }
 
 /**
@@ -47,6 +59,7 @@ export async function fireEvent(
   payload: EventPayload,
   lineAccessToken?: string,
   lineAccountId?: string | null,
+  env?: ActionEnv,
 ): Promise<void> {
   // Phase 1: fire webhooks, apply scoring rules, and ad conversion postback concurrently.
   const phase1: Promise<unknown>[] = [
@@ -71,8 +84,12 @@ export async function fireEvent(
       }
     : payload;
 
-  // Phase 2: evaluate automations.
-  await processAutomations(db, eventType, enrichedPayload, lineAccessToken, lineAccountId);
+  // Phase 2: evaluate automations and create notifications concurrently.
+  const actionEnv: ActionEnv = { lineAccessToken, ...env };
+  await Promise.allSettled([
+    processAutomations(db, eventType, enrichedPayload, lineAccessToken, lineAccountId, actionEnv),
+    processNotifications(db, eventType, enrichedPayload, lineAccountId),
+  ]);
 }
 
 /** 送信Webhookへの通知 */
@@ -141,30 +158,55 @@ async function processAutomations(
   payload: EventPayload,
   lineAccessToken?: string,
   lineAccountId?: string | null,
+  env?: ActionEnv,
 ): Promise<void> {
   try {
     const allAutomations = await getActiveAutomationsByEvent(db, eventType);
-    // Filter by account: match this account's automations + unassigned (backward compat)
     const automations = allAutomations.filter(
       (a) => !a.line_account_id || !lineAccountId || a.line_account_id === lineAccountId,
     );
 
+    const actionEnv: ActionEnv = env ?? { lineAccessToken };
+
     for (const automation of automations) {
       const conditions = JSON.parse(automation.conditions) as Record<string, unknown>;
-      const actions = JSON.parse(automation.actions) as Array<{ type: string; params: Record<string, string> }>;
-
-      // 条件チェック（簡易版: 条件が空なら常にマッチ）
       if (!matchConditions(conditions, payload)) continue;
 
-      const results: Array<{ action: string; success: boolean; error?: string }> = [];
+      // automation_actions テーブルを優先、なければ旧 actions JSON にフォールバック
+      const actionRows = await getAutomationActions(db, automation.id);
+      const actions: Array<{ type: string; params: Record<string, unknown>; conditionJson?: Record<string, unknown> | null; onError?: string; label?: string }> =
+        actionRows.length > 0
+          ? actionRows.map((r: AutomationActionRow) => {
+              const params = JSON.parse(r.params) as Record<string, unknown>;
+              if (r.template_id && !params.template_id) params.template_id = r.template_id;
+              return {
+                type: r.action_type,
+                params,
+                conditionJson: r.condition_json ? (JSON.parse(r.condition_json) as Record<string, unknown>) : null,
+                onError: r.on_error,
+                label: r.label ?? undefined,
+              };
+            })
+          : (JSON.parse(automation.actions) as Array<{ type: string; params: Record<string, unknown> }>);
+
+      const results: Array<{ action: string; label?: string; success: boolean; error?: string }> = [];
 
       for (const action of actions) {
+        // アクション個別の条件チェック
+        if (action.conditionJson && Object.keys(action.conditionJson).length > 0) {
+          if (!matchConditions(action.conditionJson, payload)) {
+            results.push({ action: action.type, label: action.label, success: true });
+            continue;
+          }
+        }
+
         try {
-          await executeAction(db, action, payload, lineAccessToken, lineAccountId);
-          results.push({ action: action.type, success: true });
+          await executeAction(db, action, payload, actionEnv);
+          results.push({ action: action.type, label: action.label, success: true });
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
-          results.push({ action: action.type, success: false, error: errorMsg });
+          results.push({ action: action.type, label: action.label, success: false, error: errorMsg });
+          if (action.onError === 'abort') break;
         }
       }
 
@@ -211,41 +253,93 @@ function matchConditions(
     if (!text || !text.includes(conditions.keyword as string)) return false;
   }
 
-  // keyword_exact（完全一致）
-  if (typeof conditions.keyword_exact === 'string') {
-    const text = typeof payload.eventData?.text === 'string' ? payload.eventData.text.trim() : '';
-    if (text !== conditions.keyword_exact) {
-      return false;
-    }
+  // isNewUser チェック（friend_add イベント用）
+  if (conditions.isNewUser !== undefined && payload.eventData) {
+    if (payload.eventData.isNewUser !== conditions.isNewUser) return false;
+  }
+
+  // remaining_days 範囲チェック（kaisetsu_daily イベント用）
+  if (conditions.remaining_days_gte !== undefined && payload.eventData) {
+    const rd = payload.eventData.remaining_days as number | undefined;
+    if (rd === undefined || rd < (conditions.remaining_days_gte as number)) return false;
+  }
+  if (conditions.remaining_days_lte !== undefined && payload.eventData) {
+    const rd = payload.eventData.remaining_days as number | undefined;
+    if (rd === undefined || rd > (conditions.remaining_days_lte as number)) return false;
   }
 
   return true;
 }
 
+/** GAS引数のテンプレート変数展開 */
+async function resolveGasArgs(
+  db: D1Database,
+  args: Record<string, unknown>,
+  friendId: string | undefined,
+  payload: EventPayload,
+): Promise<Record<string, unknown>> {
+  const friend = friendId
+    ? await db
+        .prepare('SELECT id, line_user_id, display_name, metadata FROM friends WHERE id = ?')
+        .bind(friendId)
+        .first<{ id: string; line_user_id: string; display_name: string | null; metadata: string }>()
+    : null;
+  const nowJst = new Date(Date.now() + 9 * 60 * 60_000);
+  const trialEndJst = new Date(nowJst.getTime() + 7 * 24 * 60 * 60_000);
+  const fmtJst = (d: Date) => d.toISOString().replace('T', ' ').slice(0, 19);
+  const resolved: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (typeof v === 'string') {
+      const meta = friend ? (JSON.parse(friend.metadata || '{}') as Record<string, string>) : {};
+      let s = v;
+      if (friend) {
+        s = s
+          .replace('{{friend_id}}', friend.id)
+          .replace('{{line_user_id}}', friend.line_user_id)
+          .replace('{{display_name}}', friend.display_name ?? '')
+          .replace('{{stripe_customer_id}}', meta.stripeCustomerId ?? '')
+          .replace('{{now_jst}}', fmtJst(nowJst))
+          .replace('{{trial_end_jst}}', fmtJst(trialEndJst));
+      }
+      // {{eventData.KEY}} — payload.eventData から動的展開
+      s = s.replace(/\{\{eventData\.([^}]+)\}\}/g, (_m, key: string) =>
+        String(payload.eventData?.[key] ?? ''),
+      );
+      resolved[k] = s;
+    } else {
+      resolved[k] = v;
+    }
+  }
+  return resolved;
+}
+
 /** アクション実行 */
 async function executeAction(
   db: D1Database,
-  action: { type: string; params: Record<string, string> },
+  action: { type: string; params: Record<string, unknown> },
   payload: EventPayload,
-  lineAccessToken?: string,
-  lineAccountId?: string | null,
+  env: ActionEnv,
 ): Promise<void> {
+  const lineAccessToken = env.lineAccessToken;
   const friendId = payload.friendId;
-  if (!friendId && action.type !== 'send_webhook') {
+  const noFriendActions = ['send_webhook', 'code_managed'];
+  if (!friendId && !noFriendActions.includes(action.type)) {
     throw new Error('friendId is required for this action');
   }
 
+  const p = action.params as Record<string, string>;
+
   switch (action.type) {
     case 'add_tag':
-      await addTagToFriend(db, friendId!, action.params.tagId);
+      await addTagToFriend(db, friendId!, p.tagId);
       break;
 
     case 'remove_tag':
-      await removeTagFromFriend(db, friendId!, action.params.tagId);
+      await removeTagFromFriend(db, friendId!, p.tagId);
       break;
 
     case 'start_scenario':
-      await enrollFriendInScenario(db, friendId!, action.params.scenarioId);
+      await enrollFriendInScenario(db, friendId!, p.scenarioId);
       break;
 
     case 'send_message': {
@@ -256,82 +350,35 @@ async function executeAction(
         .first<{ line_user_id: string }>();
       if (!friend) break;
       const lineClient = new LineClient(lineAccessToken);
-
-      // template_id が set なら templates から content/type を resolve、
-      // なければ inline params を使う。template が見つからない (削除済 等) は
-      // inline fallback (content が空なら下流の JSON.parse が throw → automation
-      // 全体は partial 扱い)。
-      let resolvedType = action.params.messageType || 'text';
-      let resolvedContent = action.params.content ?? '';
-      const tplId = action.params.template_id;
-      if (tplId) {
-        const { getTemplateById } = await import('@line-crm/db');
-        const tpl = await getTemplateById(db, tplId);
-        if (tpl) {
-          resolvedType = tpl.message_type;
-          resolvedContent = tpl.message_content;
-        }
-      }
-
+      const msgType = p.messageType || 'text';
       let msg: Message;
-      let logContent: string;
-      if (resolvedType === 'flex') {
-        const contents = JSON.parse(resolvedContent);
-        msg = { type: 'flex', altText: action.params.altText || extractFlexAltText(contents), contents };
-        logContent = JSON.stringify(contents);
-      } else if (resolvedType === 'image') {
-        // template に "originalContentUrl" / "previewImageUrl" を持つ JSON が入る前提。
-        // parse 失敗時は text fallback ではなく throw → automation 側で partial 扱いにする。
-        const parsed = JSON.parse(resolvedContent) as { originalContentUrl: string; previewImageUrl: string };
-        msg = {
-          type: 'image',
-          originalContentUrl: parsed.originalContentUrl,
-          previewImageUrl: parsed.previewImageUrl,
-        };
-        logContent = JSON.stringify(parsed);
+      if (msgType === 'flex') {
+        const contents = JSON.parse(p.content);
+        msg = { type: 'flex', altText: p.altText || extractFlexAltText(contents), contents };
       } else {
-        msg = { type: 'text', text: resolvedContent };
-        logContent = resolvedContent;
+        msg = { type: 'text', text: p.content };
       }
-
-      let deliveryType: 'reply' | 'push';
       if (payload.replyToken) {
         try {
           await lineClient.replyMessage(payload.replyToken, [msg]);
           payload.replyToken = undefined;
-          deliveryType = 'reply';
         } catch (err: unknown) {
           const errMsg = err instanceof Error ? err.message : String(err);
           const isTokenError = errMsg.includes('400') || errMsg.includes('Invalid reply token');
           if (isTokenError) {
             await lineClient.pushMessage(friend.line_user_id, [msg]);
-            deliveryType = 'push';
           } else {
             throw err;
           }
         }
       } else {
         await lineClient.pushMessage(friend.line_user_id, [msg]);
-        deliveryType = 'push';
       }
-
-      // log は実際に送信した msg の type を反映する。msgType が 'image' 等で
-      // else 経路に入った場合、actual message は text なので 'text' で記録すべき。
-      // params の messageType をそのまま使うと admin 側で画像/Flex プレースホルダ
-      // が出てしまう。
-      await logOutgoingMessage(db, {
-        friendId,
-        messageType: msg.type,
-        content: logContent,
-        deliveryType,
-        source: 'automation',
-        lineAccountId,
-      });
       break;
     }
 
     case 'send_webhook': {
-      const url = action.params.url;
+      const url = p.url;
       if (url) {
         await fetch(url, {
           method: 'POST',
@@ -350,7 +397,7 @@ async function executeAction(
         .first<{ line_user_id: string }>();
       if (!friend) break;
       const lineClient = new LineClient(lineAccessToken);
-      await lineClient.linkRichMenuToUser(friend.line_user_id, action.params.richMenuId);
+      await lineClient.linkRichMenuToUser(friend.line_user_id, p.richMenuId);
       break;
     }
 
@@ -373,20 +420,7 @@ async function executeAction(
         .bind(friendId)
         .first<{ metadata: string }>();
       const current = JSON.parse(existing?.metadata || '{}') as Record<string, unknown>;
-      // {{message}} を受信メッセージ内容に置換してからパース
-      // JSON文字列内に埋め込むため、JSON仕様に準拠して全制御文字をエスケープ
-      const escapeForJsonString = (s: string): string =>
-        s
-          .replace(/\\/g, '\\\\')
-          .replace(/"/g, '\\"')
-          .replace(/\n/g, '\\n')
-          .replace(/\r/g, '\\r')
-          .replace(/\t/g, '\\t')
-          .replace(/[\u0000-\u001f]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
-      const messageText = typeof payload.eventData?.text === 'string' ? payload.eventData.text : '';
-      const raw = (action.params.data || '{}')
-        .replace(/\{\{message\}\}/g, escapeForJsonString(messageText));
-      const patch = JSON.parse(raw) as Record<string, unknown>;
+      const patch = JSON.parse(p.data || '{}') as Record<string, unknown>;
       const merged = { ...current, ...patch };
       await db
         .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
@@ -395,41 +429,203 @@ async function executeAction(
       break;
     }
 
+    case 'call_gas':
+    case 'call_gas_post': {
+      const gasDeployId = env.gasDeployId;
+      if (!gasDeployId) break;
+      const { gasPost } = await import('../furim/gas-client.js');
+      const method = action.params.method as string;
+      const args = (action.params.args ?? {}) as Record<string, unknown>;
+      const resolvedArgs = await resolveGasArgs(db, args, friendId, payload);
+      await gasPost(gasDeployId, { method, ...resolvedArgs });
+      break;
+    }
+
+    case 'call_gas_get': {
+      const gasDeployId = env.gasDeployId;
+      if (!gasDeployId) break;
+      const { gasGet } = await import('../furim/gas-client.js');
+      const method = action.params.method as string;
+      const args = (action.params.args ?? {}) as Record<string, unknown>;
+      const setVariable = action.params.set_variable as string;
+      const responseField = action.params.response_field as string | undefined;
+      const operator = (action.params.operator as string | undefined) ?? 'truthy';
+      const compareValue = action.params.compare_value as string | undefined;
+      const resolvedArgs = await resolveGasArgs(db, args, friendId, payload);
+      const response = await gasGet(gasDeployId, { method, ...resolvedArgs }) as Record<string, unknown>;
+      const fieldValue = responseField ? response[responseField] : response;
+      let result: boolean;
+      switch (operator) {
+        case 'not_empty': result = !!fieldValue && fieldValue !== ''; break;
+        case 'empty':     result = !fieldValue || fieldValue === ''; break;
+        case 'equals':    result = String(fieldValue) === compareValue; break;
+        case 'not_equals':result = String(fieldValue) !== compareValue; break;
+        case 'falsy':     result = !fieldValue; break;
+        default:          result = !!fieldValue; break;
+      }
+      if (!payload.eventData) payload.eventData = {};
+      payload.eventData[setVariable] = result;
+      break;
+    }
+
+    case 'send_messages': {
+      if (!lineAccessToken || !friendId) break;
+      const friend = await db
+        .prepare('SELECT line_user_id FROM friends WHERE id = ?')
+        .bind(friendId)
+        .first<{ line_user_id: string }>();
+      if (!friend) break;
+      const lineClient = new LineClient(lineAccessToken);
+      const expandContent = (s: string) =>
+        s.replace(/\{\{eventData\.([^}]+)\}\}/g, (_m, key: string) => String(payload.eventData?.[key] ?? ''));
+
+      const buildLineMessages = (cfgs: Array<{ messageType: string; content: string; altText?: string | null }>): Message[] =>
+        cfgs.map((cfg) => {
+          const content = expandContent(cfg.content);
+          if (cfg.messageType === 'flex') {
+            const contents = JSON.parse(content) as unknown;
+            return { type: 'flex', altText: cfg.altText || extractFlexAltText(contents), contents } as Message;
+          }
+          if (cfg.messageType === 'image') {
+            const parsed = JSON.parse(content) as { originalContentUrl: string; previewImageUrl: string };
+            return { type: 'image', originalContentUrl: parsed.originalContentUrl, previewImageUrl: parsed.previewImageUrl } as Message;
+          }
+          if (cfg.messageType === 'video') {
+            const parsed = JSON.parse(content) as { originalContentUrl: string; previewImageUrl: string; trackingId?: string };
+            return { type: 'video', originalContentUrl: parsed.originalContentUrl, previewImageUrl: parsed.previewImageUrl, ...(parsed.trackingId ? { trackingId: parsed.trackingId } : {}) } as Message;
+          }
+          return { type: 'text', text: content } as Message;
+        });
+
+      let messages: Message[];
+      const templateId = action.params.template_id as string | undefined;
+      if (templateId) {
+        const msgRows = await resolveTemplateMessages(db, templateId);
+        messages = buildLineMessages(msgRows.map((m: MessageRow) => ({ messageType: m.message_type, content: m.content, altText: m.alt_text })));
+      } else {
+        const msgConfigs = action.params.messages as Array<{ messageType: string; content: string; altText?: string }>;
+        messages = buildLineMessages(msgConfigs);
+      }
+      if (payload.replyToken) {
+        try {
+          await lineClient.replyMessage(payload.replyToken, messages);
+          payload.replyToken = undefined;
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          if (errMsg.includes('400') || errMsg.includes('Invalid reply token')) {
+            await lineClient.pushMessage(friend.line_user_id, messages);
+          } else {
+            throw err;
+          }
+        }
+      } else {
+        await lineClient.pushMessage(friend.line_user_id, messages);
+      }
+      break;
+    }
+
+    case 'create_stripe_customer': {
+      const stripeSecretKey = env.stripeSecretKey;
+      if (!stripeSecretKey || !friendId) break;
+      const friend = await db
+        .prepare('SELECT line_user_id, display_name, metadata FROM friends WHERE id = ?')
+        .bind(friendId)
+        .first<{ line_user_id: string; display_name: string | null; metadata: string }>();
+      if (!friend) break;
+      const meta = JSON.parse(friend.metadata || '{}') as Record<string, unknown>;
+      if (meta.stripeCustomerId) break; // 既に作成済み
+      const res = await fetch('https://api.stripe.com/v1/customers', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${stripeSecretKey}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          name: friend.display_name ?? friend.line_user_id,
+          'metadata[lineUserId]': friend.line_user_id,
+          'address[country]': 'JP',
+          'preferred_locales[]': 'ja',
+        }).toString(),
+      });
+      const data = await res.json() as { id?: string };
+      if (data.id) {
+        const saveKey = (action.params.save_to_metadata as string | undefined) ?? 'stripeCustomerId';
+        const merged = { ...meta, [saveKey]: data.id };
+        await db.prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?').bind(JSON.stringify(merged), jstNow(), friendId).run();
+      }
+      break;
+    }
+
+    case 'add_tag_by_name': {
+      if (!friendId) break;
+      const tagName = p.tagName;
+      if (!tagName) break;
+      const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+      if (tag) await addTagToFriend(db, friendId, tag.id);
+      break;
+    }
+
+    case 'remove_tag_by_name': {
+      if (!friendId) break;
+      const tagName = p.tagName;
+      if (!tagName) break;
+      const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+      if (tag) await removeTagFromFriend(db, friendId, tag.id);
+      break;
+    }
+
+    case 'complete_active_scenarios': {
+      if (!friendId) break;
+      await completeFriendActiveScenarios(db, friendId);
+      break;
+    }
+
+    case 'code_managed':
+      // コード管理アクション: 実行はwebhook.tsのコードに委ねる（GUI表示専用）
+      break;
+
     default:
       console.warn(`未知のアクションタイプ: ${action.type}`);
   }
 }
 
-/** 送信メッセージを messages_log に記録（失敗しても例外を上げない） */
-async function logOutgoingMessage(
+/** 通知ルール処理 */
+async function processNotifications(
   db: D1Database,
-  params: {
-    friendId: string;
-    messageType: string;
-    content: string;
-    deliveryType: 'reply' | 'push';
-    source: string;
-    lineAccountId?: string | null;
-  },
+  eventType: string,
+  payload: EventPayload,
+  lineAccountId?: string | null,
 ): Promise<void> {
   try {
-    await db
-      .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, line_account_id, created_at)
-         VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, ?, ?, ?, ?)`,
-      )
-      .bind(
-        crypto.randomUUID(),
-        params.friendId,
-        params.messageType,
-        params.content,
-        params.deliveryType,
-        params.source,
-        params.lineAccountId ?? null,
-        jstNow(),
-      )
-      .run();
+    const allRules = await getActiveNotificationRulesByEvent(db, eventType);
+    const rules = allRules.filter(
+      (r) => !r.line_account_id || !lineAccountId || r.line_account_id === lineAccountId,
+    );
+
+    for (const rule of rules) {
+      let channels: string[] = JSON.parse(rule.channels);
+      // Guard against double-encoded JSON strings (e.g. "\"[\\\"webhook\\\"]\"")
+      if (typeof channels === 'string') channels = JSON.parse(channels);
+
+      for (const channel of channels) {
+        await createNotification(db, {
+          ruleId: rule.id,
+          eventType,
+          title: `${rule.name}: ${eventType}`,
+          body: JSON.stringify(payload),
+          channel,
+          metadata: JSON.stringify(payload.eventData ?? {}),
+        });
+
+        // Webhook通知チャネルの場合は即時配信
+        if (channel === 'webhook') {
+          // 送信Webhookと統合（既にfireOutgoingWebhooksで処理済み）
+        }
+        // email チャネルの場合はSendGrid等で送信（将来実装）
+        // dashboard チャネルの場合はDB記録のみ（上記createNotificationで完了）
+      }
+    }
   } catch (err) {
-    console.error('logOutgoingMessage failed:', err);
+    console.error('processNotifications error:', err);
   }
 }

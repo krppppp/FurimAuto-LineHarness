@@ -3,8 +3,11 @@ import {
   getStripeEvents,
   getStripeEventByStripeId,
   createStripeEvent,
+  getFriendByLineUserId,
   jstNow,
 } from '@line-crm/db';
+import { gasGet } from '../furim/gas-client.js';
+import { fireEvent } from '../services/event-bus.js';
 import type { Env } from '../index.js';
 
 const stripe = new Hono<Env>();
@@ -15,11 +18,24 @@ interface StripeWebhookBody {
   data: {
     object: {
       id: string;
+      // subscription / payment_intent 共通
       amount?: number;
       currency?: string;
       metadata?: Record<string, string>;
       customer?: string;
       status?: string;
+      // invoice 固有
+      subscription?: string;
+      billing_reason?: string;
+      amount_paid?: number;
+      customer_email?: string;
+      tax?: number;
+      total_discount_amounts?: Array<{ amount: number }>;
+      attempt_count?: number;
+      lines?: { data?: Array<{ price?: { unit_amount?: number; nickname?: string }; period?: { start?: number; end?: number } }> };
+      // subscription 固有
+      plan?: { amount?: number; nickname?: string };
+      items?: { data?: Array<{ price?: { unit_amount?: number } }> };
     };
   };
 }
@@ -55,7 +71,6 @@ stripe.get('/api/integrations/stripe/events', async (c) => {
 
 /** Stripe署名検証 */
 async function verifyStripeSignature(secret: string, rawBody: string, sigHeader: string): Promise<boolean> {
-  // Stripe署名形式: t=timestamp,v1=signature
   const parts = Object.fromEntries(
     sigHeader.split(',').map((p) => {
       const [k, ...v] = p.split('=');
@@ -88,17 +103,14 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
     let body: StripeWebhookBody;
 
     if (stripeSecret) {
-      // 署名検証モード（本番環境）
       const sigHeader = c.req.header('Stripe-Signature') ?? '';
       const rawBody = await c.req.text();
-
       const valid = await verifyStripeSignature(stripeSecret, rawBody, sigHeader);
       if (!valid) {
         return c.json({ success: false, error: 'Stripe signature verification failed' }, 401);
       }
       body = JSON.parse(rawBody) as StripeWebhookBody;
     } else {
-      // シークレット未設定（開発環境向け）
       body = await c.req.json<StripeWebhookBody>();
     }
 
@@ -110,9 +122,15 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
 
     const obj = body.data.object;
     const db = c.env.DB;
+    const env = c.env;
 
-    // メタデータからfriendIdを取得（Stripeのメタデータにline_friend_idを設定している想定）
-    const friendId = obj.metadata?.line_friend_id ?? null;
+    // Stripeメタデータの lineUserId（LINE U...ID）から内部友達IDを引く
+    const lineUserId = obj.metadata?.lineUserId ?? null;
+    let friendId: string | null = null;
+    if (lineUserId) {
+      const friend = await getFriendByLineUserId(db, lineUserId);
+      friendId = friend?.id ?? null;
+    }
 
     // イベントを記録
     const event = await createStripeEvent(db, {
@@ -124,41 +142,157 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
       metadata: JSON.stringify(obj.metadata ?? {}),
     });
 
-    // 決済成功時の自動処理
-    if (body.type === 'payment_intent.succeeded' && friendId) {
-      const { applyScoring } = await import('@line-crm/db');
-      await applyScoring(db, friendId, 'purchase');
+    const actionEnv = { lineAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN, gasDeployId: env.GAS_DEPLOY_ID, stripeSecretKey: env.STRIPE_SECRET_KEY };
 
-      // 自動タグ付け（product_idベース）
-      const productId = obj.metadata?.product_id;
-      if (productId) {
-        const tag = await db
-          .prepare(`SELECT id FROM tags WHERE name = ?`)
-          .bind(`purchased_${productId}`)
-          .first<{ id: string }>();
-        if (tag) {
-          await db
-            .prepare(`INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)`)
-            .bind(friendId, tag.id, jstNow())
-            .run();
+    // ──────────────────────────────────────────
+    // invoice.payment_succeeded
+    // ──────────────────────────────────────────
+    if (body.type === 'invoice.payment_succeeded') {
+      const stripeCustomerId = obj.customer ?? '';
+      const billingReason = obj.billing_reason ?? '';
+      const isNewSubscription = billingReason === 'subscription_create';
+
+      // LINE ID を解決（メタデータになければGASシートで照合）
+      let resolvedLineUserId = lineUserId;
+      if (!resolvedLineUserId && stripeCustomerId && env.GAS_DEPLOY_ID) {
+        try {
+          const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
+          resolvedLineUserId = gasData?.customer_line_id ?? null;
+        } catch (e) {
+          console.error('[stripe/invoice] getLINEIDwithStripeID failed:', e);
         }
       }
 
-      // イベントバスに発火（自動化ルール用）
-      const { fireEvent } = await import('../services/event-bus.js');
-      await fireEvent(db, 'cv_fire', { friendId, eventData: { type: 'purchase', amount: obj.amount, stripeEventId: body.id } });
+      // Stripe APIでサブスクリプション詳細を取得
+      const subscriptionId = obj.subscription ?? '';
+      let planName = '';
+      let subscriptionPrice = 0;
+      let subscriptionStartDateTime = '';
+      let subscriptionEndDateTime = '';
+      if (subscriptionId && env.STRIPE_SECRET_KEY) {
+        try {
+          const subRes = await fetch(`https://api.stripe.com/v1/subscriptions/${subscriptionId}`, { headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` } });
+          if (subRes.ok) {
+            const sub = await subRes.json() as { plan?: { nickname?: string; amount?: number }; current_period_start?: number; current_period_end?: number };
+            planName = sub.plan?.nickname ?? '';
+            subscriptionPrice = sub.plan?.amount ?? 0;
+            const jstOffset = (9 * 60 + 15) * 60000;
+            if (sub.current_period_start) subscriptionStartDateTime = new Date(sub.current_period_start * 1000 + jstOffset).toISOString().replace('T', ' ').slice(0, 19);
+            if (sub.current_period_end) subscriptionEndDateTime = new Date(sub.current_period_end * 1000 + jstOffset).toISOString().replace('T', ' ').slice(0, 19);
+          }
+        } catch (e) { console.error('[stripe/invoice] subscriptions.retrieve failed:', e); }
+      }
+
+      // プラン金額tier計算
+      const tiers = [3000, 5000, 8000, 10000, 15000, 19800];
+      const planAmount = subscriptionPrice || (obj.lines?.data?.[0]?.price?.unit_amount ?? 0);
+      const planTier = tiers.find((t) => planAmount <= t) ?? 0;
+
+      const discountAmount = obj.total_discount_amounts?.[0]?.amount ?? 0;
+      const taxAmount = obj.tax ?? 0;
+      const actualPaidAmount = obj.amount_paid ?? 0;
+      const priceExclTax = actualPaidAmount - taxAmount;
+
+      // ambassador coupon: GASで紹介クーポン確認 → Stripeクーポン適用（code_managed相当・継続課金時のみ）
+      let ambassadorCouponApplied = false;
+      if (!isNewSubscription && resolvedLineUserId && env.GAS_DEPLOY_ID && stripeCustomerId) {
+        try {
+          const couponData = await gasGet(env.GAS_DEPLOY_ID, { method: 'updateIntroductionCoupon', lineID: resolvedLineUserId }) as Record<string, string> | null;
+          const ambassadorCouponId = couponData?.ambassadorCouponID ?? null;
+          if (ambassadorCouponId && env.STRIPE_SECRET_KEY) {
+            await fetch(`https://api.stripe.com/v1/customers/${stripeCustomerId}`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({ coupon: ambassadorCouponId }).toString(),
+            });
+            ambassadorCouponApplied = true;
+          }
+        } catch (e) { console.error('[stripe/invoice] ambassador coupon failed:', e); }
+      }
+
+      const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
+      await fireEvent(db, 'stripe_invoice_paid', {
+        friendId: resolvedFriend?.id ?? friendId ?? undefined,
+        eventData: {
+          stripeCustomerId, lineUserId: resolvedLineUserId, billingReason, isNewSubscription,
+          planName, planAmount, planTier,
+          subscriptionId, subscriptionStartDateTime, subscriptionEndDateTime,
+          actualPaidAmount, discountAmount, taxAmount, priceExclTax,
+          customerEmail: obj.customer_email ?? '',
+          invoiceId: obj.id,
+          ambassadorCouponApplied,
+        },
+      }, env.LINE_CHANNEL_ACCESS_TOKEN, null, actionEnv);
+
+      console.log(`[stripe/invoice] ${billingReason} customer=${stripeCustomerId} lineUserId=${resolvedLineUserId}`);
     }
 
-    // サブスクリプションイベント処理
-    if (body.type === 'customer.subscription.deleted' && friendId) {
-      const cancelledTag = await db
-        .prepare(`SELECT id FROM tags WHERE name = 'subscription_cancelled'`)
-        .first<{ id: string }>();
-      if (cancelledTag) {
-        await db
-          .prepare(`INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)`)
-          .bind(friendId, cancelledTag.id, jstNow())
-          .run();
+    // ──────────────────────────────────────────
+    // invoice.payment_failed（初回のみLINE通知）
+    // ──────────────────────────────────────────
+    if (body.type === 'invoice.payment_failed') {
+      const attemptCount = obj.attempt_count ?? 0;
+      if (attemptCount !== 1) {
+        console.log(`[stripe/payment_failed] attempt_count=${attemptCount} のためスキップ`);
+      } else {
+        const stripeCustomerId = obj.customer ?? '';
+        let resolvedLineUserId = lineUserId;
+        if (!resolvedLineUserId && stripeCustomerId && env.GAS_DEPLOY_ID) {
+          try {
+            const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
+            resolvedLineUserId = gasData?.customer_line_id ?? null;
+          } catch (e) { console.error('[stripe/payment_failed] getLINEIDwithStripeID failed:', e); }
+        }
+        const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
+        await fireEvent(db, 'stripe_payment_failed', {
+          friendId: resolvedFriend?.id ?? friendId ?? undefined,
+          eventData: { stripeCustomerId, lineUserId: resolvedLineUserId },
+        }, env.LINE_CHANNEL_ACCESS_TOKEN, null, actionEnv);
+      }
+    }
+
+    // ──────────────────────────────────────────
+    // customer.subscription.deleted
+    // ──────────────────────────────────────────
+    if (body.type === 'customer.subscription.deleted') {
+      const stripeCustomerId = obj.customer ?? '';
+      let resolvedLineUserId = lineUserId;
+      if (!resolvedLineUserId && stripeCustomerId && env.GAS_DEPLOY_ID) {
+        try {
+          const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
+          resolvedLineUserId = gasData?.customer_line_id ?? null;
+        } catch (e) { console.error('[stripe/subscription.deleted] getLINEIDwithStripeID failed:', e); }
+      }
+      const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
+      await fireEvent(db, 'stripe_subscription_deleted', {
+        friendId: resolvedFriend?.id ?? friendId ?? undefined,
+        eventData: { stripeCustomerId, lineUserId: resolvedLineUserId, subscriptionId: obj.id },
+      }, env.LINE_CHANNEL_ACCESS_TOKEN, null, actionEnv);
+    }
+
+    // ──────────────────────────────────────────
+    // payment_intent.succeeded（一回決済）
+    // ──────────────────────────────────────────
+    if (body.type === 'payment_intent.succeeded') {
+      if (obj.metadata?.purchaseType === 'ticket') {
+        const ticketLineUserId = obj.metadata?.lineUserId ?? lineUserId;
+        const quantity = parseInt(obj.metadata?.quantity ?? '0', 10);
+        if (ticketLineUserId && quantity > 0) {
+          const ticketFriend = await getFriendByLineUserId(db, ticketLineUserId);
+          await fireEvent(db, 'stripe_ticket_purchased', {
+            friendId: ticketFriend?.id ?? undefined,
+            eventData: { lineUserId: ticketLineUserId, quantity, paymentIntentId: obj.id, amount: obj.amount ?? 0, currency: obj.currency ?? 'jpy' },
+          }, env.LINE_CHANNEL_ACCESS_TOKEN, null, actionEnv);
+        }
+      } else if (friendId) {
+        const { applyScoring } = await import('@line-crm/db');
+        await applyScoring(db, friendId, 'purchase');
+        const productId = obj.metadata?.product_id;
+        if (productId) {
+          const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(`purchased_${productId}`).first<{ id: string }>();
+          if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friendId, tag.id, jstNow()).run();
+        }
+        await fireEvent(db, 'cv_fire', { friendId, eventData: { type: 'purchase', amount: obj.amount, stripeEventId: body.id } });
       }
     }
 

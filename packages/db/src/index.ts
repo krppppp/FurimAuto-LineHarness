@@ -3,6 +3,7 @@ export * from './friends';
 export * from './tags';
 export * from './scenarios';
 export * from './messages';
+export * from './furim';
 export * from './scenario-schedule';
 export * from './scenario-resolve';
 export * from './broadcasts';
