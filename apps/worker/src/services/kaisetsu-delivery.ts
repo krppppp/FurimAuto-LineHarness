@@ -64,8 +64,8 @@ export async function processKaisetsuDeliveries(
       // 今日すでに送信済みならスキップ
       if (meta.kaisetsu_last_sent === today) continue;
 
-      // オートメーションに委譲
-      await fireEvent(db, 'kaisetsu_daily', {
+      // オートメーションに委譲（closing_daily = 試用終盤クロージング配信）
+      await fireEvent(db, 'closing_daily', {
         friendId: friend.id,
         eventData: { remaining_days: remaining },
       }, lineAccessToken);
@@ -74,7 +74,7 @@ export async function processKaisetsuDeliveries(
       await db.prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
         .bind(JSON.stringify(meta), friend.id).run();
 
-      console.log(`[kaisetsu] fired kaisetsu_daily for ${friend.line_user_id}, remaining=${remaining}days`);
+      console.log(`[kaisetsu] fired closing_daily for ${friend.line_user_id}, remaining=${remaining}days`);
     } catch (err) {
       console.error(`[kaisetsu] error for ${friend.line_user_id}:`, err);
     }

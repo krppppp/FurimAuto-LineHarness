@@ -258,7 +258,7 @@ function matchConditions(
     if (payload.eventData.isNewUser !== conditions.isNewUser) return false;
   }
 
-  // remaining_days 範囲チェック（kaisetsu_daily イベント用）
+  // remaining_days 範囲チェック（closing_daily イベント用）
   if (conditions.remaining_days_gte !== undefined && payload.eventData) {
     const rd = payload.eventData.remaining_days as number | undefined;
     if (rd === undefined || rd < (conditions.remaining_days_gte as number)) return false;

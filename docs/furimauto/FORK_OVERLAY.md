@@ -27,7 +27,7 @@
 - packages/db/src/scenarios.ts — getScenarioByName / completeFriendActiveScenarios を追記（upstream は getScenarioById / completeFriendScenario）。**呼び出し側(furim/)を upstream API に寄せる方針なので、ここは将来削除候補** | upstream採用。乖離が出たら furim/ 側を upstream API に合わせる
 - packages/db/src/friends.ts — UpsertFriendInput に `createdAt`（顧客import時の登録日引き継ぎ）。INSERT で `input.createdAt ?? now` | upstream friends.ts に再適用
 - packages/db/src/index.ts — `export * from './messages'` ・ `export * from './furim'`（移植した独自db関数のexport） | export 2行を再追加
-- packages/shared/src/types.ts — AutomationEventType に `kaisetsu_daily` | 型に再追加
+- packages/shared/src/types.ts — AutomationEventType に `closing_daily`（旧 kaisetsu_daily。試用終盤クロージング配信イベント） | 型に再追加
 
 ### web
 - apps/web/src/components/app-shell.tsx — upstream の `UpdateBanner`(改造検知) を furim の `UpstreamUpdateBanner`(フォーク元更新通知のみ) に差し替え（import + タグの2行） | upstream UpdateBanner は無改変で残す。差し替え2行を再適用

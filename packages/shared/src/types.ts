@@ -804,7 +804,7 @@ export type AutomationEventType =
   | "cv_fire"
   | "message_received"
   | "calendar_booked"
-  | "kaisetsu_daily";
+  | "closing_daily";
 
 export interface AutomationAction {
   type: "add_tag" | "remove_tag" | "start_scenario" | "send_message" | "send_webhook" | "switch_rich_menu";
