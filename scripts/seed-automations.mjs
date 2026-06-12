@@ -8,7 +8,9 @@
 import { execSync } from 'child_process';
 
 const isProd = process.argv.includes('--prod');
-const DB_NAME = isProd ? 'line-crm-prod' : 'line-crm';
+const isRebase = process.argv.includes('--rebase');
+const friendAddOnly = process.argv.includes('--friend-add-only');
+const DB_NAME = isProd ? 'line-crm-prod' : isRebase ? 'line-crm-rebase' : 'line-crm';
 const CWD = new URL('../apps/worker', import.meta.url).pathname;
 console.log(`[seed-automations] DB: ${DB_NAME} (${isProd ? 'PROD' : 'DEV'})\n`);
 
@@ -110,9 +112,23 @@ const friendAddId = friendAddResult[0]?.results?.[0]?.id;
 
 if (friendAddId) {
   console.log(`  id: ${friendAddId}`);
-  // step 7-9 を一旦削除して再挿入
-  runSQL(`DELETE FROM automation_actions WHERE automation_id = '${friendAddId}' AND step_order >= 7;`);
-  console.log('  deleted step >= 7');
+  // 全step を一旦削除して再挿入（friend_add フローはこのseedが完全所有）
+  runSQL(`DELETE FROM automation_actions WHERE automation_id = '${friendAddId}';`);
+  console.log('  deleted all steps');
+
+  // ── 新規登録時の顧客登録（CloudFunctions eventFollow 相当） ──
+  // step0: Stripe顧客作成（stripeCustomerId を friend.metadata に保存）
+  insertAction({ automationId: friendAddId, stepOrder: 0, actionType: 'create_stripe_customer', label: 'Stripe顧客作成', conditionJson: { isNewUser: true }, params: { save_to_metadata: 'stripeCustomerId' } });
+  // step1: GAS setCustomerData（スプレッドシートに新規顧客レコード作成）
+  insertAction({ automationId: friendAddId, stepOrder: 1, actionType: 'call_gas_post', label: 'GAS setCustomerData', conditionJson: { isNewUser: true }, params: { method: 'setCustomerData', args: {
+    followEventDateTime: '{{now_jst}}',
+    lineUserDisplayName: '{{display_name}}',
+    lineUserId: '{{line_user_id}}',
+    stripeCustomerId: '{{stripe_customer_id}}',
+    trialFinishedDateTime: '{{trial_end_jst}}',
+  } } });
+  // step2: 無料試用期間中タグ付与
+  insertAction({ automationId: friendAddId, stepOrder: 2, actionType: 'add_tag_by_name', label: '無料試用期間中タグ付与', conditionJson: { isNewUser: true }, params: { tagName: '無料試用期間中' } });
 
   insertAction({ automationId: friendAddId, stepOrder: 7, actionType: 'send_messages', label: 'ウェルカム5通送信', conditionJson: { isNewUser: true }, params: { messages: [
     { messageType: 'flex', altText: 'FurimAuto紹介動画', content: WELCOME_FLEX_VIDEO },
@@ -129,6 +145,11 @@ if (friendAddId) {
   insertAction({ automationId: friendAddId, stepOrder: 9, actionType: 'code_managed', label: '[code] リフォロー時キーコード確認→会員リッチメニュー', conditionJson: { isNewUser: false }, params: { description: 'GAS getKeyCode で有効期限確認 → 期限内なら RICHMENU_MEMBER_HOME を設定' }, isActive: 0 });
 } else {
   console.error('  [error] friend_add automation not found');
+}
+
+if (friendAddOnly) {
+  console.log(`\n✅ 完了(friend-add-only): ${_actionCounter}アクション登録`);
+  process.exit(0);
 }
 
 // ── 2. unfollow ──────────────────────────────────────────────────────────────────────

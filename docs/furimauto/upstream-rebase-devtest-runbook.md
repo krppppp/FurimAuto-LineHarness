@@ -9,8 +9,8 @@ worker/web 両方ビルド通過済み。残りはDB用意＋デプロイ＋動�
 ```bash
 cd ~/github/FurimAuto/LineHarness
 pnpm install
-pnpm --filter './packages/*' run build      # ← 先にpackages（update-engine等）
-pnpm --filter worker run build               # → ✓ built
+pnpm --filter './packages/*' run build     
+pnpm --filter worker run build            
 NEXT_PUBLIC_API_URL=https://line-harness.furimuato.workers.dev NEXT_PUBLIC_API_KEY=dev-furimauto-key pnpm --filter web run build  # → 43ページ
 ```
 
@@ -32,13 +32,58 @@ npx wrangler d1 execute line-crm-rebase --remote --command "SELECT name FROM sql
 ※ secretsはDEV worker(line-harness)に既存のものを流用。
 
 ## 4. 初期データ（最小）
+seed-automations.mjs に `--rebase`（DB_NAME=line-crm-rebase）を追加済み。コピペで投入する。
+
+### (a) タグ28件
 ```bash
-# タグ28（本番構築runbookのINSERT流用、line-crm-rebase 宛に）
-# オートメーション（automation_actions テーブルに入る）
+cd ~/github/FurimAuto/LineHarness/apps/worker
+npx wrangler d1 execute line-crm-rebase --remote --command "
+INSERT OR IGNORE INTO tags (id, name, color, created_at) VALUES
+ (lower(hex(randomblob(16))),'無料試用期間中','#22C55E',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'セグメント1','#6366F1',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'セグメント2','#6366F1',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'セグメント3','#6366F1',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'セグメント4','#6366F1',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'セグメント5','#6366F1',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'セグメント6','#6366F1',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'セグメント7','#6366F1',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'セグメント8','#6366F1',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'紹介経由','#F59E0B',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'Furimanです','#F59E0B',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'解説見た','#F59E0B',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'月額会員','#3B82F6',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'月額3000','#3B82F6',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'月額5000','#3B82F6',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'月額8000','#3B82F6',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'月額10000','#3B82F6',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'月額15000','#3B82F6',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'月額19800','#3B82F6',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'サブアカウント','#3B82F6',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'サブ垢','#3B82F6',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'アンバサダーLv.1','#EC4899',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'アンバサダーLv.5','#EC4899',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'アンバサダーLv.10','#EC4899',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'キャンセル済み','#EF4444',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'ブロック','#EF4444',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'未使用ユーザー','#6B7280',datetime('now','+9 hours')),
+ (lower(hex(randomblob(16))),'見込客','#F97316',datetime('now','+9 hours'))
+"
+npx wrangler d1 execute line-crm-rebase --remote --command "SELECT COUNT(*) FROM tags"  # 28
+```
+
+### (b) friend_add オートメーション素体（seed-automations が step7-9 を付ける土台）
+```bash
+npx wrangler d1 execute line-crm-rebase --remote --command "
+INSERT OR IGNORE INTO automations (id, name, description, event_type, conditions, actions, is_active, priority, created_at, updated_at)
+VALUES (lower(hex(randomblob(16))),'友だち追加フロー','友だち追加時のウェルカム配信','friend_add','{}','[]',1,0,datetime('now','+9 hours'),datetime('now','+9 hours'))
+"
+```
+
+### (c) オートメーション一括投入（automation_actions へ）
+```bash
 cd ~/github/FurimAuto/LineHarness
-# seed-automations は DB名を line-crm-rebase に変える必要がある（スクリプト内 DB_NAME）。
-# 簡易には seed-automations.mjs をコピーして DB_NAME='line-crm-rebase' に。
-# シナリオは「後で再構築」方針なので一旦スキップ可。
+node scripts/seed-automations.mjs --rebase
+# シナリオ14本は「後で再構築」方針なので一旦スキップ。
 ```
 
 ## 5. デプロイ（DEV）

@@ -9,10 +9,11 @@ account_id = "f2b335f4f9d276383643c76f1e5cc6f9"
 directory = "dist/client"
 binding = "ASSETS"
 
+# ※ rebase検証中だけ line-crm-rebase に向けている。検証後は line-crm(4b46e187…) に戻す
 [[d1_databases]]
 binding = "DB"
-database_name = "line-crm"
-database_id = "4b46e187-36e2-467f-87d4-24d07953d802"
+database_name = "line-crm-rebase"
+database_id = "2fa9387e-61fb-4f81-9b18-4087837feabd"
 
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
@@ -27,6 +28,9 @@ WORKER_PUBLIC_URL = "https://line-harness.furimuato.workers.dev"
 ADMIN_PUBLIC_URL = "https://furim-dev.line-harness-admin-7je.pages.dev"
 LIFF_PUBLIC_URL = "https://line-harness.furimuato.workers.dev"
 CF_ACCOUNT_ID = "f2b335f4f9d276383643c76f1e5cc6f9"
+# 管理UI(Pages)はworkerとクロスサイト。CORS許可＋SameSite=None cookie に必要。
+ADMIN_ORIGIN = "https://furim-dev.line-harness-admin-7je.pages.dev"
+ADMIN_ALLOW_CROSS_SITE = "true"
 
 [env.prod]
 workers_dev = true
@@ -46,3 +50,5 @@ WORKER_PUBLIC_URL = "https://line-harness-prod.furimuato.workers.dev"
 ADMIN_PUBLIC_URL = "https://line-harness-admin-prod-6mo.pages.dev"
 LIFF_PUBLIC_URL = "https://line-harness-prod.furimuato.workers.dev"
 CF_ACCOUNT_ID = "f2b335f4f9d276383643c76f1e5cc6f9"
+ADMIN_ORIGIN = "https://line-harness-admin-prod-6mo.pages.dev"
+ADMIN_ALLOW_CROSS_SITE = "true"
