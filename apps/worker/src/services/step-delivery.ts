@@ -433,6 +433,25 @@ export function buildMessage(messageType: string, messageContent: string, altTex
     }
   }
 
+  // FurimAuto: ステップ配信に解説動画(video)を含むため対応（upstream は text/image/flex のみ）
+  if (messageType === 'video') {
+    try {
+      const parsed = JSON.parse(messageContent) as {
+        originalContentUrl: string;
+        previewImageUrl: string;
+        trackingId?: string;
+      };
+      return {
+        type: 'video',
+        originalContentUrl: parsed.originalContentUrl,
+        previewImageUrl: parsed.previewImageUrl,
+        ...(parsed.trackingId ? { trackingId: parsed.trackingId } : {}),
+      } as Message;
+    } catch {
+      return { type: 'text', text: messageContent };
+    }
+  }
+
   // Fallback
   return { type: 'text', text: messageContent };
 }

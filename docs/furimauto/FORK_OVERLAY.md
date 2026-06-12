@@ -21,6 +21,7 @@
 - apps/worker/src/services/event-bus.ts — 独自アクション: call_gas / call_gas_post / call_gas_get / send_messages / create_stripe_customer / add_tag_by_name / remove_tag_by_name / complete_active_scenarios / code_managed。条件演算子 not_empty/empty/equals/not_equals/falsy。resolveGasArgs（{{line_user_id}}/{{display_name}}/{{stripe_customer_id}}/{{now_jst}}/{{trial_end_jst}}）。ActionEnv で env を action へ | upstream の executeAction switch に独自 case を追加
 - apps/worker/src/routes/stripe.ts — gasGet(LINE_ID↔Stripe_ID 変換)・updateIntroductionCoupon。stripe_invoice_paid / stripe_payment_failed / stripe_subscription_deleted / stripe_ticket_purchased / cv_fire で fireEvent | upstream stripe.ts の各イベント処理に GAS連携＋fireEvent を再注入
 - apps/worker/src/middleware/auth.ts — `/liff` を auth 除外に追加（upstream は `/setup` 除外。両方残す） | 1行再適用
+- apps/worker/src/services/step-delivery.ts — `buildMessage` に video 分岐を追加（ステップ配信に解説動画を含むため。upstreamは text/image/flex のみ）。DB側は migration 047_scenario_steps_allow_video.sql で `scenario_steps.message_type` CHECK に 'video' を追加 | video case を再適用。schema.sql は無改変、video許可は 047 migration が担う
 
 ### db / shared
 - packages/db/src/scenarios.ts — getScenarioByName / completeFriendActiveScenarios を追記（upstream は getScenarioById / completeFriendScenario）。**呼び出し側(furim/)を upstream API に寄せる方針なので、ここは将来削除候補** | upstream採用。乖離が出たら furim/ 側を upstream API に合わせる
