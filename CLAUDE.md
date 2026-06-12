@@ -10,6 +10,13 @@
 
 OSS汎用仕様は `docs/wiki/` にある（基本触らない）。
 
+## フォーク元(upstream)を取り込む時は必ず
+
+1. **`docs/furimauto/FORK_OVERLAY.md`** を読む — FurimAuto が upstream の既存共有ファイルに入れている独自フックの生きたレジストリ。コンフリクトしやすい箇所と再適用方針が載っている。
+2. マージは手動 `git merge` ではなく **`scripts/merge-upstream.sh`** を使う — FORK_OVERLAY を自動参照し、今回 upstream 側でも変更された＝コンフリクト確定のファイルを事前警告し、コンフリクト時は該当フックの再適用方針を表示する。
+3. **共有ファイルに新しい独自フックを足したら、必ず `FORK_OVERLAY.md` のレジストリに1行追記する**（state を最新に保つ。これを怠ると次回マージで見落とす）。
+4. 独自ロジックは極力 `apps/worker/src/furim/` ・ `apps/web/src/components/furim/` に隔離し、共有ファイルへの注入は「数行＋furim/側の呼び出し」に留める。
+
 ---
 
 ## ドキュメント構成
