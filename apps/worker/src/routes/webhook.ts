@@ -22,8 +22,9 @@ import { handleKeywordAction } from '../furim/keyword-actions.js';
 import { handleAIChat } from '../furim/ai-chat.js';
 import { getAiMode } from '../furim/firebase-client.js';
 import { withOutgoingLog } from '../utils/message-log.js';
+import { notifyStaffOfIncomingMessage } from '../services/push-notify.js';
 
-type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GAS_DEPLOY_ID?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string };
+type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GAS_DEPLOY_ID?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string };
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -375,6 +376,14 @@ async function handleEvent(
     // 画像だけ送ってきた友だち」をバッジ・未対応一覧から永久に落としてしまう。
     // 非 text は auto_reply keyword にマッチし得ないので常に要対応扱いで正しい。
     await upsertChatOnMessage(db, friend.id);
+    if (env) {
+      await notifyStaffOfIncomingMessage(db, env, {
+        friendId: friend.id,
+        friendName: friend.display_name,
+        accountId: lineAccountId,
+        preview: content,
+      });
+    }
     return;
   }
 
@@ -485,6 +494,14 @@ async function handleEvent(
     const isTimeCommand = /(?:配信時間|配信|届けて|通知)[はを]?\s*\d{1,2}\s*時/.test(incomingText);
     if (!isAutoKeyword && !isTimeCommand && !isRichMenuMessage) {
       await upsertChatOnMessage(db, friend.id);
+      if (env) {
+        await notifyStaffOfIncomingMessage(db, env, {
+          friendId: friend.id,
+          friendName: friend.display_name,
+          accountId: lineAccountId,
+          preview: incomingText,
+        });
+      }
     }
 
     // 配信時間設定: 「配信時間は○時」「○時に届けて」等のパターンを検出

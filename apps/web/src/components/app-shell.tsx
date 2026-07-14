@@ -1,15 +1,35 @@
 'use client'
+import { useEffect } from 'react'
 import { usePathname } from 'next/navigation'
 import Sidebar from './layout/sidebar'
 // FurimAuto: upstreamの「改造を検知」バナーは出さず、フォーク元の新リリース通知のみ表示する独自バナーに差し替え。
 import { UpstreamUpdateBanner } from './furim/upstream-update-banner'
 import AuthGuard from './auth-guard'
 import { AccountProvider } from '@/contexts/account-context'
+import { registerServiceWorker, syncAppBadge } from '@/lib/push'
+import { UNANSWERED_REFRESH_EVENT } from '@/lib/events'
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  const isLogin = pathname === '/login'
 
-  if (pathname === '/login') {
+  useEffect(() => {
+    if (isLogin) return
+    registerServiceWorker()
+    syncAppBadge()
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncAppBadge()
+    }
+    const onRefresh = () => syncAppBadge()
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener(UNANSWERED_REFRESH_EVENT, onRefresh)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener(UNANSWERED_REFRESH_EVENT, onRefresh)
+    }
+  }, [isLogin])
+
+  if (isLogin) {
     return <>{children}</>
   }
 

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Header from '@/components/layout/header'
+import PushSettings from '@/components/push-settings'
 import InboxFilters from '@/components/inbox/inbox-filters'
 import InboxList from '@/components/inbox/inbox-list'
 import InboxSummaryBar from '@/components/inbox/inbox-summary-bar'
@@ -139,6 +140,8 @@ export default function InboxPage() {
         title="未対応インボックス"
         description="人間が返事してない LINE 会話の triage。auto_reply は人間の返事に数えない。"
       />
+
+      <PushSettings />
 
       <InboxSummaryBar
         total={summary.total}

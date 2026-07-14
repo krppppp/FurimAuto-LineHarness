@@ -1059,6 +1059,22 @@ export const api = {
         }>>('/api/inbox/unanswered/count'),
     },
   },
+  push: {
+    vapidPublicKey: () =>
+      fetchApi<ApiResponse<{ publicKey: string }>>('/api/push/vapid-public-key'),
+    subscribe: (body: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+      fetchApi<ApiResponse<undefined>>('/api/push/subscribe', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    unsubscribe: (body: { endpoint: string }) =>
+      fetchApi<ApiResponse<undefined>>('/api/push/unsubscribe', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    test: () =>
+      fetchApi<ApiResponse<undefined>>('/api/push/test', { method: 'POST' }),
+  },
   richMenuGroups: {
     list: (accountId: string) =>
       fetchApi<ApiResponse<Array<{
