@@ -8,7 +8,7 @@ import { useAccount } from '@/contexts/account-context'
 import CcPromptButton from '@/components/cc-prompt-button'
 import FlexPreviewComponent from '@/components/flex-preview'
 import FriendInfoSidebar from '@/components/chats/friend-info-sidebar'
-import ImageUploader, { type ImageUploaderValue } from '@/components/shared/image-uploader'
+import { type ImageUploaderValue } from '@/components/shared/image-uploader'
 
 interface Chat {
   id: string
@@ -55,11 +55,11 @@ const statusFilters: { key: StatusFilter; label: string }[] = [
   { key: 'resolved', label: '解決済' },
 ]
 
-const SHOW_LOADING_PREF_KEY = 'lh_chat_show_loading_indicator'
 // 一覧の1ページ件数。worker 側 /api/chats のデフォルト LIMIT と揃える。
 const CHAT_PAGE_SIZE = 300
-const LOADING_SECONDS_PREF_KEY = 'lh_chat_loading_seconds'
-const LOADING_REFRESH_INTERVAL_MS = 4000
+// 開いている会話のポーリング間隔（LINE風のリアルタイム更新）。一覧はその3倍間隔
+const CHAT_DETAIL_POLL_MS = 5000
+const CHAT_LIST_POLL_MS = 15000
 
 function StickerMessageImage({ content }: { content: string }) {
   const [failed, setFailed] = useState(false)
@@ -318,8 +318,6 @@ export default function ChatsPage() {
     const url = qs ? `${window.location.pathname}?${qs}` : window.location.pathname
     window.history.replaceState(null, '', url)
   }, [unansweredOnly])
-  // Send mode: 'enter' = Enter sends, Shift+Enter = newline; 'shift-enter' = reverse
-  const [sendMode, setSendMode] = useState<'enter' | 'shift-enter'>('enter')
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMoreChats, setHasMoreChats] = useState(false)
@@ -331,36 +329,11 @@ export default function ChatsPage() {
   const sendLockRef = useRef(false)
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
-  const [showLoadingIndicator, setShowLoadingIndicator] = useState(false)
-  const [loadingSeconds, setLoadingSeconds] = useState(5)
-  const lastLoadingTriggerAtRef = useRef<Record<string, number>>({})
-  const [isMessageInputFocused, setIsMessageInputFocused] = useState(false)
+  const [uploadingImage, setUploadingImage] = useState(false)
+  const imageInputRef = useRef<HTMLInputElement>(null)
   const isComposingRef = useRef(false)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-
-  useEffect(() => {
-    try {
-      const rawEnabled = localStorage.getItem(SHOW_LOADING_PREF_KEY)
-      const rawSeconds = localStorage.getItem(LOADING_SECONDS_PREF_KEY)
-      if (rawEnabled !== null) setShowLoadingIndicator(rawEnabled === '1')
-      if (rawSeconds) {
-        const n = Number.parseInt(rawSeconds, 10)
-        if (Number.isFinite(n) && n >= 5 && n <= 60) setLoadingSeconds(n)
-      }
-    } catch {
-      // localStorage unavailable
-    }
-  }, [])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(SHOW_LOADING_PREF_KEY, showLoadingIndicator ? '1' : '0')
-      localStorage.setItem(LOADING_SECONDS_PREF_KEY, String(loadingSeconds))
-    } catch {
-      // localStorage unavailable
-    }
-  }, [showLoadingIndicator, loadingSeconds])
 
   // ページング用カーソル。表示リストは楽観更新で並び替わるため、
   // 「サーバから最後に受け取った行」を ref で保持して次ページの起点にする
@@ -449,17 +422,6 @@ export default function ChatsPage() {
   useEffect(() => { statusFilterRef.current = statusFilter }, [statusFilter])
   useEffect(() => { unansweredOnlyRef.current = unansweredOnly }, [unansweredOnly])
 
-  // Load/save sendMode preference (guarded — privacy-restricted browsers throw)
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('chat.sendMode')
-      if (saved === 'enter' || saved === 'shift-enter') setSendMode(saved)
-    } catch { /* localStorage unavailable */ }
-  }, [])
-  useEffect(() => {
-    try { localStorage.setItem('chat.sendMode', sendMode) } catch { /* ignore */ }
-  }, [sendMode])
-
   const loadChatDetail = useCallback(async (chatId: string) => {
     setDetailLoading(true)
     setError('')
@@ -504,6 +466,63 @@ export default function ChatsPage() {
       setChatDetail(null)
     }
   }, [selectedChatId, loadChatDetail])
+
+  // LINE風リアルタイム更新: 開いている会話をポーリングして新着を反映する。
+  // loadChatDetail と違い detailLoading や notes 入力を触らず、変化があった時だけ
+  // state を更新する（再レンダリング・スクロール追従を最小化）。タブ非表示中は休む
+  useEffect(() => {
+    if (!selectedChatId) return
+    let stopped = false
+    const tick = async () => {
+      if (document.hidden) return
+      try {
+        const res = await api.chats.get(selectedChatId)
+        if (stopped || !res.success) return
+        const fresh = res.data as unknown as ChatDetail
+        setChatDetail((prev) => {
+          if (!prev || prev.id !== fresh.id) return prev
+          const prevMsgs = prev.messages ?? []
+          const freshMsgs = fresh.messages ?? []
+          const unchanged =
+            prevMsgs.length === freshMsgs.length &&
+            prevMsgs[prevMsgs.length - 1]?.id === freshMsgs[freshMsgs.length - 1]?.id &&
+            prev.status === fresh.status
+          return unchanged ? prev : fresh
+        })
+      } catch { /* ポーリング失敗は無視（次回に回復） */ }
+    }
+    const id = window.setInterval(tick, CHAT_DETAIL_POLL_MS)
+    return () => {
+      stopped = true
+      window.clearInterval(id)
+    }
+  }, [selectedChatId])
+
+  // 一覧側も静かにポーリング: 既存行はサーバ値で置換、新規行は先頭に追加して
+  // lastMessageAt 降順を維持する。loadChats と違い loading スピナーを出さない
+  useEffect(() => {
+    const tick = async () => {
+      if (document.hidden) return
+      try {
+        const chatRes = await api.chats.list(buildListParams(null))
+        if (!chatRes.success) return
+        const rows = chatRes.data as unknown as Chat[]
+        setChats((prev) => {
+          const byId = new Map(rows.map((r) => [r.id, r]))
+          const merged = prev.map((c) => byId.get(c.id) ?? c)
+          const seen = new Set(merged.map((c) => c.id))
+          const added = rows.filter((r) => !seen.has(r.id))
+          return [...added, ...merged].sort((a, b) => {
+            const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
+            const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
+            return bt - at
+          })
+        })
+      } catch { /* ポーリング失敗は無視 */ }
+    }
+    const id = window.setInterval(tick, CHAT_LIST_POLL_MS)
+    return () => window.clearInterval(id)
+  }, [buildListParams])
 
   // Surface deep-linked chats in the sidebar even when the current account
   // filter or status filter would exclude them — otherwise the user replies
@@ -582,24 +601,34 @@ export default function ChatsPage() {
     setPendingImage(null)
   }
 
-  const triggerLoadingAnimation = useCallback(async (chatId: string) => {
-    if (!showLoadingIndicator) return
-
-    const now = Date.now()
-    const last = lastLoadingTriggerAtRef.current[chatId] ?? 0
-    if (now - last < LOADING_REFRESH_INTERVAL_MS) return
-    lastLoadingTriggerAtRef.current[chatId] = now
-
-    try {
-      await fetchApi<{ success: boolean }>(`/api/chats/${chatId}/loading`, {
-        method: 'POST',
-        body: JSON.stringify({ loadingSeconds }),
-      })
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : 'unknown'
-      setError(`ローディング表示の開始に失敗しました: ${detail}`)
+  // LINE風の画像送信: アイコンから端末のカメラ/ライブラリを開く。
+  // 制約は ImageUploader と同じ (JPEG/PNG・1MB。LINE の previewImageUrl サイズ制限)
+  const handleImageFile = useCallback(async (file: File | undefined) => {
+    if (!file) return
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      setError('画像は JPEG または PNG のみ送信できます')
+      return
     }
-  }, [showLoadingIndicator, loadingSeconds])
+    if (file.size > 1024 * 1024) {
+      setError('画像は 1MB 以下にしてください')
+      return
+    }
+    setUploadingImage(true)
+    setError('')
+    try {
+      const res = await api.uploads.image(file)
+      if (res.success) {
+        const url = res.data.url
+        setPendingImage({ mode: 'line-image', originalContentUrl: url, previewImageUrl: url })
+      } else {
+        setError((res as { error?: string }).error ?? '画像のアップロードに失敗しました')
+      }
+    } catch {
+      setError('画像のアップロードに失敗しました')
+    } finally {
+      setUploadingImage(false)
+    }
+  }, [])
 
   const handleSendMessage = async () => {
     if (!selectedChatId || sending || sendLockRef.current) return
@@ -758,10 +787,8 @@ export default function ChatsPage() {
     // IME変換確定のEnterでは送信しない
     if (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229) return
     if (e.key !== 'Enter') return
-    // sendMode 'enter': Enter単体で送信、Shift+Enterは改行
-    // sendMode 'shift-enter': Shift+Enterで送信、Enter単体は改行
-    const shouldSend = sendMode === 'enter' ? !e.shiftKey : e.shiftKey
-    if (shouldSend) {
+    // 送信キーは Shift+Enter 固定（Enter単体は改行）。誤送信防止のため設定は設けない
+    if (e.shiftKey) {
       e.preventDefault()
       handleSendMessage()
     }
@@ -1122,85 +1149,65 @@ export default function ChatsPage() {
                 </div>
               </div>
 
-              {/* Send Message Form */}
+              {/* Send Message Form — LINE風: 画像アイコン + 入力欄 + 送信。送信キーはShift+Enter固定 */}
               <div className="px-4 py-3 border-t border-gray-200">
-                <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-600">
-                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={showLoadingIndicator}
-                      onChange={(e) => setShowLoadingIndicator(e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
-                    />
-                    入力中ローディングを表示
-                  </label>
-                  <select
-                    value={loadingSeconds}
-                    onChange={(e) => setLoadingSeconds(Number.parseInt(e.target.value, 10))}
-                    disabled={!showLoadingIndicator}
-                    className="border border-gray-300 rounded-md px-2 py-1 bg-white disabled:bg-gray-100 disabled:text-gray-400"
-                  >
-                    {[5, 10, 15, 20, 30, 45, 60].map((sec) => (
-                      <option key={sec} value={sec}>{sec}秒</option>
-                    ))}
-                  </select>
-                  <span className="text-gray-500">送信キー:</span>
-                  <label className="flex items-center gap-1 cursor-pointer">
-                    <input
-                      type="radio"
-                      checked={sendMode === 'enter'}
-                      onChange={() => setSendMode('enter')}
-                      className="accent-green-600"
-                    />
-                    <span>Enter</span>
-                  </label>
-                  <label className="flex items-center gap-1 cursor-pointer">
-                    <input
-                      type="radio"
-                      checked={sendMode === 'shift-enter'}
-                      onChange={() => setSendMode('shift-enter')}
-                      className="accent-green-600"
-                    />
-                    <span>Shift+Enter</span>
-                  </label>
-                </div>
-                <div className="mb-2">
-                  <ImageUploader
-                    mode="line-image"
-                    value={pendingImage}
-                    onChange={setPendingImage}
-                    label="画像を送る (任意)"
-                  />
-                </div>
+                {pendingImage && pendingImage.mode === 'line-image' && (
+                  <div className="mb-2 flex items-center gap-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={pendingImage.previewImageUrl} alt="" className="h-16 w-16 rounded-lg object-cover ring-1 ring-gray-200" />
+                    <button
+                      type="button"
+                      onClick={() => setPendingImage(null)}
+                      className="text-xs font-medium text-rose-600 underline"
+                    >
+                      取り消し
+                    </button>
+                  </div>
+                )}
                 <div className="flex items-end gap-2">
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png"
+                    className="hidden"
+                    onChange={(e) => {
+                      void handleImageFile(e.target.files?.[0])
+                      e.target.value = ''
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => imageInputRef.current?.click()}
+                    disabled={uploadingImage}
+                    aria-label="画像を選択"
+                    title="画像を送る"
+                    className="flex-shrink-0 p-2 rounded-full text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors disabled:opacity-50"
+                  >
+                    {uploadingImage ? (
+                      <span className="block h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-green-500" />
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-6 w-6">
+                        <rect x="3" y="5" width="18" height="14" rx="2" />
+                        <circle cx="8.5" cy="10" r="1.5" fill="currentColor" stroke="none" />
+                        <path d="m5 17 4.5-4.5 3 3L16 12l3 3" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
+                  </button>
                   <textarea
                     ref={textareaRef}
                     rows={2}
                     value={messageContent}
                     style={{ maxHeight: '200px', overflowY: 'auto' }}
-                    onChange={(e) => {
-                      const value = e.target.value
-                      setMessageContent(value)
-                      if (selectedChatId && isMessageInputFocused && value.trim()) {
-                        void triggerLoadingAnimation(selectedChatId)
-                      }
-                    }}
+                    onChange={(e) => setMessageContent(e.target.value)}
                     onCompositionStart={() => { isComposingRef.current = true }}
                     onCompositionEnd={() => { isComposingRef.current = false }}
-                    onFocus={() => {
-                      setIsMessageInputFocused(true)
-                      if (selectedChatId) {
-                        void triggerLoadingAnimation(selectedChatId)
-                      }
-                    }}
-                    onBlur={() => setIsMessageInputFocused(false)}
                     onKeyDown={handleKeyDown}
-                    placeholder="メッセージを入力..."
+                    placeholder="メッセージを入力... (Shift+Enterで送信)"
                     className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none overflow-y-auto"
                   />
                   <button
                     onClick={handleSendMessage}
-                    disabled={sending || (!messageContent.trim() && !pendingImage)}
+                    disabled={sending || uploadingImage || (!messageContent.trim() && !pendingImage)}
                     className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
                     style={{ backgroundColor: '#06C755' }}
                   >
