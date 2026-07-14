@@ -479,6 +479,7 @@ export default function ChatsPage() {
         const res = await api.chats.get(selectedChatId)
         if (stopped || !res.success) return
         const fresh = res.data as unknown as ChatDetail
+        let changed = false
         setChatDetail((prev) => {
           if (!prev || prev.id !== fresh.id) return prev
           const prevMsgs = prev.messages ?? []
@@ -487,8 +488,28 @@ export default function ChatsPage() {
             prevMsgs.length === freshMsgs.length &&
             prevMsgs[prevMsgs.length - 1]?.id === freshMsgs[freshMsgs.length - 1]?.id &&
             prev.status === fresh.status
+          if (!unchanged) changed = true
           return unchanged ? prev : fresh
         })
+        // 新着を検知したら一覧側の該当行も即時更新して先頭へ（15秒の一覧ポーリングを待たない）
+        const lastMsg = (fresh.messages ?? [])[(fresh.messages ?? []).length - 1]
+        if (changed && lastMsg) {
+          setChats((prev) => {
+            const updated = prev.map((c) => c.id === fresh.id ? {
+              ...c,
+              status: fresh.status,
+              lastMessageAt: lastMsg.createdAt,
+              lastMessageContent: lastMsg.messageType === 'text' ? lastMsg.content : null,
+              lastMessageDirection: lastMsg.direction,
+              lastMessageType: lastMsg.messageType,
+            } : c)
+            return [...updated].sort((a, b) => {
+              const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
+              const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
+              return bt - at
+            })
+          })
+        }
       } catch { /* ポーリング失敗は無視（次回に回復） */ }
     }
     const id = window.setInterval(tick, CHAT_DETAIL_POLL_MS)
@@ -894,27 +915,28 @@ export default function ChatsPage() {
                         )}
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                              {chat.status === 'unread' && (
-                                <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" aria-label="未読" />
-                              )}
-                              <p className="text-sm font-medium text-gray-900 truncate">{chat.friendName}</p>
-                            </div>
+                            <p className="text-sm font-medium text-gray-900 truncate min-w-0 flex-1">{chat.friendName}</p>
                             <span className="text-[10px] text-gray-400 flex-shrink-0">{formatDatetime(chat.lastMessageAt)}</span>
                           </div>
-                          <p
-                            className={`text-xs mt-0.5 truncate ${
-                              needsAttention
-                                ? 'text-gray-900 font-medium'
-                                : 'text-gray-400'
-                            }`}
-                            title={preview}
-                          >
-                            {chat.lastMessageDirection === 'outgoing' && (
-                              <span className="text-gray-400 mr-1">↪</span>
+                          <div className="flex items-center justify-between gap-2 mt-0.5">
+                            <p
+                              className={`text-xs truncate min-w-0 flex-1 ${
+                                needsAttention
+                                  ? 'text-gray-900 font-medium'
+                                  : 'text-gray-400'
+                              }`}
+                              title={preview}
+                            >
+                              {chat.lastMessageDirection === 'outgoing' && (
+                                <span className="text-gray-400 mr-1">↪</span>
+                              )}
+                              {preview || <span className="italic text-gray-300">(まだメッセージなし)</span>}
+                            </p>
+                            {/* 未読は右側の緑ドットで示す（LINE公式アプリ準拠） */}
+                            {chat.status === 'unread' && (
+                              <span className="w-2.5 h-2.5 rounded-full bg-green-500 flex-shrink-0" aria-label="未読" />
                             )}
-                            {preview || <span className="italic text-gray-300">(まだメッセージなし)</span>}
-                          </p>
+                          </div>
                         </div>
                       </div>
                     </button>

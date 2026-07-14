@@ -257,10 +257,10 @@ chats.get('/api/chats', async (c) => {
     // chats を lookup する (無条件時は 全friend × chats lookup を省く)。
     const pageNeedsChats = Boolean(status || operatorId);
 
-    // preview は **最新の incoming (ユーザー発)** を優先する。auto_reply / scenario 等の
-    // outbound が直後に書き込まれて preview を上書きすると「ユーザーが何と言ったか」が
-    // 一覧から見えなくなる (operator triage の主目的が損なわれる)。
-    // incoming が無い (broadcast push など outbound only) chat は最新 outbound にフォールバック。
+    // preview は **最新メッセージ（方向問わず）** を表示する（2026-07-14 LINE公式アプリ準拠に変更。
+    // 旧実装は incoming 優先だったが、自動送信後も古いユーザー発言が出続けて
+    // 「一覧が更新されない」ように見えるため廃止。要対応の判別は status='unread' と
+    // 未対応インボックスが担う）。
     // text 以外 (flex/image/sticker 等) は content を NULL にして payload size を抑える
     // (フロントは type で 📋 Flex / 📷 画像 等のラベルを出すので content は不要)。
     // any_agg / in_agg の bare column (content 等) は「単一 MAX() を含む集約は max 行の
@@ -305,25 +305,9 @@ chats.get('/api/chats', async (c) => {
           AND friend_id IN (SELECT friend_id FROM page)
         GROUP BY friend_id
       ),
-      in_agg AS (
-        SELECT friend_id,
-          CASE WHEN message_type = 'text' THEN SUBSTR(content, 1, 200) ELSE NULL END AS content,
-          message_type,
-          MAX(created_at) AS created_at
-        FROM messages_log
-        WHERE direction = 'incoming'
-          AND (delivery_type IS NULL OR delivery_type != 'test')
-          AND friend_id IN (SELECT friend_id FROM page)
-        GROUP BY friend_id
-      ),
       recent_msg AS (
-        SELECT a.friend_id,
-          COALESCE(i.content, a.content) AS content,
-          CASE WHEN i.friend_id IS NOT NULL THEN 'incoming' ELSE a.direction END AS direction,
-          COALESCE(i.message_type, a.message_type) AS message_type,
-          COALESCE(i.created_at, a.created_at) AS preview_at
-        FROM any_agg a
-        LEFT JOIN in_agg i ON i.friend_id = a.friend_id
+        SELECT friend_id, content, direction, message_type, created_at AS preview_at
+        FROM any_agg
       )
       SELECT
         f.id AS id,
