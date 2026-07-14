@@ -146,6 +146,12 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
       metadata: JSON.stringify(obj.metadata ?? {}),
     });
 
+    // Stripe は約20秒で応答が無いと配信失敗（タイムアウト）扱いにして再送する。
+    // 本処理は GAS 連携等で20秒を超え得るため、先に 200 を返して waitUntil で
+    // 非同期実行する。冪等性レコード（createStripeEvent）は挿入済みなので、
+    // 処理中に再送が来ても Already processed で弾かれ二重処理はない（従来と同じ）。
+    const processEvent = async () => {
+
     const actionEnv = { lineAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN, gasDeployId: env.GAS_DEPLOY_ID, stripeSecretKey: env.STRIPE_SECRET_KEY };
 
     // ──────────────────────────────────────────
@@ -226,14 +232,25 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
           const syncRes = result as { planLabel?: string; keyCode?: string; keyCodeIssued?: boolean } | null;
           if (!planName) planName = syncRes?.planLabel || pbLabel;
 
-          // 更新課金でキーコードが再発行された場合（=ダウングレード予約の切替日など）は
-          // 新キーコードをユーザーへ通知する（変更即時実行時の通知はplan-change.tsが返信済み）
-          if (syncRes?.keyCodeIssued && syncRes.keyCode && billingReason === 'subscription_cycle' && resolvedLineUserId && env.LINE_CHANNEL_ACCESS_TOKEN) {
+          // キーコードが再発行された場合は新キーコードをユーザーへ通知する。
+          // - subscription_cycle: ダウングレード予約の切替日・移行顧客の初回更新（ラベル変化で再発行）
+          // - subscription_update: アップグレード即時実行の差額invoice。通常はplan-change.tsの
+          //   同期が先に発行して返信するが、この同期が競合で先勝ちした場合（2026-07-14 澁谷さん
+          //   事象の類型）はplan-change側がkeyCodeIssued=falseになり通知が漏れるため、ここで送る。
+          //   発行判定は冪等（ラベル一致なら再発行しない）ので二重通知にはならない
+          if (syncRes?.keyCodeIssued && syncRes.keyCode && (billingReason === 'subscription_cycle' || billingReason === 'subscription_update') && resolvedLineUserId && env.LINE_CHANNEL_ACCESS_TOKEN) {
             try {
-              const kcText = `🔑 本日の更新でご予約のプラン変更が適用され、キーコードが新しくなりました。\n\n新しいキーコード:\n${syncRes.keyCode}\n\n拡張機能のキーコード欄に新しいキーコードを入力し直してご利用ください。`;
-              await new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN).pushMessage(resolvedLineUserId, [{ type: 'text', text: kcText } as never]);
+              // キーコードは単独メッセージで送る（LINE はメッセージ単位でしかコピーできないため）
+              const kcText = `🔑 本日の更新でご予約のプラン変更が適用され、キーコードが新しくなりました。\n\n次のメッセージでお送りするキーコードをコピーして、拡張機能のキーコード欄に入力し直してご利用ください。`;
+              await new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN).pushMessage(resolvedLineUserId, [
+                { type: 'text', text: kcText } as never,
+                { type: 'text', text: syncRes.keyCode } as never,
+              ]);
               const kcFriend = await getFriendByLineUserId(db, resolvedLineUserId);
-              if (kcFriend) await logOutgoing(db, kcFriend.id, 'text', kcText);
+              if (kcFriend) {
+                await logOutgoing(db, kcFriend.id, 'text', kcText);
+                await logOutgoing(db, kcFriend.id, 'text', syncRes.keyCode);
+              }
             } catch (e) {
               console.error('[stripe/invoice] keycode notice failed:', e);
             }
@@ -437,6 +454,13 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
         await fireEvent(db, 'cv_fire', { friendId, eventData: { type: 'purchase', amount: obj.amount, stripeEventId: body.id } });
       }
     }
+
+    };
+    c.executionCtx.waitUntil(
+      processEvent().catch((err) => {
+        console.error('[stripe/webhook] async processing error:', err);
+      }),
+    );
 
     return c.json({
       success: true,

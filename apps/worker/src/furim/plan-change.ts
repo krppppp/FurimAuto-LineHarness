@@ -258,10 +258,13 @@ export async function handlePlanChangeMessage(
       },
     ];
     if (keyCodeIssued && newKeyCode) {
+      // キーコードは単独メッセージで送る（LINE はメッセージ単位でしかコピーできないため、
+      // 長文に混ぜるとユーザーがコピーしづらい）
       messages.push({
         type: 'text',
-        text: `🔑 プラン変更に伴い、キーコードが新しくなりました。\n\n新しいキーコード:\n${newKeyCode}\n\n拡張機能のキーコード欄に新しいキーコードを入力し直してご利用ください。`,
+        text: `🔑 プラン変更に伴い、キーコードが新しくなりました。\n\n次のメッセージでお送りするキーコードをコピーして、拡張機能のキーコード欄に入力し直してご利用ください。`,
       });
+      messages.push({ type: 'text', text: newKeyCode });
     }
     await lineClient.replyMessage(replyToken, messages as never[]);
   } catch (err) {
