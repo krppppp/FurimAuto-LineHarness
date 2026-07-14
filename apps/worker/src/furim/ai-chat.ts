@@ -30,8 +30,9 @@ const SPEC_FILE_PATHS = ['.claude-company/projects/furim-auto/specs/faq.md'];
 async function fetchSpecFiles(githubPat: string): Promise<string> {
   const results = await Promise.all(
     SPEC_FILE_PATHS.map(async (filePath) => {
+      // GitHub APIはUser-Agent必須（無いと403。Workersのfetchは自動付与しない）
       const res = await fetch(`https://api.github.com/repos/krppppp/T4ClaudeCompany/contents/${filePath}`, {
-        headers: { Authorization: `Bearer ${githubPat}`, Accept: 'application/vnd.github.v3+json' },
+        headers: { Authorization: `Bearer ${githubPat}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'line-harness-worker' },
       });
       if (!res.ok) {
         console.warn(`[furim/ai-chat] spec fetch failed: ${filePath} (${res.status})`);

@@ -39,6 +39,22 @@ function insertAutomation({ id, name, description, eventType, priority = 0 }) {
   console.log();
 }
 
+// 名前で既存automationを引き、あればstep全削除して再利用、なければ新規作成（再実行冪等）
+function getOrCreateAutomation({ name, description, eventType, priority = 0 }) {
+  const res = JSON.parse(
+    execSync(`npx wrangler d1 execute ${DB_NAME} --remote --command "SELECT id FROM automations WHERE name = '${name.replace(/'/g, "''")}' LIMIT 1;" --json`, { cwd: CWD }).toString()
+  );
+  const existingId = res[0]?.results?.[0]?.id;
+  if (existingId) {
+    runSQL(`DELETE FROM automation_actions WHERE automation_id = '${existingId}';`);
+    console.log(`  automation: ${name} (既存 ${existingId} のstepを再構成)`);
+    return existingId;
+  }
+  const id = crypto.randomUUID();
+  insertAutomation({ id, name, description, eventType, priority });
+  return id;
+}
+
 let _actionCounter = 0;
 function insertAction({ automationId, stepOrder, actionType, params, conditionJson = null, label = null, isActive = 1 }) {
   const id = crypto.randomUUID();
@@ -99,7 +115,9 @@ const SURVEY_FLEX = JSON.stringify({
   footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: [{ type: 'button', style: 'primary', height: 'sm', action: { type: 'message', label: '開始する', text: '【ボタン】アンケート開始' } }] },
 });
 
-const WELCOME_TEXT = '/／\n🗣 友達登録ありがとうございます！\n\\＼\n╭△━━━━━━━━━━━━━━━╮\nたった今から、\n1週間の無料試用期間が\n開始となります！🎉\n╰━━━━━━━━━━━━━━━━╯\n\nFurimAuto(フリマート)は\nメルカリを中心に、\nそのフリマサイト上で自動化を実現する\nChrome拡張機能型ツールです！💻\n\n---------------------------------------------------\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢\n\n👆どんな使い方をするのか、\n👆サクッと基本を知るには\n👆上の動画\n\n👇1週間の無料期間での\n👇ベストな使い方を知るには\n👇下の動画\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢';
+// キーコードは自動で送らない（くろさん方針2026-07-08: リッチメニューの発行ボタンを
+// ユーザー自身に押させることがエンゲージメントのきっかけになるため）。トライアル全機能化の訴求のみ反映
+const WELCOME_TEXT = '/／\n🗣 友達登録ありがとうございます！\n\\＼\n╭△━━━━━━━━━━━━━━━╮\nたった今から、\n全機能が使い放題の\n1週間無料試用期間が\n開始となります！🎉\n╰━━━━━━━━━━━━━━━━╯\n\nFurimAuto(フリマート)は\nメルカリを中心に、\nそのフリマサイト上で自動化を実現する\nChrome拡張機能型ツールです！💻\n\n---------------------------------------------------\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢\n\n👆どんな使い方をするのか、\n👆サクッと基本を知るには\n👆上の動画\n\n👇1週間の無料期間での\n👇ベストな使い方を知るには\n👇下の動画\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢';
 
 // ── 1. friend_add 既存オートメーション ─────────────────────────────────────────────
 
@@ -129,6 +147,9 @@ if (friendAddId) {
   } } });
   // step2: 無料試用期間中タグ付与
   insertAction({ automationId: friendAddId, stepOrder: 2, actionType: 'add_tag_by_name', label: '無料試用期間中タグ付与', conditionJson: { isNewUser: true }, params: { tagName: '無料試用期間中' } });
+  // ※キーコードの自動お届けは実施しない（くろさん方針2026-07-08: 発行ボタンをユーザーに
+  //   押させる）。トライアル全機能化はプラン一覧「友達登録1週間トライアルプラン」行の
+  //   全機能化（実施済み）によりsetCustomerData内のsetKeyCode転写で実現される
 
   insertAction({ automationId: friendAddId, stepOrder: 7, actionType: 'send_messages', label: 'ウェルカム5通送信', conditionJson: { isNewUser: true }, params: { messages: [
     { messageType: 'flex', altText: 'FurimAuto紹介動画', content: WELCOME_FLEX_VIDEO },
@@ -155,22 +176,22 @@ if (friendAddOnly) {
 // ── 2. unfollow ──────────────────────────────────────────────────────────────────────
 
 console.log('\n[2] ブロック時フロー (unfollow)');
-const unfollowId = crypto.randomUUID();
-insertAutomation({ id: unfollowId, name: 'ブロック時フロー', description: 'ブロック時: ブロックタグ付与・無料試用期間中タグ削除', eventType: 'unfollow', priority: 0 });
+const unfollowId = getOrCreateAutomation({ name: 'ブロック時フロー', description: 'ブロック時: ブロックタグ付与・無料試用期間中タグ削除', eventType: 'unfollow', priority: 0 });
 insertAction({ automationId: unfollowId, stepOrder: 0, actionType: 'add_tag_by_name', label: 'ブロックタグ付与', params: { tagName: 'ブロック' } });
 insertAction({ automationId: unfollowId, stepOrder: 1, actionType: 'remove_tag_by_name', label: '無料試用期間中タグ削除', params: { tagName: '無料試用期間中' } });
 
 // ── 3. stripe_invoice_paid — 新規月額登録 ───────────────────────────────────────────
 
 console.log('\n[3] 月額新規登録フロー (stripe_invoice_paid, isNewSubscription=true)');
-const invoiceNewId = crypto.randomUUID();
-insertAutomation({ id: invoiceNewId, name: '月額新規登録フロー', description: '新規月額登録: GAS登録・タグ整理・メッセージ送信', eventType: 'stripe_invoice_paid', priority: 10 });
+const invoiceNewId = getOrCreateAutomation({ name: '月額新規登録フロー', description: '新規月額登録: GAS登録・タグ整理・メッセージ送信', eventType: 'stripe_invoice_paid', priority: 10 });
 
 const GAS_INVOICE_ARGS = { stripeCustomerID: '{{eventData.stripeCustomerId}}', planName: '{{eventData.planName}}', subscriptionID: '{{eventData.subscriptionId}}', subscriptionStartDateTime: '{{eventData.subscriptionStartDateTime}}', subscriptionEndDateTime: '{{eventData.subscriptionEndDateTime}}', subscriptionPrice: '{{eventData.planAmount}}', subscriptionActualPaidAmount: '{{eventData.actualPaidAmount}}', customerEmail: '{{eventData.customerEmail}}' };
 const GAS_TX_ARGS = { stripeCustomerID: '{{eventData.stripeCustomerId}}', invoiceID: '{{eventData.invoiceId}}', planName: '{{eventData.planName}}', subscriptionPrice: '{{eventData.planAmount}}', discountAmount: '{{eventData.discountAmount}}', priceExclTax: '{{eventData.priceExclTax}}', taxAmount: '{{eventData.taxAmount}}', actualPaidAmount: '{{eventData.actualPaidAmount}}' };
 
 insertAction({ automationId: invoiceNewId, stepOrder: 0, actionType: 'call_gas_post', label: 'GAS setSubscriptionData', conditionJson: { isNewSubscription: true }, params: { method: 'setSubscriptionData', args: GAS_INVOICE_ARGS } });
-insertAction({ automationId: invoiceNewId, stepOrder: 1, actionType: 'call_gas_post', label: 'GAS setKeyCode', conditionJson: { isNewSubscription: true }, params: { method: 'setKeyCode', args: { planName: '{{eventData.planName}}', stripeCustomerID: '{{eventData.stripeCustomerId}}' } } });
+// setKeyCodeは旧プラン一覧ベースのみ（plan-builderはstripe.tsのsyncFeaturesFromSubscriptionで完結。
+// planName空/PBプラン:でプラン一覧を誤マッチするとキーコード・フラグを破壊するため必ず除外）
+insertAction({ automationId: invoiceNewId, stepOrder: 1, actionType: 'call_gas_post', label: 'GAS setKeyCode (旧プランのみ)', conditionJson: { isNewSubscription: true, isLegacyPlan: true }, params: { method: 'setKeyCode', args: { planName: '{{eventData.planName}}', stripeCustomerID: '{{eventData.stripeCustomerId}}' } } });
 insertAction({ automationId: invoiceNewId, stepOrder: 2, actionType: 'call_gas_post', label: 'GAS setTransactionData', conditionJson: { isNewSubscription: true }, params: { method: 'setTransactionData', args: GAS_TX_ARGS } });
 insertAction({ automationId: invoiceNewId, stepOrder: 3, actionType: 'code_managed', label: '[code] 会員リッチメニュー切替 (RICHMENU_MEMBER_HOME)', conditionJson: { isNewSubscription: true }, params: { description: 'env.RICHMENU_MEMBER_HOME を linkRichMenuToUser で設定' }, isActive: 0 });
 insertAction({ automationId: invoiceNewId, stepOrder: 4, actionType: 'add_tag_by_name', label: '月額会員タグ付与', conditionJson: { isNewSubscription: true }, params: { tagName: '月額会員' } });
@@ -183,35 +204,49 @@ removableTagsNew.forEach((tagName, i) => {
 
 const nextStep = 6 + removableTagsNew.length;
 insertAction({ automationId: invoiceNewId, stepOrder: nextStep, actionType: 'complete_active_scenarios', label: 'アクティブシナリオ完了', conditionJson: { isNewSubscription: true }, params: {} });
-insertAction({ automationId: invoiceNewId, stepOrder: nextStep + 1, actionType: 'send_messages', label: '新規登録メッセージ3通', conditionJson: { isNewSubscription: true }, params: { messages: [
+const AMBASSADOR_IMAGE = { messageType: 'image', content: JSON.stringify({ originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ambassador.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ambassador.png' }) };
+const AMBASSADOR_TEXT = { messageType: 'text', content: '【アンバサダー制度でお得にご利用いただけます💡】\n      \n「FurimAutoオススメだよ!!」\nとお友達にご紹介していただけましたら\n双方にとって絶対にお得なプログラムとなっております✨\n\nご興味ございましたらリッチメニューの\nアンバサダー制度\nをタップしてください😆\n\nFurimAutoが皆様の物販事業\n底上げに繋がるように\n引き続き開発を続けて参りますので、\nどうぞ末長くよろしくお願いいたします。' };
+// 旧プラン: キーコードが再発行されるため再入力が必要
+insertAction({ automationId: invoiceNewId, stepOrder: nextStep + 1, actionType: 'send_messages', label: '新規登録メッセージ3通 (旧プラン)', conditionJson: { isNewSubscription: true, isLegacyPlan: true }, params: { messages: [
   { messageType: 'text', content: '【自動送信】\n月額プランへのご登録ありがとうございました🌟\nまた、それに伴いましてお客様のキーコードが更新されましたので、お手数ですがリッチメニューから新しいキーコードを発行の上、拡張機能に再入力してください。\n\n引き続き仕様変更への迅速な対応、ユーザー様の声をできる限り汲んで運営してまいりますので\nよろしくお願いいたします。' },
-  { messageType: 'image', content: JSON.stringify({ originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ambassador.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ambassador.png' }) },
-  { messageType: 'text', content: '【アンバサダー制度でお得にご利用いただけます💡】\n      \n「FurimAutoオススメだよ!!」\nとお友達にご紹介していただけましたら\n双方にとって絶対にお得なプログラムとなっております✨\n\nご興味ございましたらリッチメニューの\nアンバサダー制度\nをタップしてください😆\n\nFurimAutoが皆様の物販事業\n底上げに繋がるように\n引き続き開発を続けて参りますので、\nどうぞ末長くよろしくお願いいたします。' },
+  AMBASSADOR_IMAGE,
+  AMBASSADOR_TEXT,
+]}});
+// plan-builder: キーコード据え置き・機能フラグ即時反映のため再入力不要
+insertAction({ automationId: invoiceNewId, stepOrder: nextStep + 2, actionType: 'send_messages', label: '新規登録メッセージ3通 (plan-builder)', conditionJson: { isNewSubscription: true, isLegacyPlan: false }, params: { messages: [
+  { messageType: 'text', content: '【自動送信】\n月額プランへのご登録ありがとうございました🌟\n\nご選択いただいた機能はすでにあなたのキーコードに反映済みです✨\nキーコードの再入力は不要で、そのままお使いいただけます。\n\nプランの内容変更はいつでもリッチメニューの「プラン変更」から行えます。\n\n引き続き仕様変更への迅速な対応、ユーザー様の声をできる限り汲んで運営してまいりますので\nよろしくお願いいたします。' },
+  AMBASSADOR_IMAGE,
+  AMBASSADOR_TEXT,
 ]}});
 
 // ── 4. stripe_invoice_paid — 継続課金 ───────────────────────────────────────────────
 
 console.log('\n[4] 月額継続課金フロー (stripe_invoice_paid, isNewSubscription=false)');
-const invoiceRenewId = crypto.randomUUID();
-insertAutomation({ id: invoiceRenewId, name: '月額継続課金フロー', description: '継続課金: GAS更新・タグ整理・アンバサダークーポン・メッセージ送信', eventType: 'stripe_invoice_paid', priority: 5 });
+const invoiceRenewId = getOrCreateAutomation({ name: '月額継続課金フロー', description: '継続課金: GAS更新・タグ整理・アンバサダークーポン・メッセージ送信', eventType: 'stripe_invoice_paid', priority: 5 });
 
 insertAction({ automationId: invoiceRenewId, stepOrder: 0, actionType: 'call_gas_post', label: 'GAS setSubscriptionData', conditionJson: { isNewSubscription: false }, params: { method: 'setSubscriptionData', args: GAS_INVOICE_ARGS } });
-insertAction({ automationId: invoiceRenewId, stepOrder: 1, actionType: 'call_gas_post', label: 'GAS setKeyCode', conditionJson: { isNewSubscription: false }, params: { method: 'setKeyCode', args: { planName: '{{eventData.planName}}', stripeCustomerID: '{{eventData.stripeCustomerId}}' } } });
+insertAction({ automationId: invoiceRenewId, stepOrder: 1, actionType: 'call_gas_post', label: 'GAS setKeyCode (旧プランのみ)', conditionJson: { isNewSubscription: false, isLegacyPlan: true }, params: { method: 'setKeyCode', args: { planName: '{{eventData.planName}}', stripeCustomerID: '{{eventData.stripeCustomerId}}' } } });
 insertAction({ automationId: invoiceRenewId, stepOrder: 2, actionType: 'call_gas_post', label: 'GAS setTransactionData', conditionJson: { isNewSubscription: false }, params: { method: 'setTransactionData', args: GAS_TX_ARGS } });
 insertAction({ automationId: invoiceRenewId, stepOrder: 3, actionType: 'add_tag_by_name', label: '月額会員タグ付与', conditionJson: { isNewSubscription: false }, params: { tagName: '月額会員' } });
 insertAction({ automationId: invoiceRenewId, stepOrder: 4, actionType: 'add_tag_by_name', label: '金額タグ付与 (月額{{eventData.planTier}})', conditionJson: { isNewSubscription: false }, params: { tagName: '月額{{eventData.planTier}}' } });
 insertAction({ automationId: invoiceRenewId, stepOrder: 5, actionType: 'code_managed', label: '[code] アンバサダークーポン適用', conditionJson: { isNewSubscription: false }, params: { description: 'GAS updateIntroductionCoupon → ambassadorCouponId があれば Stripe API でクーポン適用（stripe.tsのコードで実行済み）' }, isActive: 0 });
-insertAction({ automationId: invoiceRenewId, stepOrder: 6, actionType: 'send_messages', label: '継続課金メッセージ+割引告知', conditionJson: { isNewSubscription: false }, params: { messages: [
+const COUPON_IMAGE = { messageType: 'image', content: JSON.stringify({ originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/coupon_get.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/coupon_get.png' }) };
+const COUPON_TEXT = { messageType: 'text', content: '【割引告知】\nお客様のご利用にあたり、\n次回の継続課金の際に適用可能な割引クーポンのご案内です💰\n\n詳しくはリッチメニューの\n1️⃣ガイドタブ\n2️⃣クーポンGET\nを順番にタップしてご確認ください🎆' };
+insertAction({ automationId: invoiceRenewId, stepOrder: 6, actionType: 'send_messages', label: '継続課金メッセージ+割引告知 (旧プラン)', conditionJson: { isNewSubscription: false, isLegacyPlan: true }, params: { messages: [
   { messageType: 'text', content: '【自動送信】\nご登録いただいております月額プランへの継続課金成功のお知らせをお知らせいたします。\n内容のご確認をご希望のお客様は、メニュー下部の"会員情報の確認"クリックしてご確認してください。\n\nまた、それに伴いましてお客様のキーコードが更新されましたので、お手数ですがリッチメニューから新しいキーコードを発行の上、ブラウザにて再入力してください。\n\nそれでは、これからもFurimAutoを存分に活用してください♪' },
-  { messageType: 'image', content: JSON.stringify({ originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/coupon_get.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/coupon_get.png' }) },
-  { messageType: 'text', content: '【割引告知】\nお客様のご利用にあたり、\n次回の継続課金の際に適用可能な割引クーポンのご案内です💰\n\n詳しくはリッチメニューの\n1️⃣ガイドタブ\n2️⃣クーポンGET\nを順番にタップしてご確認ください🎆' },
+  COUPON_IMAGE,
+  COUPON_TEXT,
+]}});
+insertAction({ automationId: invoiceRenewId, stepOrder: 7, actionType: 'send_messages', label: '継続課金メッセージ+割引告知 (plan-builder)', conditionJson: { isNewSubscription: false, isLegacyPlan: false }, params: { messages: [
+  { messageType: 'text', content: '【自動送信】\nご登録いただいております月額プランへの継続課金成功のお知らせです。\n内容のご確認をご希望のお客様は、メニュー下部の"会員情報の確認"をクリックしてご確認ください。\n\nキーコード・機能はそのまま継続してお使いいただけます（再入力は不要です）。\n\nそれでは、これからもFurimAutoを存分に活用してください♪' },
+  COUPON_IMAGE,
+  COUPON_TEXT,
 ]}});
 
 // ── 5. stripe_subscription_deleted ──────────────────────────────────────────────────
 
 console.log('\n[5] 月額解約フロー (stripe_subscription_deleted)');
-const subDeletedId = crypto.randomUUID();
-insertAutomation({ id: subDeletedId, name: '月額解約フロー', description: '解約: GAS解約処理・タグ整理・解約通知', eventType: 'stripe_subscription_deleted', priority: 0 });
+const subDeletedId = getOrCreateAutomation({ name: '月額解約フロー', description: '解約: GAS解約処理・タグ整理・解約通知', eventType: 'stripe_subscription_deleted', priority: 0 });
 
 insertAction({ automationId: subDeletedId, stepOrder: 0, actionType: 'call_gas_post', label: 'GAS deleteSubscription', params: { method: 'deleteSubscription', args: { stripeCustomerID: '{{eventData.stripeCustomerId}}', subscriptionID: '{{eventData.subscriptionId}}' } } });
 insertAction({ automationId: subDeletedId, stepOrder: 1, actionType: 'code_managed', label: '[code] デフォルトリッチメニュー切替 (RICHMENU_DEFAULT_HOME)', params: { description: 'env.RICHMENU_DEFAULT_HOME を linkRichMenuToUser で設定' }, isActive: 0 });
@@ -229,8 +264,7 @@ insertAction({ automationId: subDeletedId, stepOrder: 3 + cancelRemoveTags.lengt
 // ── 6. stripe_payment_failed ──────────────────────────────────────────────────────────
 
 console.log('\n[6] 支払い失敗フロー (stripe_payment_failed)');
-const payFailedId = crypto.randomUUID();
-insertAutomation({ id: payFailedId, name: '支払い失敗フロー', description: '初回支払い失敗時: LINEで支払い方法確認を依頼', eventType: 'stripe_payment_failed', priority: 0 });
+const payFailedId = getOrCreateAutomation({ name: '支払い失敗フロー', description: '初回支払い失敗時: LINEで支払い方法確認を依頼', eventType: 'stripe_payment_failed', priority: 0 });
 insertAction({ automationId: payFailedId, stepOrder: 0, actionType: 'send_messages', label: '支払い失敗通知', params: { messages: [
   { messageType: 'text', content: '【自動送信】\nお客様の月額プランへのお支払いが確認できませんでした。\n\nリッチメニューのホームタブ「月額会員ページ」から、お支払い方法のご確認・変更をお願いいたします。\n\nお支払いが確認できない場合、サービスのご利用ができなくなる場合がございます。' },
 ]}});
@@ -238,8 +272,7 @@ insertAction({ automationId: payFailedId, stepOrder: 0, actionType: 'send_messag
 // ── 7. stripe_ticket_purchased ────────────────────────────────────────────────────────
 
 console.log('\n[7] チケット購入フロー (stripe_ticket_purchased)');
-const ticketId = crypto.randomUUID();
-insertAutomation({ id: ticketId, name: 'チケット購入フロー', description: 'コピー出品チケット購入完了: GAS登録・購入完了メッセージ', eventType: 'stripe_ticket_purchased', priority: 0 });
+const ticketId = getOrCreateAutomation({ name: 'チケット購入フロー', description: 'コピー出品チケット購入完了: GAS登録・購入完了メッセージ', eventType: 'stripe_ticket_purchased', priority: 0 });
 insertAction({ automationId: ticketId, stepOrder: 0, actionType: 'call_gas_post', label: 'GAS setTicketTransaction', params: { method: 'setTicketTransaction', args: { lineUserId: '{{line_user_id}}', ticketCount: '{{eventData.quantity}}', paymentIntentId: '{{eventData.paymentIntentId}}', amount: '{{eventData.amount}}', currency: '{{eventData.currency}}' } } });
 insertAction({ automationId: ticketId, stepOrder: 1, actionType: 'send_messages', label: 'チケット購入完了メッセージ', params: { messages: [
   { messageType: 'text', content: '🎉【チケット購入完了】🎉\n\nコピー出品チケット {{eventData.quantity}}枚の購入が完了しました！\n\nキーコードの入力ボタンを押して、チケット枚数を取得してください。\nFurimAutoのコピー出品機能でご利用いただけます。\n\n引き続きFurimAutoをよろしくお願いします。' },

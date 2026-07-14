@@ -42,6 +42,7 @@ export interface ActionEnv {
   lineAccessToken?: string;
   gasDeployId?: string;
   stripeSecretKey?: string;
+  lineAccountId?: string | null;
 }
 
 /**
@@ -166,7 +167,7 @@ async function processAutomations(
       (a) => !a.line_account_id || !lineAccountId || a.line_account_id === lineAccountId,
     );
 
-    const actionEnv: ActionEnv = env ?? { lineAccessToken };
+    const actionEnv: ActionEnv = { lineAccessToken, ...(env ?? {}), lineAccountId };
 
     for (const automation of automations) {
       const conditions = JSON.parse(automation.conditions) as Record<string, unknown>;
@@ -192,6 +193,12 @@ async function processAutomations(
       const results: Array<{ action: string; label?: string; success: boolean; error?: string }> = [];
 
       for (const action of actions) {
+        // メッセージ抑制: 発火元がeventData.suppressMessages=trueを立てた場合、
+        // 配信系アクションだけスキップする（例: プラン変更のinvoiceで継続課金メッセージを出さない）
+        if (action.type === 'send_messages' && payload.eventData?.suppressMessages === true) {
+          results.push({ action: action.type, label: (action.label ?? '') + ' (suppressed)', success: true });
+          continue;
+        }
         // アクション個別の条件チェック
         if (action.conditionJson && Object.keys(action.conditionJson).length > 0) {
           if (!matchConditions(action.conditionJson, payload)) {
@@ -266,6 +273,21 @@ function matchConditions(
   if (conditions.remaining_days_lte !== undefined && payload.eventData) {
     const rd = payload.eventData.remaining_days as number | undefined;
     if (rd === undefined || rd > (conditions.remaining_days_lte as number)) return false;
+  }
+
+  // 上記以外のキーは payload.eventData との等値マッチ
+  // （isNewSubscription / source / isLegacyPlan 等。eventData に無いキーは不一致扱い）
+  const specialKeys = new Set([
+    'score_threshold',
+    'tag_id',
+    'keyword',
+    'isNewUser',
+    'remaining_days_gte',
+    'remaining_days_lte',
+  ]);
+  for (const [key, value] of Object.entries(conditions)) {
+    if (specialKeys.has(key)) continue;
+    if (payload.eventData?.[key] !== value) return false;
   }
 
   return true;
@@ -350,30 +372,56 @@ async function executeAction(
         .first<{ line_user_id: string }>();
       if (!friend) break;
       const lineClient = new LineClient(lineAccessToken);
-      const msgType = p.messageType || 'text';
-      let msg: Message;
-      if (msgType === 'flex') {
-        const contents = JSON.parse(p.content);
-        msg = { type: 'flex', altText: p.altText || extractFlexAltText(contents), contents };
-      } else {
-        msg = { type: 'text', text: p.content };
+      // template_id が set なら templates から content/type を resolve、なければ inline params
+      let resolvedType = p.messageType || 'text';
+      let resolvedContent = p.content ?? '';
+      const tplId = action.params.template_id as string | undefined;
+      if (tplId) {
+        const { getTemplateById } = await import('@line-crm/db');
+        const tpl = await getTemplateById(db, tplId);
+        if (tpl) {
+          resolvedType = tpl.message_type;
+          resolvedContent = tpl.message_content;
+        }
       }
+      let msg: Message;
+      let logContent: string;
+      if (resolvedType === 'flex') {
+        const contents = JSON.parse(resolvedContent);
+        msg = { type: 'flex', altText: p.altText || extractFlexAltText(contents), contents };
+        logContent = JSON.stringify(contents);
+      } else {
+        msg = { type: 'text', text: resolvedContent };
+        logContent = resolvedContent;
+      }
+      let deliveryType: 'reply' | 'push';
       if (payload.replyToken) {
         try {
           await lineClient.replyMessage(payload.replyToken, [msg]);
           payload.replyToken = undefined;
+          deliveryType = 'reply';
         } catch (err: unknown) {
           const errMsg = err instanceof Error ? err.message : String(err);
           const isTokenError = errMsg.includes('400') || errMsg.includes('Invalid reply token');
           if (isTokenError) {
             await lineClient.pushMessage(friend.line_user_id, [msg]);
+            deliveryType = 'push';
           } else {
             throw err;
           }
         }
       } else {
         await lineClient.pushMessage(friend.line_user_id, [msg]);
+        deliveryType = 'push';
       }
+      await logOutgoingMessage(db, {
+        friendId,
+        messageType: msg.type,
+        content: logContent,
+        deliveryType,
+        source: 'automation',
+        lineAccountId: env.lineAccountId,
+      });
       break;
     }
 
@@ -437,7 +485,15 @@ async function executeAction(
       const method = action.params.method as string;
       const args = (action.params.args ?? {}) as Record<string, unknown>;
       const resolvedArgs = await resolveGasArgs(db, args, friendId, payload);
-      await gasPost(gasDeployId, { method, ...resolvedArgs });
+      const response = await gasPost(gasDeployId, { method, ...resolvedArgs });
+      // capture: { eventDataキー: GAS応答フィールド } — 後続stepの {{eventData.KEY}} で参照できる
+      const capture = action.params.capture as Record<string, string> | undefined;
+      if (capture && response && typeof response === 'object') {
+        if (!payload.eventData) payload.eventData = {};
+        for (const [evKey, respField] of Object.entries(capture)) {
+          payload.eventData[evKey] = (response as Record<string, unknown>)[respField];
+        }
+      }
       break;
     }
 
@@ -506,20 +562,34 @@ async function executeAction(
         const msgConfigs = action.params.messages as Array<{ messageType: string; content: string; altText?: string }>;
         messages = buildLineMessages(msgConfigs);
       }
+      let deliveryType: 'reply' | 'push';
       if (payload.replyToken) {
         try {
           await lineClient.replyMessage(payload.replyToken, messages);
           payload.replyToken = undefined;
+          deliveryType = 'reply';
         } catch (err: unknown) {
           const errMsg = err instanceof Error ? err.message : String(err);
           if (errMsg.includes('400') || errMsg.includes('Invalid reply token')) {
             await lineClient.pushMessage(friend.line_user_id, messages);
+            deliveryType = 'push';
           } else {
             throw err;
           }
         }
       } else {
         await lineClient.pushMessage(friend.line_user_id, messages);
+        deliveryType = 'push';
+      }
+      for (const m of messages) {
+        await logOutgoingMessage(db, {
+          friendId,
+          messageType: m.type,
+          content: m.type === 'text' ? (m as { text: string }).text : JSON.stringify(m),
+          deliveryType,
+          source: 'automation',
+          lineAccountId: env.lineAccountId,
+        });
       }
       break;
     }
@@ -558,7 +628,10 @@ async function executeAction(
 
     case 'add_tag_by_name': {
       if (!friendId) break;
-      const tagName = p.tagName;
+      // タグ名の {{eventData.KEY}} を展開（例: 月額{{eventData.planTier}}）
+      const tagName = (p.tagName ?? '').replace(/\{\{eventData\.([^}]+)\}\}/g, (_m, key: string) =>
+        String(payload.eventData?.[key] ?? ''),
+      );
       if (!tagName) break;
       const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
       if (tag) await addTagToFriend(db, friendId, tag.id);
@@ -586,6 +659,40 @@ async function executeAction(
 
     default:
       console.warn(`未知のアクションタイプ: ${action.type}`);
+  }
+}
+
+/** 送信メッセージを messages_log に記録（失敗しても例外を上げない） */
+async function logOutgoingMessage(
+  db: D1Database,
+  params: {
+    friendId: string;
+    messageType: string;
+    content: string;
+    deliveryType: 'reply' | 'push';
+    source: string;
+    lineAccountId?: string | null;
+  },
+): Promise<void> {
+  try {
+    await db
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, line_account_id, created_at)
+         VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        params.friendId,
+        params.messageType,
+        params.content,
+        params.deliveryType,
+        params.source,
+        params.lineAccountId ?? null,
+        jstNow(),
+      )
+      .run();
+  } catch (err) {
+    console.error('logOutgoingMessage failed:', err);
   }
 }
 

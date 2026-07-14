@@ -8,7 +8,9 @@
     "test": "vitest run",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy": "vite build && wrangler deploy",
+    "deploy": "echo 'ERROR: 環境を明示してください → pnpm run deploy:dev / deploy:prod (prodはVITE_LIFF_ID/VITE_BOT_BASIC_IDを本番値で)' && exit 1",
+    "deploy:dev": "vite build && wrangler deploy --config dist/line_harness/wrangler.json",
+    "deploy:prod": "CLOUDFLARE_ENV=prod vite build && wrangler deploy --config dist/line_harness/wrangler.json",
     "typecheck": "tsc --noEmit",
     "inject-version": "tsx scripts/inject-version.ts"
   },

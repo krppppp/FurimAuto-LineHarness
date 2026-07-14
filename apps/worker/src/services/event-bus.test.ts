@@ -225,3 +225,127 @@ describe('fireEvent — send_message action logging', () => {
     expect(String(captured[0].binds[3])).toContain('from-template');
   });
 });
+
+vi.mock('../furim/gas-client.js', () => ({
+  gasPost: vi.fn().mockResolvedValue({ success: true, keyCode: 'pb_test123' }),
+  gasGet: vi.fn().mockResolvedValue({}),
+}));
+
+describe('fireEvent — 汎用eventData等値条件', () => {
+  let captured: CapturedInsert[];
+
+  beforeEach(async () => {
+    captured = [];
+    const db = await import('@line-crm/db');
+    (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      {
+        id: 'auto-inv-new',
+        line_account_id: 'acc-1',
+        conditions: JSON.stringify({ isNewSubscription: true }),
+        actions: JSON.stringify([
+          { type: 'send_message', params: { messageType: 'text', content: '新規登録ありがとうございます' } },
+        ]),
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('eventDataの値が一致すれば発火する', async () => {
+    const db = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: captured });
+    await fireEvent(
+      db,
+      'stripe_invoice_paid',
+      { friendId: 'friend-1', eventData: { isNewSubscription: true } },
+      'channel-token',
+      'acc-1',
+    );
+    expect(captured).toHaveLength(1);
+  });
+
+  it('eventDataの値が不一致なら発火しない（継続課金に新規メッセージが飛ばない）', async () => {
+    const db = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: captured });
+    await fireEvent(
+      db,
+      'stripe_invoice_paid',
+      { friendId: 'friend-1', eventData: { isNewSubscription: false } },
+      'channel-token',
+      'acc-1',
+    );
+    expect(captured).toHaveLength(0);
+  });
+
+  it('eventDataにキー自体が無ければ発火しない', async () => {
+    const db = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: captured });
+    await fireEvent(
+      db,
+      'stripe_invoice_paid',
+      { friendId: 'friend-1', eventData: {} },
+      'channel-token',
+      'acc-1',
+    );
+    expect(captured).toHaveLength(0);
+  });
+});
+
+describe('fireEvent — call_gas_post capture', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('GAS応答のフィールドをeventDataに保存し後続send_messagesで展開する', async () => {
+    const db = await import('@line-crm/db');
+    (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      {
+        id: 'auto-friend-add',
+        line_account_id: 'acc-1',
+        conditions: JSON.stringify({}),
+        actions: JSON.stringify([
+          {
+            type: 'call_gas_post',
+            params: {
+              method: 'syncFeaturesFromSubscription',
+              args: { lineUserId: '{{line_user_id}}', packages: 'trial' },
+              capture: { keyCode: 'keyCode' },
+            },
+          },
+          {
+            type: 'send_messages',
+            params: {
+              messages: [{ messageType: 'text', content: 'あなたのキーコード: {{eventData.keyCode}}' }],
+            },
+          },
+        ]),
+      },
+    ]);
+
+    const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: [] });
+    await fireEvent(
+      dbFake,
+      'friend_add',
+      { friendId: 'friend-1', eventData: { isNewUser: true } },
+      'channel-token',
+      'acc-1',
+      { gasDeployId: 'gas-dep-test' },
+    );
+
+    const gas = await import('../furim/gas-client.js');
+    const gasPostMock = gas.gasPost as unknown as { mock: { calls: unknown[][] } };
+    expect(gasPostMock.mock.calls).toHaveLength(1);
+    expect(gasPostMock.mock.calls[0][1]).toMatchObject({
+      method: 'syncFeaturesFromSubscription',
+      lineUserId: 'U_test',
+      packages: 'trial',
+    });
+
+    const { LineClient } = await import('@line-crm/line-sdk');
+    const instances = (LineClient as unknown as { mock: { results: Array<{ value: { pushMessage: { mock: { calls: unknown[][] } } } }> } }).mock.results;
+    const pushCalls = instances.flatMap((r) => r.value.pushMessage.mock.calls);
+    expect(pushCalls).toHaveLength(1);
+    expect(pushCalls[0][1]).toEqual([
+      { type: 'text', text: 'あなたのキーコード: pb_test123' },
+    ]);
+  });
+});

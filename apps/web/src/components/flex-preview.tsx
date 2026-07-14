@@ -232,7 +232,12 @@ function FlexBubble({ bubble, maxWidth }: { bubble: FlexNode; maxWidth?: number 
 
 export default function FlexPreview({ content, maxWidth }: { content: string; maxWidth?: number }) {
   try {
-    const parsed = JSON.parse(content)
+    let parsed = JSON.parse(content)
+
+    // messages_logにはフルメッセージ形式（{type:'flex', altText, contents}）で保存されるため中身を取り出す
+    if (parsed.type === 'flex' && parsed.contents) {
+      parsed = parsed.contents
+    }
 
     if (parsed.type === 'carousel' && Array.isArray(parsed.contents)) {
       return (

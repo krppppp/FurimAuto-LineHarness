@@ -23,6 +23,7 @@ import { sendEventBookingNotification } from './services/event-booking-notifier.
 import { sendBookingNotification } from './services/booking-notifier.js';
 import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
 import { authMiddleware } from './middleware/auth.js';
+import { setFirebaseAuthToken } from './furim/firebase-client.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
@@ -56,6 +57,7 @@ import { richMenus } from './routes/rich-menus.js';
 import { trackedLinks } from './routes/tracked-links.js';
 import { entryRoutes } from './routes/entry-routes.js';
 import { furim } from './routes/furim.js';
+import { planBuilder } from './routes/plan-builder.js';
 import { messagesRoute } from './routes/messages.js';
 import { processKaisetsuDeliveries } from './services/kaisetsu-delivery.js';
 import { forms } from './routes/forms.js';
@@ -118,6 +120,7 @@ export type Env = {
     LIFF_PUBLIC_URL?: string;
     GAS_DEPLOY_ID?: string;
     FIREBASE_DATABASE_URL?: string;
+    FIREBASE_DB_SECRET?: string;
     STRIPE_SECRET_KEY?: string;
     GEMINI_API_KEY?: string;
     GITHUB_PAT?: string;
@@ -151,6 +154,12 @@ app.use('*', rateLimitMiddleware);
 // Auth middleware — skips /webhook and /docs automatically
 app.use('*', authMiddleware);
 
+// Firebase RTDB auth — ルール非公開のためRESTに?auth=が必要
+app.use('*', async (c, next) => {
+  setFirebaseAuthToken(c.env.FIREBASE_DB_SECRET);
+  await next();
+});
+
 // Mount route groups — MVP & Round 2
 app.route('/', webhook);
 app.route('/', friends);
@@ -182,6 +191,7 @@ app.route('/', richMenus);
 app.route('/', trackedLinks);
 app.route('/', entryRoutes);
 app.route('/', furim);
+app.route('/', planBuilder);
 app.route('/', messagesRoute);
 app.route('/', forms);
 app.route('/', adPlatforms);
@@ -574,6 +584,7 @@ async function scheduled(
   env: Env['Bindings'],
   ctx: ExecutionContext,
 ): Promise<void> {
+  setFirebaseAuthToken(env.FIREBASE_DB_SECRET);
   // FurimAuto: 毎時0分に GAS sendStepMessages（セグメント判定・シナリオ切替）
   const jstMinutes = new Date(Date.now() + 9 * 60 * 60_000).getUTCMinutes();
   if (jstMinutes === 0 && env.GAS_DEPLOY_ID) {

@@ -13,6 +13,8 @@ export type FurimActionsEnv = {
   GAS_DEPLOY_ID?: string;
   FIREBASE_DATABASE_URL?: string;
   STRIPE_SECRET_KEY?: string;
+  // plan-builder LIFF（プラン診断・申込UI）。未設定時はdevのLIFFにフォールバック
+  PLAN_BUILDER_LIFF_URL?: string;
 };
 
 const PREFIX = '【リッチメニュー】';
@@ -254,8 +256,26 @@ export async function handleFurimAction(
         ]);
         return true;
       case '開発者について':
-        await lineClient.replyMessage(replyToken, [{ type: 'text', text: 'FurimAutoの開発への想いや理念・コンセプトなどを説明した動画を現在作成中です！🙇' } as never]);
+        // 廃止済み（LP・Youtubeで説明）。旧リッチメニュー画像からの送信に備えて案内だけ残す
+        await lineClient.replyMessage(replyToken, [{ type: 'text', text: '開発の想いやコンセプトはホームページとYoutubeでご紹介しています！\n\nhttps://furimauto.com/lp0/' } as never]);
         return true;
+      case 'プラン確認': {
+        // ガイドタブの「プラン確認」ボタン（旧: 開発者について）から
+        const liffUrl = resolvedEnv.PLAN_BUILDER_LIFF_URL || 'https://liff.line.me/1661091589-81CpgAs1';
+        await lineClient.replyMessage(replyToken, [
+          {
+            type: 'text',
+            text:
+              '💡【FurimAutoの料金プラン】\n\nFurimAutoは必要な機能だけを選べる\nビュッフェ式の料金体系です🍽\n\n・サイトごとのパッケージプラン\n（全自動化 / 半自動化 / 基本）\n・機能単位の単品追加\n・全部入りの最強プレミアムプラン\n\n複数サイトの併用割引もあります✨',
+          } as never,
+          {
+            type: 'text',
+            text:
+              '▼ 料金シミュレーション＆お申し込み ▼\n\nサイトと機能を選ぶだけで\n月額がその場で分かります👇\nそのままお申し込みも可能です！\n\n' + liffUrl,
+          } as never,
+        ]);
+        return true;
+      }
       case 'アップデート情報':
         await lineClient.replyMessage(replyToken, [{ type: 'text', text: '【Googleの公式ストアページ】\n\nhttps://x.gd/whptf\n\n2023年6月にリリースしてから最新までのアップデート履歴は全てこちらに記載アリ🎵' } as never]);
         return true;

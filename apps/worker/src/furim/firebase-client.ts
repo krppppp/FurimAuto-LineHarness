@@ -1,23 +1,37 @@
+// RTDBのルールは非公開のため、REST呼び出しにはデータベースシークレット(?auth=)が必須。
+// 全エントリポイント（fetch/scheduled）で setFirebaseAuthToken(env.FIREBASE_DB_SECRET) を通す
+let authToken = '';
+
+export function setFirebaseAuthToken(token: string | undefined): void {
+  authToken = token ?? '';
+}
+
 function url(dbUrl: string, path: string) {
-  return `${dbUrl.replace(/\/$/, '')}/${path}.json`;
+  const base = `${dbUrl.replace(/\/$/, '')}/${path}.json`;
+  return authToken ? `${base}?auth=${authToken}` : base;
 }
 
 export async function fbGet(dbUrl: string, path: string): Promise<unknown> {
   const res = await fetch(url(dbUrl, path));
-  if (!res.ok) return null;
+  if (!res.ok) {
+    console.error(`[firebase] GET ${path} failed: ${res.status}`);
+    return null;
+  }
   return res.json();
 }
 
 export async function fbSet(dbUrl: string, path: string, value: unknown): Promise<void> {
-  await fetch(url(dbUrl, path), {
+  const res = await fetch(url(dbUrl, path), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(value),
   });
+  if (!res.ok) console.error(`[firebase] PUT ${path} failed: ${res.status}`);
 }
 
 export async function fbDelete(dbUrl: string, path: string): Promise<void> {
-  await fetch(url(dbUrl, path), { method: 'DELETE' });
+  const res = await fetch(url(dbUrl, path), { method: 'DELETE' });
+  if (!res.ok) console.error(`[firebase] DELETE ${path} failed: ${res.status}`);
 }
 
 export async function getAiMode(dbUrl: string, lineUserId: string): Promise<boolean> {

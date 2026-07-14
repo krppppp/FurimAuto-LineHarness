@@ -7,8 +7,10 @@
  *   node scripts/import-customers.mjs \
  *     --master=./master.tsv \
  *     [--referrals=./referrals.tsv] \
- *     [--enrich]  # LINE APIでプロフィールを取得（LINE_CHANNEL_ACCESS_TOKEN 要）
- *     [--dry-run] # DBに書き込まず判定結果だけ出力
+ *     [--enrich]     # LINE APIでプロフィールを取得（LINE_CHANNEL_ACCESS_TOKEN 要）
+ *     [--dry-run]    # DBに書き込まず判定結果だけ出力
+ *     [--sync-tags]  # 再インポート用: 既存の管理対象タグを現状に合わせて追加/削除（差分同期）
+ *                    # ※これがないと再実行時に古いタグ（旧セグメント等）が残る
  *
  * TSVフォーマット:
  *   master.tsv    : 顧客情報-サブスク情報-キーコード シートのエクスポート（ヘッダー行あり）
@@ -29,6 +31,7 @@ const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const ENRICH = args.includes('--enrich');
+const SYNC_TAGS = args.includes('--sync-tags');
 
 const masterFile = args.find((a) => a.startsWith('--master='))?.split('=')[1];
 const referralsFile = args.find((a) => a.startsWith('--referrals='))?.split('=')[1];
@@ -152,6 +155,18 @@ function determineTags(row, introducedIds, ambassadorCounts) {
   return tags;
 }
 
+// このスクリプトが管理するタグ（--sync-tags時、この集合に含まれる既存タグのみ削除対象にする。
+// 手動タグや他機能のタグには触らない）
+const MANAGED_TAGS = [
+  '無料試用期間中', 'キャンセル済み', 'サブ垢', 'サブアカウント',
+  'セグメント1', 'セグメント2', 'セグメント3', 'セグメント4',
+  'セグメント5', 'セグメント6', 'セグメント7', 'セグメント8',
+  '紹介経由', 'Furimanです', '解説見た',
+  '月額会員', '月額3000', '月額5000', '月額8000', '月額10000', '月額15000', '月額19800',
+  'アンバサダーLv.1', 'アンバサダーLv.5', 'アンバサダーLv.10',
+  '見込客', '未使用ユーザー', 'ブロック',
+];
+
 // ────────────── LINE API ──────────────
 
 async function fetchLineProfile(lineUserId) {
@@ -169,11 +184,11 @@ const apiHeaders = {
   'Authorization': `Bearer ${API_KEY}`,
 };
 
-async function upsertFriend(lineUserId, displayName, pictureUrl, createdAt) {
+async function upsertFriend(lineUserId, displayName, pictureUrl, createdAt, stripeCustomerId, isFollowing) {
   const res = await fetch(`${BASE_URL}/api/furim/upsert-friend`, {
     method: 'POST',
     headers: apiHeaders,
-    body: JSON.stringify({ lineUserId, displayName, pictureUrl, createdAt }),
+    body: JSON.stringify({ lineUserId, displayName, pictureUrl, createdAt, stripeCustomerId, isFollowing }),
   });
   const json = await res.json();
   if (!json.success) throw new Error(`upsertFriend failed: ${JSON.stringify(json)}`);
@@ -195,6 +210,22 @@ async function addTag(friendId, tagId) {
   });
   const json = await res.json();
   if (!json.success) throw new Error(`addTag failed: ${JSON.stringify(json)}`);
+}
+
+async function getFriendDetail(friendId) {
+  const res = await fetch(`${BASE_URL}/api/friends/${friendId}`, { headers: apiHeaders });
+  const json = await res.json();
+  if (!json.success) throw new Error(`getFriendDetail failed: ${JSON.stringify(json)}`);
+  return json.data; // { ..., tags: Tag[] }
+}
+
+async function removeTag(friendId, tagId) {
+  const res = await fetch(`${BASE_URL}/api/friends/${friendId}/tags/${tagId}`, {
+    method: 'DELETE',
+    headers: apiHeaders,
+  });
+  const json = await res.json();
+  if (!json.success) throw new Error(`removeTag failed: ${JSON.stringify(json)}`);
 }
 
 function sleep(ms) {
@@ -282,11 +313,30 @@ async function main() {
     }
 
     try {
-      const friend = await upsertFriend(lineId, displayName, pictureUrl, createdAt);
+      const stripeCustomerId = row['Stripe顧客ID'] || undefined;
+      // enrich時のみフォロー状態を判定できる（プロフィール404=ブロック中）
+      const isFollowing = ENRICH ? !isBlocked : undefined;
+      const friend = await upsertFriend(lineId, displayName, pictureUrl, createdAt, stripeCustomerId, isFollowing);
 
-      // タグ付与
+      // タグ同期（--sync-tags）: 管理対象タグのうち、今回の判定に無いものを剥がす
+      let currentTagNames = new Set();
+      if (SYNC_TAGS) {
+        const detail = await getFriendDetail(friend.id);
+        const currentTags = detail.tags ?? [];
+        currentTagNames = new Set(currentTags.map((t) => t.name));
+        const wanted = new Set(tags);
+        for (const t of currentTags) {
+          if (MANAGED_TAGS.includes(t.name) && !wanted.has(t.name)) {
+            await removeTag(friend.id, t.id);
+            console.log(`  [sync] ${lineId} タグ削除: ${t.name}`);
+          }
+        }
+      }
+
+      // タグ付与（既に付いているものはスキップ）
       const missingTags = [];
       for (const tagName of tags) {
+        if (currentTagNames.has(tagName)) continue;
         const tagId = tagNameToId.get(tagName);
         if (!tagId) {
           missingTags.push(tagName);

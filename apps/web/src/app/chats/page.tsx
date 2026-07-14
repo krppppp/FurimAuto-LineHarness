@@ -952,8 +952,32 @@ export default function ChatsPage() {
                       }
                     } else if (msg.messageType === 'sticker') {
                       bubbleContent = <StickerMessageImage content={msg.content} />
+                    } else if (msg.messageType === 'video') {
+                      try {
+                        const parsed = JSON.parse(msg.content)
+                        bubbleContent = (
+                          <a href={parsed.originalContentUrl} target="_blank" rel="noreferrer" className="relative block">
+                            <img src={parsed.previewImageUrl} alt="" className="max-w-[200px] rounded" />
+                            <span className="absolute inset-0 flex items-center justify-center">
+                              <span className="w-10 h-10 rounded-full bg-black/50 flex items-center justify-center text-white text-lg">▶</span>
+                            </span>
+                          </a>
+                        )
+                      } catch {
+                        bubbleContent = <span>🎬 [動画]</span>
+                      }
                     } else {
-                      bubbleContent = <span>{msg.content}</span>
+                      // JSON形式のメッセージ（template等）は生JSONを出さずtype+altTextで要約表示
+                      let fallback: React.ReactNode = <span>{msg.content}</span>
+                      if (msg.content.startsWith('{')) {
+                        try {
+                          const parsed = JSON.parse(msg.content)
+                          if (parsed && typeof parsed === 'object' && parsed.type) {
+                            fallback = <span>[{parsed.type}] {parsed.altText ?? ''}</span>
+                          }
+                        } catch { /* 生テキストのまま表示 */ }
+                      }
+                      bubbleContent = fallback
                     }
 
                     return (

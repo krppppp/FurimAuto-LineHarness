@@ -19,6 +19,7 @@ import { handleButtonAction } from '../furim/button-actions.js';
 import { handleKeywordAction } from '../furim/keyword-actions.js';
 import { handleAIChat } from '../furim/ai-chat.js';
 import { getAiMode } from '../furim/firebase-client.js';
+import { withOutgoingLog } from '../utils/message-log.js';
 
 type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GAS_DEPLOY_ID?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string };
 import type { Env } from '../index.js';
@@ -157,6 +158,9 @@ async function handleEvent(
     const friend = await getFriendByLineUserId(db, userId);
     if (!friend) return;
 
+    // furim系ハンドラーのreply/push送信をチャット履歴(messages_log)に残す
+    const loggingClient = withOutgoingLog(lineClient, db, friend.id);
+
     const incomingText = textMessage.text;
     const now = jstNow();
     const logId = crypto.randomUUID();
@@ -170,31 +174,56 @@ async function handleEvent(
       .bind(logId, friend.id, incomingText, now)
       .run();
 
+    // 【プラン変更】PB-XXXXXX: 既存契約者のLIFF申込。新規Checkoutではなく
+    // 既存サブスクをin-place更新し、残り期間の差額を日割りで即時決済する
+    if (incomingText.startsWith('【プラン変更】') && env?.STRIPE_SECRET_KEY && env?.GAS_DEPLOY_ID) {
+      const { handlePlanChangeMessage } = await import('../furim/plan-change.js');
+      await handlePlanChangeMessage(db, loggingClient, userId, event.replyToken, incomingText, {
+        STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+        GAS_DEPLOY_ID: env.GAS_DEPLOY_ID,
+        WORKER_PUBLIC_URL: workerUrl,
+      });
+      return;
+    }
+
+    // 【プラン申し込み】PB-XXXXXX: plan-builder LIFFの申込ボタンから送られる申込メッセージ。
+    // 申込コードで選択内容を引き、Checkoutリンク（1時間有効）をFlexで返信する
+    if (incomingText.startsWith('【プラン申し込み】') && env?.STRIPE_SECRET_KEY && env?.GAS_DEPLOY_ID) {
+      const { handlePlanApplyMessage } = await import('../furim/plan-apply.js');
+      await handlePlanApplyMessage(db, loggingClient, userId, event.replyToken, incomingText, {
+        STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+        GAS_DEPLOY_ID: env.GAS_DEPLOY_ID,
+        WORKER_PUBLIC_URL: workerUrl,
+      });
+      return;
+    }
+
     // 【ボタン】アクション
     if (incomingText.includes('【ボタン】') && env?.GAS_DEPLOY_ID) {
-      await handleButtonAction(lineClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
+      await handleButtonAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
       return;
     }
 
     // リッチメニュー切り替え: 【リッチメニュー】プレフィックスのメッセージを処理
     if (env) {
-      const richMenuHandled = await handleRichMenuSwitch(db, lineClient, userId, friend.id, incomingText, event.replyToken, env);
+      const richMenuHandled = await handleRichMenuSwitch(db, loggingClient, userId, friend.id, incomingText, event.replyToken, env);
       if (richMenuHandled) return;
     }
 
     // FurimAutoアクション: GAS連携等の業務処理
     if (env?.GAS_DEPLOY_ID) {
-      const furimHandled = await handleFurimAction(lineClient, userId, event.replyToken, incomingText, {
+      const furimHandled = await handleFurimAction(loggingClient, userId, event.replyToken, incomingText, {
         GAS_DEPLOY_ID: env.GAS_DEPLOY_ID,
         FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL,
         STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+        PLAN_BUILDER_LIFF_URL: env.PLAN_BUILDER_LIFF_URL,
       }, db);
       if (furimHandled) return;
     }
 
     // 【キーワード】アクション
     if (incomingText.includes('【キーワード】') && env?.GAS_DEPLOY_ID) {
-      await handleKeywordAction(lineClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
+      await handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
       return;
     }
 
@@ -202,20 +231,20 @@ async function handleEvent(
     if (env?.FIREBASE_DATABASE_URL && env?.GEMINI_API_KEY && env?.GITHUB_PAT) {
       const isAIMode = await getAiMode(env.FIREBASE_DATABASE_URL, userId);
       if (isAIMode) {
-        await handleAIChat(lineClient, userId, event.replyToken, incomingText, { GEMINI_API_KEY: env.GEMINI_API_KEY, GITHUB_PAT: env.GITHUB_PAT, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL });
+        await handleAIChat(loggingClient, userId, event.replyToken, incomingText, { GEMINI_API_KEY: env.GEMINI_API_KEY, GITHUB_PAT: env.GITHUB_PAT, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL });
         return;
       }
     }
 
     // Furimanですクーポン
     if ((incomingText.includes('furimanです') || incomingText.includes('Furimanです')) && env?.GAS_DEPLOY_ID && env?.STRIPE_SECRET_KEY) {
-      await actionFurimanCoupon(lineClient, userId, event.replyToken, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
+      await actionFurimanCoupon(loggingClient, userId, event.replyToken, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
       return;
     }
 
     // 解説見た/解説みたキーワード
     if ((incomingText.trim() === '解説見た' || incomingText.trim() === '解説みた') && env?.GAS_DEPLOY_ID) {
-      await actionExtendTrial(lineClient, userId, event.replyToken, env.GAS_DEPLOY_ID, db);
+      await actionExtendTrial(loggingClient, userId, event.replyToken, env.GAS_DEPLOY_ID, db);
       return;
     }
 
@@ -245,7 +274,7 @@ async function handleEvent(
         try {
           const period = hour < 12 ? '午前' : '午後';
           const displayHour = hour <= 12 ? hour : hour - 12;
-          await lineClient.replyMessage(event.replyToken, [
+          await loggingClient.replyMessage(event.replyToken, [
             buildMessage('flex', JSON.stringify({
               type: 'bubble',
               body: { type: 'box', layout: 'vertical', contents: [
