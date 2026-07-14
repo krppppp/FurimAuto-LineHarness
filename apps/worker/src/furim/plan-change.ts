@@ -98,7 +98,9 @@ export async function handlePlanChangeMessage(
         params[`phases[1][items][${i}][price]`] = it.price;
         params[`phases[1][items][${i}][quantity]`] = String(it.quantity);
       });
-      params['phases[1][iterations]'] = '1';
+      // iterations は Stripe API 2025-09-30.clover で廃止 (STRIPE_STACK_VERSION は
+      // それ以降を指定しているため使用不可)。duration = 1ヶ月 = 旧 iterations:1 相当
+      params['phases[1][duration][interval]'] = 'month';
       params['phases[1][proration_behavior]'] = 'none';
       // discounts（新版・スタック対応）: phase0は現状維持、phase1は新combo+保持クーポン
       currentDiscounts.forEach((d, i) => {
