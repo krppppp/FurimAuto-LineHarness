@@ -742,6 +742,12 @@ ${liff ? '<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script
 </style>
 </head>
 <body>
+${liff ? `<div id="pb-loading" style="position:fixed;inset:0;z-index:9999;background:#fafafa;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;transition:opacity .3s;">
+  <div style="width:40px;height:40px;border:4px solid #e5e7eb;border-top-color:#06C755;border-radius:50%;animation:pbspin .9s linear infinite;"></div>
+  <div style="font-weight:bold;font-size:15px;color:#333;">プラン診断を準備しています…</div>
+  <div style="font-size:12px;color:#777;line-height:1.8;">ご契約状況を確認しています。<br>すでにご契約中の方は、現在のプラン内容を<br>初期表示した状態でスタートします。<br>そのまま少しお待ちください。</div>
+</div>
+<style>@keyframes pbspin{to{transform:rotate(360deg)}}</style>` : ''}
 <div class="simulator">
   ${liff ? '<div class="liff-logo"><img src="https://furimauto.com/lp0/images/furimauto_logo.png" alt="FurimAuto"></div>' : ''}
   ${embed ? '' : '<h1 class="sim-title">📱 料金シミュレーション</h1>'}
@@ -1285,7 +1291,17 @@ async function showCouponBanner() {
   } catch (e) { console.log('coupon status skipped:', e); }
 }
 
+// 準備完了（現契約の初期表示まで済んだ）タイミングでローディングを閉じる
+function hidePbLoading() {
+  var ld = document.getElementById('pb-loading');
+  if (!ld) return;
+  ld.style.opacity = '0';
+  setTimeout(function () { ld.remove(); }, 300);
+}
+
 (async () => {
+  // 保険: 何かが固まってもローディングで操作不能のままにしない
+  setTimeout(hidePbLoading, 15000);
   if (LIFF_MODE && LIFF_ID && typeof liff !== 'undefined') {
     try {
       await liff.init({ liffId: LIFF_ID });
@@ -1298,6 +1314,7 @@ async function showCouponBanner() {
     } catch (e) { console.log('liff init skipped:', e); }
   }
   render();
+  hidePbLoading();
 })();
 </script>
 </body>

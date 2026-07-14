@@ -803,9 +803,10 @@ export default function ChatsPage() {
         </div>
       )}
 
-      {/* タイトル(Header)は縦幅節約のため非表示。モバイルは全画面(100dvh)、
-          デスクトップはシェルの余白分を差し引いた高さ */}
-      <div className="flex gap-4 h-[100dvh] lg:h-[calc(100vh-116px)]">
+      {/* タイトル(Header)は縦幅節約のため非表示。モバイルは fixed で画面に固定し
+          （ヘッダー/フッターが動かず、スクロールはメッセージ領域のみ）、
+          デスクトップは従来どおり通常フロー + シェル余白差し引きの高さ */}
+      <div className="fixed inset-0 lg:static flex gap-4 h-[100dvh] lg:h-[calc(100vh-116px)] bg-gray-50 lg:bg-transparent">
         {/* Left Panel: Chat List */}
         <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-none lg:rounded-lg shadow-sm border-0 lg:border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
           {/* タブ (全て / 未読 / 対応中 / 解決済) は意図的に削除。直近メッセージが見やすい LINE 風一覧を優先。 */}
@@ -839,7 +840,7 @@ export default function ChatsPage() {
           </div>
 
           {/* Chat List */}
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 overflow-y-auto overscroll-contain">
             {loading ? (
               <div>
                 {[...Array(5)].map((_, i) => (
@@ -1028,7 +1029,7 @@ export default function ChatsPage() {
               </div>
 
               {/* Messages — LINE-style chat bubbles */}
-              <div ref={messagesScrollRef} className="flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
+              <div ref={messagesScrollRef} className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
                 {(!chatDetail.messages || chatDetail.messages.length === 0) ? (
                   <div className="text-center py-8">
                     <p className="text-white/60 text-sm">メッセージはまだありません。</p>
@@ -1197,9 +1198,9 @@ export default function ChatsPage() {
                   </button>
                   <textarea
                     ref={textareaRef}
-                    rows={2}
+                    rows={5}
                     value={messageContent}
-                    style={{ maxHeight: '200px', overflowY: 'auto' }}
+                    style={{ minHeight: '120px', maxHeight: '200px', overflowY: 'auto' }}
                     onChange={(e) => setMessageContent(e.target.value)}
                     onCompositionStart={() => { isComposingRef.current = true }}
                     onCompositionEnd={() => { isComposingRef.current = false }}
