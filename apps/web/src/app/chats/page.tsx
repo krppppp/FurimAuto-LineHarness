@@ -803,14 +803,16 @@ export default function ChatsPage() {
         </div>
       )}
 
-      {/* タイトル(Header)は縦幅節約のため非表示。高さはその分 (約64px) を回収した値 */}
-      <div className="flex gap-4 h-[calc(100vh-56px)] lg:h-[calc(100vh-116px)]">
+      {/* タイトル(Header)は縦幅節約のため非表示。モバイルは全画面(100dvh)、
+          デスクトップはシェルの余白分を差し引いた高さ */}
+      <div className="flex gap-4 h-[100dvh] lg:h-[calc(100vh-116px)]">
         {/* Left Panel: Chat List */}
-        <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
+        <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-none lg:rounded-lg shadow-sm border-0 lg:border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
           {/* タブ (全て / 未読 / 対応中 / 解決済) は意図的に削除。直近メッセージが見やすい LINE 風一覧を優先。 */}
 
           {/* Filter row */}
-          <div className="px-3 py-2 border-b border-gray-100 flex flex-wrap items-center gap-2">
+          {/* pl-12: モバイルの左上フローティングメニューボタンと重ならないための余白 */}
+          <div className="pl-12 pr-3 lg:pl-3 py-2 border-b border-gray-100 flex flex-wrap items-center gap-2">
             {statusFilters.map((f) => (
               <button
                 key={f.key}
@@ -933,7 +935,7 @@ export default function ChatsPage() {
         </div>
 
         {/* Right Panel: Chat Detail */}
-        <div className={`flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
+        <div className={`flex-1 bg-white rounded-none lg:rounded-lg shadow-sm border-0 lg:border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
           {selectedFriendId && !selectedChatId ? (
             /* Direct message to friend without existing chat */
             <DirectMessagePanel
@@ -952,8 +954,8 @@ export default function ChatsPage() {
             </div>
           ) : chatDetail ? (
             <>
-              {/* Chat Header */}
-              <div className="px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-2">
+              {/* Chat Header — pl-12: モバイルの左上フローティングメニューボタンを避ける */}
+              <div className="pl-12 pr-4 lg:pl-4 py-4 border-b border-gray-200 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <button
                     onClick={() => setSelectedChatId(null)}

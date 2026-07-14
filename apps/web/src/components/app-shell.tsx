@@ -43,8 +43,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <UpstreamUpdateBanner />
           <div className="flex flex-1 min-h-0">
             <Sidebar />
-            <main className="flex-1 overflow-auto pt-[72px] lg:pt-0">
-              <div className="px-4 pb-6 sm:px-6 lg:pt-8 lg:px-8 lg:pb-8">
+            <main className="flex-1 overflow-auto">
+              {/* /chats はモバイル全画面（余白ゼロ）。他ページは左上のフローティング
+                  メニューボタンと重ならないよう上に余白を確保する */}
+              <div className={pathname === '/chats'
+                ? 'lg:pt-8 lg:px-8 lg:pb-8'
+                : 'px-4 pt-14 pb-6 sm:px-6 lg:pt-8 lg:px-8 lg:pb-8'}>
                 {children}
               </div>
             </main>
