@@ -1110,8 +1110,55 @@ export default function ChatsPage() {
                       } catch {
                         bubbleContent = <span>🎬 [動画]</span>
                       }
+                    } else if (msg.messageType === 'imagemap') {
+                      // imagemap は baseUrl/{width} で画像が取れる（LINE仕様）。uri アクションがあればリンクにする
+                      try {
+                        const parsed = JSON.parse(msg.content)
+                        const linkUri = (parsed.actions as Array<{ type?: string; linkUri?: string }> | undefined)
+                          ?.find((a) => a.type === 'uri')?.linkUri
+                        const img = <img src={`${parsed.baseUrl}/1040`} alt={parsed.altText ?? ''} className="max-w-[240px] rounded-lg" />
+                        bubbleContent = linkUri
+                          ? <a href={linkUri} target="_blank" rel="noreferrer" className="block">{img}</a>
+                          : img
+                      } catch {
+                        bubbleContent = <span>🖼️ [imagemap]</span>
+                      }
+                    } else if (msg.messageType === 'template') {
+                      // buttons / confirm テンプレートをLINE風カードで再現（uriアクションはリンク化）
+                      try {
+                        const parsed = JSON.parse(msg.content)
+                        const tpl = parsed.template ?? {}
+                        const actions: Array<{ type?: string; label?: string; uri?: string }> =
+                          tpl.actions ?? tpl.columns?.[0]?.actions ?? []
+                        bubbleContent = (
+                          <div className="w-[240px] bg-white rounded-xl overflow-hidden border border-gray-200 text-gray-900">
+                            {tpl.thumbnailImageUrl && (
+                              <img src={tpl.thumbnailImageUrl} alt="" className="w-full" />
+                            )}
+                            <div className="px-3 py-2">
+                              {tpl.title && <p className="text-sm font-bold mb-1">{tpl.title}</p>}
+                              <p className="text-sm whitespace-pre-wrap">{tpl.text ?? parsed.altText ?? ''}</p>
+                            </div>
+                            {actions.length > 0 && (
+                              <div className="border-t border-gray-100">
+                                {actions.map((a, i) => a.type === 'uri' && a.uri ? (
+                                  <a key={i} href={a.uri} target="_blank" rel="noreferrer" className="block text-center text-sm text-emerald-600 font-medium py-2 border-b border-gray-100 last:border-b-0 hover:bg-gray-50">
+                                    {a.label}
+                                  </a>
+                                ) : (
+                                  <div key={i} className="text-center text-sm text-emerald-600 font-medium py-2 border-b border-gray-100 last:border-b-0">
+                                    {a.label}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      } catch {
+                        bubbleContent = <span>📋 [テンプレート]</span>
+                      }
                     } else {
-                      // JSON形式のメッセージ（template等）は生JSONを出さずtype+altTextで要約表示
+                      // JSON形式の未対応メッセージは生JSONを出さずtype+altTextで要約表示
                       let fallback: React.ReactNode = <span>{msg.content}</span>
                       if (msg.content.startsWith('{')) {
                         try {
@@ -1123,6 +1170,10 @@ export default function ChatsPage() {
                       }
                       bubbleContent = fallback
                     }
+
+                    // 吹き出し（緑/白の背景）はテキスト系のみ。画像・スタンプ・Flex・
+                    // imagemap・テンプレート等のリッチコンテンツは LINE と同じく背景なしで表示する
+                    const isPlainBubble = !['flex', 'image', 'sticker', 'video', 'imagemap', 'template'].includes(msg.messageType)
 
                     return (
                       <div key={msg.id}>
@@ -1146,17 +1197,23 @@ export default function ChatsPage() {
                           )}
 
                           <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
-                            {/* メッセージバブル */}
-                            <div
-                              className={`max-w-[320px] px-3 py-2 text-sm break-words whitespace-pre-wrap ${
-                                isOutgoing
-                                  ? 'rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
-                                  : 'rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
-                              }`}
-                              style={isOutgoing ? { backgroundColor: '#06C755' } : undefined}
-                            >
-                              {bubbleContent}
-                            </div>
+                            {/* テキストのみ吹き出し背景を付ける。リッチコンテンツは背景なし（LINE準拠） */}
+                            {isPlainBubble ? (
+                              <div
+                                className={`max-w-[320px] px-3 py-2 text-sm break-words whitespace-pre-wrap ${
+                                  isOutgoing
+                                    ? 'rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
+                                    : 'rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
+                                }`}
+                                style={isOutgoing ? { backgroundColor: '#06C755' } : undefined}
+                              >
+                                {bubbleContent}
+                              </div>
+                            ) : (
+                              <div className="max-w-[320px]">
+                                {bubbleContent}
+                              </div>
+                            )}
                             {/* 時刻 */}
                             <span className="text-xs text-white/50 mt-0.5 px-1">
                               {new Date(msg.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
