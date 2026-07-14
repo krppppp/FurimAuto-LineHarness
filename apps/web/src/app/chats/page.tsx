@@ -812,8 +812,7 @@ export default function ChatsPage() {
           {/* タブ (全て / 未読 / 対応中 / 解決済) は意図的に削除。直近メッセージが見やすい LINE 風一覧を優先。 */}
 
           {/* Filter row */}
-          {/* pl-12: モバイルの左上フローティングメニューボタンと重ならないための余白 */}
-          <div className="pl-12 pr-3 lg:pl-3 py-2 border-b border-gray-100 flex flex-wrap items-center gap-2">
+          <div className="px-3 py-2 border-b border-gray-100 flex flex-wrap items-center gap-2">
             {statusFilters.map((f) => (
               <button
                 key={f.key}
@@ -955,8 +954,8 @@ export default function ChatsPage() {
             </div>
           ) : chatDetail ? (
             <>
-              {/* Chat Header — pl-12: モバイルの左上フローティングメニューボタンを避ける */}
-              <div className="pl-12 pr-4 lg:pl-4 py-4 border-b border-gray-200 flex items-center justify-between gap-2">
+              {/* Chat Header */}
+              <div className="px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <button
                     onClick={() => setSelectedChatId(null)}

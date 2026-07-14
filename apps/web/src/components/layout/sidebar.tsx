@@ -246,6 +246,41 @@ export default function Sidebar() {
     return () => { document.body.style.overflow = '' }
   }, [isOpen])
 
+  // モバイル: 画面左端からの右スワイプでメニューを開く（ボタンは廃止）。
+  // 誤発動防止に「開始位置が左端24px以内・横移動50px超・横優位」を条件にする
+  useEffect(() => {
+    let startX = 0
+    let startY = 0
+    let tracking = false
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.touches[0]
+      if (t.clientX <= 24) {
+        startX = t.clientX
+        startY = t.clientY
+        tracking = true
+      }
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      if (!tracking) return
+      const t = e.touches[0]
+      const dx = t.clientX - startX
+      const dy = Math.abs(t.clientY - startY)
+      if (dx > 50 && dx > dy * 1.5) {
+        setIsOpen(true)
+        tracking = false
+      }
+    }
+    const onTouchEnd = () => { tracking = false }
+    document.addEventListener('touchstart', onTouchStart, { passive: true })
+    document.addEventListener('touchmove', onTouchMove, { passive: true })
+    document.addEventListener('touchend', onTouchEnd, { passive: true })
+    return () => {
+      document.removeEventListener('touchstart', onTouchStart)
+      document.removeEventListener('touchmove', onTouchMove)
+      document.removeEventListener('touchend', onTouchEnd)
+    }
+  }, [])
+
   const isActive = (href: string) => href === '/' ? pathname === '/' : pathname.startsWith(href)
 
   const sidebarContent = (
@@ -367,17 +402,7 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* モバイル: フローティングメニューボタン（画面を占有するヘッダーは廃止。
-          z-30 = メニュー展開時はオーバーレイ(z-40)の下に隠れる） */}
-      <button
-        onClick={() => setIsOpen(true)}
-        className="lg:hidden fixed top-2 left-2 z-30 w-10 h-10 flex items-center justify-center rounded-full bg-white/90 backdrop-blur border border-gray-200 shadow-md active:bg-gray-100"
-        aria-label="メニュー"
-      >
-        <svg className="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-      </button>
+      {/* モバイル: メニューは画面左端からの右スワイプで開く（ヘッダー・ボタンは廃止） */}
 
       {/* モバイル: オーバーレイ */}
       {isOpen && <div className="lg:hidden fixed inset-0 z-40 bg-black/50" onClick={() => setIsOpen(false)} />}

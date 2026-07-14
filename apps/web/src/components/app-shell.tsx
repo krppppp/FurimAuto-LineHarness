@@ -44,11 +44,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <div className="flex flex-1 min-h-0">
             <Sidebar />
             <main className="flex-1 overflow-auto">
-              {/* /chats はモバイル全画面（余白ゼロ）。他ページは左上のフローティング
-                  メニューボタンと重ならないよう上に余白を確保する */}
+              {/* /chats はモバイル全画面（余白ゼロ）。メニューは左端スワイプで開く */}
               <div className={pathname === '/chats'
                 ? 'lg:pt-8 lg:px-8 lg:pb-8'
-                : 'px-4 pt-14 pb-6 sm:px-6 lg:pt-8 lg:px-8 lg:pb-8'}>
+                : 'px-4 pt-4 pb-6 sm:px-6 lg:pt-8 lg:px-8 lg:pb-8'}>
                 {children}
               </div>
             </main>
