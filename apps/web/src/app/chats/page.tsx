@@ -1177,24 +1177,6 @@ export default function ChatsPage() {
                       e.target.value = ''
                     }}
                   />
-                  <button
-                    type="button"
-                    onClick={() => imageInputRef.current?.click()}
-                    disabled={uploadingImage}
-                    aria-label="画像を選択"
-                    title="画像を送る"
-                    className="flex-shrink-0 p-2 rounded-full text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors disabled:opacity-50"
-                  >
-                    {uploadingImage ? (
-                      <span className="block h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-green-500" />
-                    ) : (
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-6 w-6">
-                        <rect x="3" y="5" width="18" height="14" rx="2" />
-                        <circle cx="8.5" cy="10" r="1.5" fill="currentColor" stroke="none" />
-                        <path d="m5 17 4.5-4.5 3 3L16 12l3 3" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    )}
-                  </button>
                   <textarea
                     ref={textareaRef}
                     rows={5}
@@ -1207,14 +1189,35 @@ export default function ChatsPage() {
                     placeholder="メッセージを入力... (Shift+Enterで送信)"
                     className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none overflow-y-auto"
                   />
-                  <button
-                    onClick={handleSendMessage}
-                    disabled={sending || uploadingImage || (!messageContent.trim() && !pendingImage)}
-                    className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                    style={{ backgroundColor: '#06C755' }}
-                  >
-                    {sending ? '送信中...' : '送信'}
-                  </button>
+                  {/* 右カラム: 上にツールアイコン（今後増える想定）、下に送信ボタン */}
+                  <div className="flex-shrink-0 flex flex-col items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => imageInputRef.current?.click()}
+                      disabled={uploadingImage}
+                      aria-label="画像を選択"
+                      title="画像を送る"
+                      className="p-2 rounded-full text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors disabled:opacity-50"
+                    >
+                      {uploadingImage ? (
+                        <span className="block h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-green-500" />
+                      ) : (
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-6 w-6">
+                          <rect x="3" y="5" width="18" height="14" rx="2" />
+                          <circle cx="8.5" cy="10" r="1.5" fill="currentColor" stroke="none" />
+                          <path d="m5 17 4.5-4.5 3 3L16 12l3 3" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      )}
+                    </button>
+                    <button
+                      onClick={handleSendMessage}
+                      disabled={sending || uploadingImage || (!messageContent.trim() && !pendingImage)}
+                      className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      style={{ backgroundColor: '#06C755' }}
+                    >
+                      {sending ? '送信中...' : '送信'}
+                    </button>
+                  </div>
                 </div>
               </div>
             </>
