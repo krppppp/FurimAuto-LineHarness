@@ -260,6 +260,15 @@ function matchConditions(
     if (!text || !text.includes(conditions.keyword as string)) return false;
   }
 
+  // keyword_exact（完全一致）
+  if (conditions.keyword_exact) {
+    const rawText = payload.eventData?.text as string | undefined;
+    const text = (rawText || '').trim();
+    if (text !== conditions.keyword_exact) {
+      return false;
+    }
+  }
+
   // isNewUser チェック（friend_add イベント用）
   if (conditions.isNewUser !== undefined && payload.eventData) {
     if (payload.eventData.isNewUser !== conditions.isNewUser) return false;
@@ -281,6 +290,7 @@ function matchConditions(
     'score_threshold',
     'tag_id',
     'keyword',
+    'keyword_exact',
     'isNewUser',
     'remaining_days_gte',
     'remaining_days_lte',
@@ -468,7 +478,20 @@ async function executeAction(
         .bind(friendId)
         .first<{ metadata: string }>();
       const current = JSON.parse(existing?.metadata || '{}') as Record<string, unknown>;
-      const patch = JSON.parse(p.data || '{}') as Record<string, unknown>;
+      // {{message}} を受信メッセージ内容に置換してからパース
+      // JSON文字列内に埋め込むため、JSON仕様に準拠して全制御文字をエスケープ
+      const escapeForJsonString = (s: string): string =>
+        s
+          .replace(/\\/g, '\\\\')
+          .replace(/"/g, '\\"')
+          .replace(/\n/g, '\\n')
+          .replace(/\r/g, '\\r')
+          .replace(/\t/g, '\\t')
+          .replace(/[\u0000-\u001f]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+      const messageText = (payload.eventData?.text as string | undefined) || '';
+      const raw = ((action.params.data as string | undefined) || '{}')
+        .replace(/\{\{message\}\}/g, escapeForJsonString(messageText));
+      const patch = JSON.parse(raw) as Record<string, unknown>;
       const merged = { ...current, ...patch };
       await db
         .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')

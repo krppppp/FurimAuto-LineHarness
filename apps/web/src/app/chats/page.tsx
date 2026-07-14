@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
 import { api, fetchApi } from '@/lib/api'
+import { UNANSWERED_REFRESH_EVENT } from '@/lib/events'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
@@ -56,6 +57,8 @@ const statusFilters: { key: StatusFilter; label: string }[] = [
 ]
 
 const SHOW_LOADING_PREF_KEY = 'lh_chat_show_loading_indicator'
+// 一覧の1ページ件数。worker 側 /api/chats のデフォルト LIMIT と揃える。
+const CHAT_PAGE_SIZE = 300
 const LOADING_SECONDS_PREF_KEY = 'lh_chat_loading_seconds'
 const LOADING_REFRESH_INTERVAL_MS = 4000
 
@@ -319,6 +322,8 @@ export default function ChatsPage() {
   // Send mode: 'enter' = Enter sends, Shift+Enter = newline; 'shift-enter' = reverse
   const [sendMode, setSendMode] = useState<'enter' | 'shift-enter'>('enter')
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMoreChats, setHasMoreChats] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
   const [messageContent, setMessageContent] = useState('')
@@ -358,24 +363,75 @@ export default function ChatsPage() {
     }
   }, [showLoadingIndicator, loadingSeconds])
 
+  // ページング用カーソル。表示リストは楽観更新で並び替わるため、
+  // 「サーバから最後に受け取った行」を ref で保持して次ページの起点にする
+  // (offset 方式だと新着で行が押し下げられた分が欠落する)。
+  const nextCursorRef = useRef<{ at: string; id: string } | null>(null)
+
+  const buildListParams = useCallback((cursor: { at: string; id: string } | null) => {
+    const params: {
+      status?: string; accountId?: string; unansweredOnly?: boolean;
+      limit?: number; beforeAt?: string; beforeId?: string;
+    } = {}
+    if (statusFilter !== 'all' && !unansweredOnly) params.status = statusFilter
+    if (selectedAccountId) params.accountId = selectedAccountId
+    if (unansweredOnly) params.unansweredOnly = true
+    else params.limit = CHAT_PAGE_SIZE
+    if (cursor) {
+      params.beforeAt = cursor.at
+      params.beforeId = cursor.id
+    }
+    return params
+  }, [statusFilter, selectedAccountId, unansweredOnly])
+
   const loadChats = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const params: { status?: string; accountId?: string; unansweredOnly?: boolean } = {}
-      if (statusFilter !== 'all' && !unansweredOnly) params.status = statusFilter
-      if (selectedAccountId) params.accountId = selectedAccountId
-      if (unansweredOnly) params.unansweredOnly = true
-      const chatRes = await api.chats.list(params)
+      const chatRes = await api.chats.list(buildListParams(null))
       if (chatRes.success) {
-        setChats(chatRes.data as unknown as Chat[])
+        const rows = chatRes.data as unknown as Chat[]
+        setChats(rows)
+        const last = rows[rows.length - 1]
+        nextCursorRef.current = last?.lastMessageAt ? { at: last.lastMessageAt, id: last.id } : null
+        // ページ丁度いっぱい返ってきた = 続きがある可能性が高い (unansweredOnly は全件返る)
+        setHasMoreChats(!unansweredOnly && rows.length === CHAT_PAGE_SIZE)
       }
     } catch {
       setError('チャットの読み込みに失敗しました。もう一度お試しください。')
     } finally {
       setLoading(false)
     }
-  }, [statusFilter, selectedAccountId, unansweredOnly])
+  }, [buildListParams, unansweredOnly])
+
+  // 「さらに読み込む」— サーバ由来カーソルの続きを取得して末尾に追加する。
+  // 楽観更新との競合に備えて既存 id は除外し、重複表示を防ぐ。
+  const loadMoreChats = useCallback(async () => {
+    if (loadingMore) return
+    const cursor = nextCursorRef.current
+    if (!cursor) {
+      setHasMoreChats(false)
+      return
+    }
+    setLoadingMore(true)
+    try {
+      const chatRes = await api.chats.list(buildListParams(cursor))
+      if (chatRes.success) {
+        const rows = chatRes.data as unknown as Chat[]
+        setChats((prev) => {
+          const seen = new Set(prev.map((c) => c.id))
+          return [...prev, ...rows.filter((r) => !seen.has(r.id))]
+        })
+        const last = rows[rows.length - 1]
+        nextCursorRef.current = last?.lastMessageAt ? { at: last.lastMessageAt, id: last.id } : null
+        setHasMoreChats(rows.length === CHAT_PAGE_SIZE)
+      }
+    } catch {
+      setError('チャットの追加読み込みに失敗しました。')
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [loadingMore, buildListParams])
 
   // Friends list (for the "new direct message" modal) — loaded lazily in the background
   // Previously fetched 800 friends in parallel with chats, which blocked the initial render.
@@ -591,7 +647,11 @@ export default function ChatsPage() {
             lastMessageDirection: 'outgoing' as const,
             lastMessageType: 'image' as const,
           } : c)
-          let filtered = currentFilter === 'all' ? updated : updated.filter((c) => c.status === currentFilter)
+          // 未対応モード時は status filter を skip (worker 側で status を絞ってないため
+          // 楽観更新で applied するとリストが歪む — Codex Round 1)
+          let filtered = currentUnansweredOnly
+            ? updated
+            : (currentFilter === 'all' ? updated : updated.filter((c) => c.status === currentFilter))
           if (currentUnansweredOnly) {
             // 未対応モードでは、自分が返信したばかりの chat はもう未対応ではないのでリストから除外
             filtered = filtered.filter((c) => c.id !== sendingChatId)
@@ -643,7 +703,11 @@ export default function ChatsPage() {
             lastMessageType: 'text' as const,
           } : c)
           // Drop rows that no longer match the current tab (e.g. replying from 未読 moves chat to in_progress)
-          let filtered = currentFilter === 'all' ? updated : updated.filter((c) => c.status === currentFilter)
+          // 未対応モード時は status filter を skip (worker 側で status を絞ってないため
+          // 楽観更新で applied するとリストが歪む — Codex Round 1)
+          let filtered = currentUnansweredOnly
+            ? updated
+            : (currentFilter === 'all' ? updated : updated.filter((c) => c.status === currentFilter))
           if (currentUnansweredOnly) {
             // 未対応モードでは、自分が返信したばかりの chat はもう未対応ではないのでリストから除外
             filtered = filtered.filter((c) => c.id !== sendingChatId)
@@ -655,6 +719,8 @@ export default function ChatsPage() {
           })
         })
       }
+      // 手動返信で未対応が 1 件減るので、サイドバーのバッジを即時更新させる
+      window.dispatchEvent(new Event(UNANSWERED_REFRESH_EVENT))
     } catch {
       setError('メッセージの送信に失敗しました。')
     } finally {
@@ -669,6 +735,8 @@ export default function ChatsPage() {
       await api.chats.update(selectedChatId, { status: newStatus })
       loadChatDetail(selectedChatId)
       loadChats()
+      // 解決済/未読の切替は未対応バッジに影響するので即時更新させる
+      window.dispatchEvent(new Event(UNANSWERED_REFRESH_EVENT))
     } catch {
       setError('ステータスの更新に失敗しました。')
     }
@@ -825,6 +893,15 @@ export default function ChatsPage() {
                     </button>
                   )
                 })}
+                {hasMoreChats && !unansweredOnly && (
+                  <button
+                    onClick={() => { void loadMoreChats() }}
+                    disabled={loadingMore}
+                    className="w-full px-4 py-3 text-sm text-green-700 hover:bg-green-50 disabled:opacity-50 border-b border-gray-100"
+                  >
+                    {loadingMore ? '読み込み中...' : 'さらに読み込む'}
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -882,8 +959,10 @@ export default function ChatsPage() {
                       type="button"
                       onClick={() => {
                         const idx = chats.findIndex((c) => c.id === selectedChatId)
-                        if (idx < 0) return
-                        const next = chats[(idx + 1) % chats.length]
+                        // idx < 0 = current chat is no longer in the list (e.g. just sent a reply)
+                        // → fall back to the head of the list so the queue keeps moving
+                        const nextIdx = idx < 0 ? 0 : (idx + 1) % chats.length
+                        const next = chats[nextIdx]
                         if (next && next.id !== selectedChatId) {
                           setSelectedChatId(next.id)
                         }

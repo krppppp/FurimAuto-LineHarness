@@ -84,6 +84,14 @@ CLI が以下を全部やる:
 - **カレンダー予約** — Google Calendar 連携の予約システム (LIFF)
 - **スタッフ管理** — Owner / Admin / Staff の 3 ロール、API key 個別発行
 
+### アフィリエイト計測（ASP）
+- **アフィリリンク発行** — アフィリエイター自身が LIFF からワンタップで発行、短縮ドメイン対応
+- **案件管理** — 案件ごとの固定額報酬を設定、複数案件を並列運用
+- **時系列トラッキング** — クリック → 友だち追加 → CV を時系列で記録、last-touch 帰属で成果紐づけ
+- **成果承認フロー** — 帰属 CV を承認/却下して報酬を確定、重複アカウント検知フラグで水増しを可視化
+- **LINE push 通知** — 成果確定時にアフィリエイターへ自動プッシュ通知
+- 詳細: [docs/wiki/27-Affiliate-ASP.md](docs/wiki/27-Affiliate-ASP.md)
+
 ### 自動化
 - **IF-THEN ルール** — 7 種のトリガー × 6 種のアクション
 - **自動返信** — キーワード完全一致 / 部分一致
@@ -152,6 +160,18 @@ MIT License. 商用利用・改変・再配布自由。
 ## コントリビュート
 
 Issue / PR 歓迎。OSS リポへの PR は `Shudesu/line-harness-oss` (このリポ) に投げてください。
+
+---
+
+## 開発者 / Author
+
+**野田修一（Shudesu）** — Harness シリーズ（LINE Harness / IG Harness / X Harness）開発者、AIエージェント株式会社 代表
+
+- GitHub: [@Shudesu](https://github.com/Shudesu)
+- X: [@ai_shunoda](https://x.com/ai_shunoda)
+- YouTube: [野田 修一 | The Harnessで0円](https://www.youtube.com/@ai_nodashuichi)
+- 公式ドキュメント: [Harness Wiki](https://harness-wiki.pages.dev)
+- 商用ツールとの比較・料金データ: [The Harness Lab](https://the-harness.com)
 
 ---
 

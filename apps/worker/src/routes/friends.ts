@@ -36,6 +36,7 @@ function serializeFriend(row: DbFriend) {
     isFollowing: Boolean(row.is_following),
     metadata: JSON.parse(row.metadata || '{}'),
     refCode: (row as unknown as Record<string, unknown>).ref_code as string | null,
+    lineAccountId: ((row as unknown as Record<string, unknown>).line_account_id as string | null) ?? null,
     userId: row.user_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -542,6 +543,7 @@ friends.post('/api/friends/:id/messages', async (c) => {
       messageType?: string;
       content: string;
       altText?: string;
+      trackLinks?: boolean;
     }>();
 
     if (!body.content) {
@@ -557,20 +559,37 @@ friends.post('/api/friends/:id/messages', async (c) => {
     const { LineClient } = await import('@line-crm/line-sdk');
     // Resolve access token from friend's account (multi-account support)
     let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
-    if ((friend as unknown as Record<string, unknown>).line_account_id) {
+    const friendAccountId =
+      ((friend as unknown as Record<string, unknown>).line_account_id as string | null) ?? null;
+    if (friendAccountId) {
       const { getLineAccountById } = await import('@line-crm/db');
-      const account = await getLineAccountById(db, (friend as unknown as Record<string, unknown>).line_account_id as string);
+      const account = await getLineAccountById(db, friendAccountId);
       if (account) accessToken = account.channel_access_token;
     }
     const lineClient = new LineClient(accessToken);
     const messageType = body.messageType ?? 'text';
 
     // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
-    const { autoTrackContent } = await import('../services/auto-track.js');
-    const tracked = await autoTrackContent(
-      db, messageType, body.content,
-      c.env.WORKER_URL || new URL(c.req.url).origin,
-    );
+    // trackLinks=false で明示的に短縮 OFF (URL をそのまま送る)
+    const sendWorkerUrl = c.env.WORKER_URL || new URL(c.req.url).origin;
+    let tracked = { messageType, content: body.content };
+    if (body.trackLinks !== false) {
+      const { autoTrackContent } = await import('../services/auto-track.js');
+      tracked = await autoTrackContent(
+        db, messageType, body.content,
+        sendWorkerUrl,
+        { lineAccountId: friendAccountId },
+      );
+    }
+    // 1:1 送信なので /t リンクに f=<friendId> を焼き込み、LIFF 識別ホップなしで
+    // クリック帰属できるようにする（既存 /t リンクにも効くので trackLinks に関わらず実施）
+    {
+      const { appendFriendToTrackedLinks } = await import('../services/auto-track.js');
+      tracked = {
+        ...tracked,
+        content: await appendFriendToTrackedLinks(db, tracked.content, sendWorkerUrl, friend.id),
+      };
+    }
 
     const message = buildMessage(tracked.messageType, tracked.content, body.altText);
     await lineClient.pushMessage(friend.line_user_id, [message]);

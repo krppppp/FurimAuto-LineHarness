@@ -40,6 +40,9 @@ function serializeForm(
     saveToMetadata: Boolean(row.save_to_metadata),
     isActive: Boolean(row.is_active),
     submitCount: row.submit_count,
+    ogTitle: row.og_title,
+    ogDescription: row.og_description,
+    ogImageUrl: row.og_image_url,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastSubmittedAt: extra?.lastSubmittedAt ?? null,
@@ -107,6 +110,9 @@ forms.post('/api/forms', async (c) => {
       onSubmitWebhookHeaders?: string | null;
       onSubmitWebhookFailMessage?: string | null;
       saveToMetadata?: boolean;
+      ogTitle?: string | null;
+      ogDescription?: string | null;
+      ogImageUrl?: string | null;
     }>();
 
     if (!body.name) {
@@ -125,6 +131,9 @@ forms.post('/api/forms', async (c) => {
       onSubmitWebhookHeaders: body.onSubmitWebhookHeaders ?? null,
       onSubmitWebhookFailMessage: body.onSubmitWebhookFailMessage ?? null,
       saveToMetadata: body.saveToMetadata,
+      ogTitle: body.ogTitle ?? null,
+      ogDescription: body.ogDescription ?? null,
+      ogImageUrl: body.ogImageUrl ?? null,
     });
 
     return c.json({ success: true, data: serializeForm(form) }, 201);
@@ -151,6 +160,9 @@ forms.put('/api/forms/:id', async (c) => {
       onSubmitWebhookFailMessage?: string | null;
       saveToMetadata?: boolean;
       isActive?: boolean;
+      ogTitle?: string | null;
+      ogDescription?: string | null;
+      ogImageUrl?: string | null;
     }>();
 
     // Only include fields that were explicitly sent (avoid undefined → null conversion)
@@ -167,6 +179,9 @@ forms.put('/api/forms/:id', async (c) => {
     if (body.onSubmitWebhookFailMessage !== undefined) updates.onSubmitWebhookFailMessage = body.onSubmitWebhookFailMessage;
     if (body.saveToMetadata !== undefined) updates.saveToMetadata = body.saveToMetadata;
     if (body.isActive !== undefined) updates.isActive = body.isActive;
+    if (body.ogTitle !== undefined) updates.ogTitle = body.ogTitle;
+    if (body.ogDescription !== undefined) updates.ogDescription = body.ogDescription;
+    if (body.ogImageUrl !== undefined) updates.ogImageUrl = body.ogImageUrl;
 
     const updated = await updateForm(c.env.DB, id, updates as any);
 
@@ -572,8 +587,11 @@ forms.post('/api/forms/:id/submit', async (c) => {
             messages.push(rewardFromTrackedLink as ReturnType<typeof buildMessage>);
           } else if (form.on_submit_message_type && form.on_submit_message_content) {
             // Custom form message replaces default diagnostic result
-            const expanded = expandVariables(form.on_submit_message_content, friendData, apiOrigin);
-            messages.push(buildMessage(form.on_submit_message_type, expanded));
+            const expanded = expandVariables(form.on_submit_message_content, friendData, apiOrigin, form.on_submit_message_type);
+            // 1:1 push → /t リンクに f=<friendId> を焼き込み (LIFF 識別ホップ回避)
+            const { appendFriendToTrackedLinks } = await import('../services/auto-track.js');
+            const decorated = await appendFriendToTrackedLinks(db, expanded, apiOrigin, friend.id);
+            messages.push(buildMessage(form.on_submit_message_type, decorated));
           } else {
             // Default: send diagnostic result Flex
             messages.push(buildMessage('flex', JSON.stringify(resultFlex)));
