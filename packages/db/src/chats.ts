@@ -135,10 +135,12 @@ export async function updateChat(
 export async function upsertChatOnMessage(db: D1Database, friendId: string): Promise<ChatRow> {
   const now = jstNow();
   // createChat はレースで負けた場合も相手が作った行を返すので、必ずその行に対して
-  // 受信時の更新 (resolved→unread, last_message_at) を適用する。挿入直後の自行にも
+  // 受信時の更新 (status→unread, last_message_at) を適用する。挿入直後の自行にも
   // 適用されるが no-op 相当なので害はない。
+  // 新着は常に unread（2026-07-14 LINE準拠に変更。旧仕様は resolved→unread のみで
+  // 「対応中」は維持していたが、返信後の新着が未読表示されず気づけなかった。
+  // 既読相当の遷移は管理画面がチャットを開いた時に unread→in_progress で行う）。
   const chat = (await getChatByFriendId(db, friendId)) ?? (await createChat(db, { friendId }));
-  const newStatus = chat.status === 'resolved' ? 'unread' : chat.status;
-  await updateChat(db, chat.id, { status: newStatus, lastMessageAt: now });
+  await updateChat(db, chat.id, { status: 'unread', lastMessageAt: now });
   return (await getChatById(db, chat.id))!;
 }
