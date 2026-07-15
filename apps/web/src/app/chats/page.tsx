@@ -533,31 +533,72 @@ export default function ChatsPage() {
     }
   }, [selectedChatId, markChatRead])
 
-  // 一覧側も静かにポーリング: 既存行はサーバ値で置換、新規行は先頭に追加して
-  // lastMessageAt 降順を維持する。loadChats と違い loading スピナーを出さない
-  useEffect(() => {
-    const tick = async () => {
-      if (document.hidden) return
-      try {
-        const chatRes = await api.chats.list(buildListParams(null))
-        if (!chatRes.success) return
-        const rows = chatRes.data as unknown as Chat[]
-        setChats((prev) => {
-          const byId = new Map(rows.map((r) => [r.id, r]))
-          const merged = prev.map((c) => byId.get(c.id) ?? c)
-          const seen = new Set(merged.map((c) => c.id))
-          const added = rows.filter((r) => !seen.has(r.id))
-          return [...added, ...merged].sort((a, b) => {
-            const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
-            const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
-            return bt - at
-          })
+  // 一覧の静かな更新: 既存行はサーバ値で置換、新規行は先頭に追加して
+  // lastMessageAt 降順を維持する。loadChats と違い loading スピナーを出さない。
+  // 15秒ポーリングとモバイルの pull-to-refresh の両方から使う
+  const refreshChatList = useCallback(async () => {
+    try {
+      const chatRes = await api.chats.list(buildListParams(null))
+      if (!chatRes.success) return
+      const rows = chatRes.data as unknown as Chat[]
+      setChats((prev) => {
+        const byId = new Map(rows.map((r) => [r.id, r]))
+        const merged = prev.map((c) => byId.get(c.id) ?? c)
+        const seen = new Set(merged.map((c) => c.id))
+        const added = rows.filter((r) => !seen.has(r.id))
+        return [...added, ...merged].sort((a, b) => {
+          const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
+          const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
+          return bt - at
         })
-      } catch { /* ポーリング失敗は無視 */ }
+      })
+    } catch { /* 失敗は無視（次回に回復） */ }
+  }, [buildListParams])
+
+  useEffect(() => {
+    const tick = () => {
+      if (document.hidden) return
+      refreshChatList()
     }
     const id = window.setInterval(tick, CHAT_LIST_POLL_MS)
     return () => window.clearInterval(id)
-  }, [buildListParams])
+  }, [refreshChatList])
+
+  // モバイル: 一覧を下に引っ張って即時更新（pull-to-refresh）。
+  // 一覧がスクロール最上部にある時だけ発動。しきい値 60px で離すと refreshChatList
+  const listScrollRef = useRef<HTMLDivElement>(null)
+  const pullStartYRef = useRef<number | null>(null)
+  const [pullY, setPullY] = useState(0)
+  const [pullRefreshing, setPullRefreshing] = useState(false)
+
+  const handleListTouchStart = (e: React.TouchEvent) => {
+    pullStartYRef.current = (listScrollRef.current?.scrollTop ?? 1) <= 0 ? e.touches[0].clientY : null
+  }
+  const handleListTouchMove = (e: React.TouchEvent) => {
+    if (pullStartYRef.current == null || pullRefreshing) return
+    const dy = e.touches[0].clientY - pullStartYRef.current
+    if (dy > 0 && (listScrollRef.current?.scrollTop ?? 0) <= 0) {
+      setPullY(Math.min(dy * 0.5, 80)) // 抵抗感を出すため実移動量の半分
+    } else {
+      setPullY(0)
+    }
+  }
+  const handleListTouchEnd = async () => {
+    if (pullStartYRef.current == null) return
+    pullStartYRef.current = null
+    if (pullY >= 60 && !pullRefreshing) {
+      setPullRefreshing(true)
+      setPullY(48)
+      try {
+        await refreshChatList()
+      } finally {
+        setPullRefreshing(false)
+        setPullY(0)
+      }
+    } else {
+      setPullY(0)
+    }
+  }
 
   // Surface deep-linked chats in the sidebar even when the current account
   // filter or status filter would exclude them — otherwise the user replies
@@ -876,7 +917,21 @@ export default function ChatsPage() {
           </div>
 
           {/* Chat List */}
-          <div className="flex-1 overflow-y-auto overscroll-contain">
+          <div
+            ref={listScrollRef}
+            className="flex-1 overflow-y-auto overscroll-contain"
+            onTouchStart={handleListTouchStart}
+            onTouchMove={handleListTouchMove}
+            onTouchEnd={handleListTouchEnd}
+          >
+            {(pullY > 0 || pullRefreshing) && (
+              <div
+                style={{ height: pullRefreshing ? 48 : pullY }}
+                className="flex items-center justify-center text-xs text-gray-400 overflow-hidden"
+              >
+                {pullRefreshing ? '更新中...' : pullY >= 60 ? '離して更新' : '↓ 引っ張って更新'}
+              </div>
+            )}
             {loading ? (
               <div>
                 {[...Array(5)].map((_, i) => (
