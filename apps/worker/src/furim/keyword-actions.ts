@@ -3,7 +3,8 @@ import { gasGet, gasPost } from './gas-client.js';
 import { copyTicketFlexMessage } from './messages.js';
 import { getFriendByLineUserId, completeFriendActiveScenarios, getScenarioByName, enrollFriendInScenario } from '@line-crm/db';
 
-const REFERRAL_SCENARIO_NAME = 'FurimAuto セグメント1: アンケート未回答';
+// seed-furimauto-all-scenarios.mjs v2 の命名と一致させること（旧統合7本命名だと見つからず切替が空振りする）
+const REFERRAL_SCENARIO_NAME = 'FurimAuto 紹介 ステップ配信（セグメント1: アンケート未回答）';
 
 export type KeywordActionsEnv = {
   GAS_DEPLOY_ID: string;

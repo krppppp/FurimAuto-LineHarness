@@ -10,17 +10,25 @@ import type { Env } from '../index.js';
 
 const furim = new Hono<Env>();
 
-// シナリオ名マップ: segment番号 → DB上のシナリオ名
-// isReferral による区別なし（試用期間の差はGAS側のsegment切り替えタイミングで吸収）
-const SCENARIO_NAME_MAP: Record<string, string> = {
-  '1': 'FurimAuto セグメント1: アンケート未回答',
-  '2': 'FurimAuto セグメント2: アンケート回答済み',
-  '3': 'FurimAuto セグメント3: キーコード発行済み',
-  '4': 'FurimAuto セグメント4: 拡張インストール済み',
-  '5': 'FurimAuto セグメント5: Free30未取得',
-  '6': 'FurimAuto セグメント6: Free30取得済み',
-  '7': 'FurimAuto セグメント7: Youtubeクーポン取得済み',
+// セグメント番号 → シナリオ名（seed-furimauto-all-scenarios.mjs v2 の14本命名と一致させる）
+// 通常(7日)/紹介(14日)はシナリオ自体が別なので isReferral で振り分ける。
+// 旧実装は統合7本命名（FurimAuto セグメントN: ...）を探しており、DB上に存在しない名前の
+// ため全 scenario-switch が 404 → 誰も enroll されずステップ配信が完全停止していた（2026-07-15 修正）
+const SEGMENT_LABELS: Record<string, string> = {
+  '1': 'アンケート未回答',
+  '2': 'アンケート回答済み',
+  '3': 'キーコード発行済み',
+  '4': '拡張インストール済み',
+  '5': 'メルカリURL登録済み',
+  '6': 'FREEコピー出品チケット取得',
+  '7': 'Youtubeクーポン取得',
 };
+
+function scenarioNameFor(segment: number, isReferral: boolean): string | null {
+  const label = SEGMENT_LABELS[String(segment)];
+  if (!label) return null;
+  return `FurimAuto ${isReferral ? '紹介' : '通常'} ステップ配信（セグメント${segment}: ${label}）`;
+}
 
 /**
  * POST /api/furim/scenario-switch
@@ -70,10 +78,9 @@ furim.post('/api/furim/scenario-switch', async (c) => {
       return c.json({ success: true, data: { friendId: friend.id, scenarioId: null, scenarioName: 'kaisetsu' } });
     }
 
-    const key = `${body.segment}`;
-    const scenarioName = SCENARIO_NAME_MAP[key];
+    const scenarioName = scenarioNameFor(body.segment, Boolean(body.isReferral));
     if (!scenarioName) {
-      return c.json({ success: false, error: `Unknown segment: ${key}` }, 400);
+      return c.json({ success: false, error: `Unknown segment: ${body.segment}` }, 400);
     }
 
     const scenario = await db
@@ -83,6 +90,17 @@ furim.post('/api/furim/scenario-switch', async (c) => {
 
     if (!scenario) {
       return c.json({ success: false, error: `Scenario not found or inactive: ${scenarioName}` }, 404);
+    }
+
+    // 同一シナリオに在籍中なら何もしない。GAS sendStepMessages は毎時・対象者全員分を
+    // 呼んでくるため、このガードがないと毎時 complete→re-enroll でステップ進行が
+    // Day0 にリセットされ続け、日次のステップ配信が一切前進しない
+    const alreadyEnrolled = await db
+      .prepare(`SELECT id FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ? AND status IN ('active', 'delivering') LIMIT 1`)
+      .bind(friend.id, scenario.id)
+      .first<{ id: string }>();
+    if (alreadyEnrolled) {
+      return c.json({ success: true, data: { friendId: friend.id, scenarioId: scenario.id, scenarioName, alreadyEnrolled: true } });
     }
 
     await completeFriendActiveScenarios(db, friend.id);
