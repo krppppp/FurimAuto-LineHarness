@@ -884,6 +884,15 @@ async function scheduled(
     );
   }
 
+  // GASキープウォーム: 5分ごとの軽量ping（シート非接触・doGetで即return）。
+  // 低頻度時間帯のコールドスタート緩和（キーコード発行等の体感遅延・無応答対策）
+  if (env.GAS_DEPLOY_ID) {
+    ctx.waitUntil(
+      fetch(`https://script.google.com/macros/s/${env.GAS_DEPLOY_ID}/exec?method=ping`, { redirect: 'follow' })
+        .catch((err) => console.error('[cron] GAS ping error:', err)),
+    );
+  }
+
   // Get all active accounts from DB
   const dbAccounts = await getLineAccounts(env.DB);
 
