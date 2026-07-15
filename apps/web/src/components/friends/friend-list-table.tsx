@@ -1,11 +1,12 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { Tag } from '@line-crm/shared'
 import type { FriendListItem } from '@/lib/api'
 import { api } from '@/lib/api'
 import FriendListRow from './friend-list-row'
 import TagBadge from './tag-badge'
+import CouponManager, { prefetchCoupons } from './coupon-manager'
 
 interface Props {
   friends: FriendListItem[]
@@ -24,6 +25,11 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
   const [selectedTagId, setSelectedTagId] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  // クーポン一覧を裏で先読み（モジュールキャッシュ）。行展開時の待ちをなくす
+  useEffect(() => {
+    prefetchCoupons().catch(() => {})
+  }, [])
 
   const toggleExpand = (id: string) => {
     setExpandedId(expandedId === id ? null : id)
@@ -161,6 +167,11 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
                         </button>
                       )
                     )}
+
+                    {/* FurimAuto fork 独自: Stripe クーポン付与 */}
+                    <div className="pt-3 border-t border-gray-200">
+                      <CouponManager friendId={friend.id} friendName={friend.displayName} />
+                    </div>
                   </div>
                 )}
               </div>

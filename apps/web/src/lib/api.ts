@@ -166,7 +166,47 @@ export type FriendListItem = FriendWithTags & Partial<{
   handled: boolean
 }>
 
+// FurimAuto fork 独自: 友だちリストからの Stripe クーポン付与（サブスク discounts スタック方式）
+export type StripeCouponItem = {
+  id: string
+  name: string | null
+  percentOff: number | null
+  amountOff: number | null
+  currency: string | null
+  duration: string | null
+  durationInMonths: number | null
+}
+export type SubscriptionDiscount = {
+  couponId: string
+  name: string
+  amountOff: number | null
+  percentOff: number | null
+  duration: string
+  deletable: boolean
+}
+export type FriendCouponState = {
+  hasSubscription: boolean
+  discounts: SubscriptionDiscount[]
+  pendingNotification: { couponName: string | null; sendAfter: string } | null
+}
+
 export const api = {
+  furimCoupons: {
+    list: () =>
+      fetchApi<ApiResponse<StripeCouponItem[]>>('/api/furim/coupons'),
+    get: (friendId: string) =>
+      fetchApi<ApiResponse<FriendCouponState>>(`/api/furim/friends/${friendId}/coupon`),
+    apply: (friendId: string, couponId: string, message: string) =>
+      fetchApi<ApiResponse<Pick<FriendCouponState, 'discounts' | 'pendingNotification'>>>(
+        `/api/furim/friends/${friendId}/coupon`,
+        { method: 'POST', body: JSON.stringify({ couponId, message }) },
+      ),
+    remove: (friendId: string, couponId: string) =>
+      fetchApi<ApiResponse<Pick<FriendCouponState, 'discounts' | 'pendingNotification'>>>(
+        `/api/furim/friends/${friendId}/coupon?couponId=${encodeURIComponent(couponId)}`,
+        { method: 'DELETE' },
+      ),
+  },
   friends: {
     list: (params?: FriendListParams) => {
       const query: Record<string, string> = {}

@@ -160,7 +160,7 @@ export default function FriendListRow({ friend, onTagEditClick }: Props) {
             onClick={(e) => { e.stopPropagation(); onTagEditClick() }}
             className="text-[10px] text-blue-600 hover:text-blue-800 underline mt-0.5"
           >
-            タグ編集
+            タグ・クーポン
           </button>
         )}
       </div>

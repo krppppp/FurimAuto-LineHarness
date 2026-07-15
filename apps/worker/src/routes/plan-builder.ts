@@ -388,15 +388,16 @@ export async function getActiveSubscriptionForLine(
 export async function getSubDiscounts(
   secretKey: string,
   subId: string,
-): Promise<Array<{ discountId: string; couponId: string; name: string; amountOff: number; duration: string }>> {
+): Promise<Array<{ discountId: string; couponId: string; name: string; amountOff: number; percentOff: number | null; duration: string }>> {
   const sub = (await stripeCall(secretKey, `subscriptions/${subId}`, { 'expand[]': 'discounts' }, 'GET')) as unknown as {
-    discounts?: Array<{ id: string; coupon?: { id: string; name?: string; amount_off?: number; duration?: string } }>;
+    discounts?: Array<{ id: string; coupon?: { id: string; name?: string; amount_off?: number; percent_off?: number; duration?: string } }>;
   };
   return (sub.discounts ?? []).map((d) => ({
     discountId: d.id,
     couponId: d.coupon?.id ?? '',
     name: d.coupon?.name ?? '',
     amountOff: d.coupon?.amount_off ?? 0,
+    percentOff: d.coupon?.percent_off ?? null,
     duration: d.coupon?.duration ?? '',
   }));
 }

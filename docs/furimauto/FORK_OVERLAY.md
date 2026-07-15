@@ -16,7 +16,7 @@
 > （`scripts/merge-upstream.sh` はこの `- ` 行からパスを抽出してコンフリクト判定に使う）
 
 ### worker
-- apps/worker/src/index.ts — furim/messages/entry-routes の import & `app.route` 追加。`processKaisetsuDeliveries` を cron に。毎時0分 GAS `sendStepMessages`（セグメント判定の心臓）。Env Bindings に GAS_DEPLOY_ID / FIREBASE_DATABASE_URL / STRIPE_SECRET_KEY / GEMINI_API_KEY / GITHUB_PAT / RICHMENU_* 追加 | upstream index.ts に同フックを再注入。理想は furim/mount.ts に集約し1〜2行で差し込む
+- apps/worker/src/index.ts — furim/messages/entry-routes/furim-coupons の import & `app.route` 追加。`processKaisetsuDeliveries`・`processPendingCouponNotifications`（クーポン付与LINE通知）を cron に。毎時0分 GAS `sendStepMessages`（セグメント判定の心臓）。Env Bindings に GAS_DEPLOY_ID / FIREBASE_DATABASE_URL / STRIPE_SECRET_KEY / GEMINI_API_KEY / GITHUB_PAT / RICHMENU_* 追加 | upstream index.ts に同フックを再注入。理想は furim/mount.ts に集約し1〜2行で差し込む
 - apps/worker/src/routes/webhook.ts — follow/unfollow で `fireEvent`。メッセージ振り分け（【ボタン】【キーワード】・リッチメニュー切替・AIチャット・Furimanクーポン・解説見た）。handler は全て furim/ 側。WebhookEnv 型 | upstream の follow/message ハンドラに furim handler 呼び出しを再注入
 - apps/worker/src/services/event-bus.ts — 独自アクション: call_gas / call_gas_post / call_gas_get / send_messages / create_stripe_customer / add_tag_by_name / remove_tag_by_name / complete_active_scenarios / code_managed。条件演算子 not_empty/empty/equals/not_equals/falsy。resolveGasArgs（{{line_user_id}}/{{display_name}}/{{stripe_customer_id}}/{{now_jst}}/{{trial_end_jst}}）。ActionEnv で env を action へ | upstream の executeAction switch に独自 case を追加
 - apps/worker/src/routes/stripe.ts — gasGet(LINE_ID↔Stripe_ID 変換)・updateIntroductionCoupon。stripe_invoice_paid / stripe_payment_failed / stripe_subscription_deleted / stripe_ticket_purchased / cv_fire で fireEvent | upstream stripe.ts の各イベント処理に GAS連携＋fireEvent を再注入
@@ -33,6 +33,10 @@
 - apps/web/src/components/app-shell.tsx — upstream の `UpdateBanner`(改造検知) を furim の `UpstreamUpdateBanner`(フォーク元更新通知のみ) に差し替え（import + タグの2行） | upstream UpdateBanner は無改変で残す。差し替え2行を再適用
 - apps/web/src/components/layout/sidebar.tsx — メインセクションに `/tags`「タグ管理」項目を1行追加（FurimAuto独自ページ。ページ実体は app/tags/・components/furim/tag-timing.ts） | メニュー配列に1行再追加
 - apps/web/next.config.ts — `typescript.ignoreBuildErrors:true` ・ `eslint.ignoreDuringBuilds:true`（upstream管理UIの型strict起因のビルド停止を回避する暫定） | 暫定措置。upstream側の型が直れば外す
+- apps/web/src/components/friends/friend-list-table.tsx — 展開パネル内に `<CouponManager>`（Stripeクーポン付与）を1ブロック追加。実体は components/friends/coupon-manager.tsx（fork独自） | import + JSX 1ブロックを再適用
+- apps/web/src/components/friends/friend-list-row.tsx — ボタンラベル「タグ編集」→「タグ・クーポン」（1語） | 1行再適用
+- apps/web/src/lib/api.ts — `api.furimCoupons`（list/get/apply/remove）+ StripeCouponItem/FriendCouponState 型を追加 | 1ブロック再適用
+- packages/db/schema.sql — coupon_notifications テーブル追記（migration 051 と対）。migration 番号は upstream が同番号を採番する可能性あり（046-048で衝突実績） | テーブル定義を再追記
 
 ### 設定
 - apps/worker/wrangler.toml — account_id(f2b335f4…)・D1(line-crm / line-crm-prod 24650d0d… / 検証中は line-crm-rebase)・[env.prod]・[vars](self-update)・nodejs_compat・[assets]・ADMIN_ORIGIN / ADMIN_ALLOW_CROSS_SITE（管理UIクロスサイトCORS+cookie） | FurimAuto値を再適用。upstream のキー追加があればマージ

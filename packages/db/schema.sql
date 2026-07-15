@@ -935,3 +935,21 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   last_used_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_staff ON push_subscriptions(staff_member_id);
+
+-- クーポン付与のLINE通知予約 (FurimAuto fork 独自)。管理画面からの付与後、
+-- 3分の取り消し猶予をおいて cron が LINE 通知を送る。
+CREATE TABLE IF NOT EXISTS coupon_notifications (
+  id                 TEXT PRIMARY KEY,
+  friend_id          TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  stripe_customer_id TEXT NOT NULL,
+  subscription_id    TEXT NOT NULL,
+  coupon_id          TEXT NOT NULL,
+  coupon_name        TEXT,
+  message            TEXT NOT NULL,
+  send_after         TEXT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'cancelled', 'skipped')),
+  created_at         TEXT NOT NULL,
+  sent_at            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_coupon_notifications_due ON coupon_notifications(status, send_after);
+CREATE INDEX IF NOT EXISTS idx_coupon_notifications_friend ON coupon_notifications(friend_id);
