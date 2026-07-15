@@ -33,6 +33,7 @@
 - apps/web/src/components/app-shell.tsx — upstream の `UpdateBanner`(改造検知) を furim の `UpstreamUpdateBanner`(フォーク元更新通知のみ) に差し替え（import + タグの2行） | upstream UpdateBanner は無改変で残す。差し替え2行を再適用
 - apps/web/src/components/layout/sidebar.tsx — メインセクションに `/tags`「タグ管理」項目を1行追加（FurimAuto独自ページ。ページ実体は app/tags/・components/furim/tag-timing.ts） | メニュー配列に1行再追加
 - apps/web/next.config.ts — `typescript.ignoreBuildErrors:true` ・ `eslint.ignoreDuringBuilds:true`（upstream管理UIの型strict起因のビルド停止を回避する暫定） | 暫定措置。upstream側の型が直れば外す
+- apps/web/src/app/chats/page.tsx — モバイルUX一式（2026-07-14〜: タイトル削除・全画面固定・5s/15sポーリング・LINE準拠描画・入力欄・pull-to-refresh）。upstream改修が入ると競合大 | 差分が大きいのでマージ時は git diff で当該コミット群を個別再適用
 - apps/web/src/components/friends/friend-list-table.tsx — 展開パネル内に `<CouponManager>`（Stripeクーポン付与）を1ブロック追加。実体は components/friends/coupon-manager.tsx（fork独自） | import + JSX 1ブロックを再適用
 - apps/web/src/components/friends/friend-list-row.tsx — ボタンラベル「タグ編集」→「タグ・クーポン」（1語） | 1行再適用
 - apps/web/src/lib/api.ts — `api.furimCoupons`（list/get/apply/remove）+ StripeCouponItem/FriendCouponState 型を追加 | 1ブロック再適用

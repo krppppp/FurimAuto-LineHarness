@@ -284,6 +284,12 @@ export async function handleFurimAction(
     }
   } catch (err) {
     console.error(`[furim] handleFurimAction error (${action}):`, err);
+    // 無言で終わらせない: replyToken は失効している可能性があるので push で再操作を促す
+    try {
+      await lineClient.pushMessage(lineUserId, [{ type: 'text', text: 'エラーが発生しました🙇\nお手数ですが、もう一度タップしてください。' } as never]);
+    } catch (pushErr) {
+      console.error('[furim] error-fallback push failed:', pushErr);
+    }
     return true;
   }
 }
@@ -292,6 +298,22 @@ export async function handleFurimAction(
 
 type ResolvedEnv = FurimActionsEnv & { GAS_DEPLOY_ID: string };
 
+// reply を試み、失敗（GAS遅延による replyToken 失効等）なら push で確実に届ける。
+// 2026-07-16: キーコード発行タップの約7%が GAS の遅延起因で無応答になっていた対策
+async function replyOrPush(
+  lineClient: LineClient,
+  replyToken: string,
+  lineUserId: string,
+  messages: never[],
+) {
+  try {
+    await lineClient.replyMessage(replyToken, messages);
+  } catch (err) {
+    console.error('[furim] reply failed, falling back to push:', err);
+    await lineClient.pushMessage(lineUserId, messages);
+  }
+}
+
 async function actionKeycodeIssue(
   lineClient: LineClient,
   lineUserId: string,
@@ -299,11 +321,24 @@ async function actionKeycodeIssue(
   env: ResolvedEnv,
   db?: D1Database,
 ) {
-  const data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getKeyCode', lineUserId }) as Record<string, string>;
+  let data: Record<string, string> | null = null;
+  for (let attempt = 1; attempt <= 2 && !data; attempt++) {
+    try {
+      data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getKeyCode', lineUserId }) as Record<string, string>;
+    } catch (err) {
+      console.error(`[furim] getKeyCode attempt ${attempt} failed:`, err);
+    }
+  }
   console.log('[furim] getKeyCode response:', data);
 
+  if (!data?.keyCode) {
+    // GAS 2回失敗 — replyToken は失効している可能性が高いので push で案内
+    await lineClient.pushMessage(lineUserId, [{ type: 'text', text: '申し訳ございません、発行処理が混み合っています🙇\nお手数ですが、少し時間をおいてもう一度「キーコード発行」をタップしてください。' } as never]);
+    return;
+  }
+
   if (data.keyCode === 'エラーコード(401)') {
-    await lineClient.replyMessage(replyToken, [{ type: 'text', text: 'まだ準備中なので10秒経ったらもう一回押してください🙇' } as never]);
+    await replyOrPush(lineClient, replyToken, lineUserId, [{ type: 'text', text: 'まだ準備中なので10秒経ったらもう一回押してください🙇' } as never]);
     return;
   }
 
@@ -320,7 +355,7 @@ async function actionKeycodeIssue(
     messages.push(copyTicketFlexMessage());
   }
 
-  await lineClient.replyMessage(replyToken, messages as never[]);
+  await replyOrPush(lineClient, replyToken, lineUserId, messages as never[]);
 
   // セグメント3 へ昇格（キーコード発行済み）
   if (db) {
