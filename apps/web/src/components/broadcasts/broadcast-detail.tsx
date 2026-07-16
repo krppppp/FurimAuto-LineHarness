@@ -43,6 +43,9 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
   }> | null>(null)
   const [tags, setTags] = useState<Tag[]>([])
   const [showSegmentBuilder, setShowSegmentBuilder] = useState(false)
+  // セグメント絞り込み条件。適用すると送信を send-segment 経路に切り替える。
+  // (worker側は segment_conditions を PUT で永続化しないため component state で保持する)
+  const [appliedSegment, setAppliedSegment] = useState<{ operator: string; rules: { type: string; value: unknown }[] } | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -163,6 +166,36 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
     }
   }
 
+  // セグメント適用時の送信 — 通常 send は target_type ベースで条件を無視するため、
+  // 条件を honor する send-segment 経路に流す。
+  const handleSendSegment = async () => {
+    if (!appliedSegment) return
+    setShowConfirm(false)
+    setSending(true)
+    try {
+      await api.broadcasts.sendSegment(id, appliedSegment)
+      setAppliedSegment(null)
+      load()
+    } catch {
+      setError('送信に失敗しました')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  // セグメント適用中は対象人数をセグメント件数で上書きする（送信ボタン・confirm 表示用）。
+  useEffect(() => {
+    if (!appliedSegment) return
+    const requestId = id
+    const acct = broadcast
+      ? (broadcast as unknown as { lineAccountId?: string | null }).lineAccountId ?? undefined
+      : undefined
+    api.segments.count(appliedSegment, acct).then((r) => {
+      if (requestId !== latestIdRef.current) return
+      if (r.success && typeof r.count === 'number') setTargetCount(r.count)
+    }).catch(() => {/* ignore */})
+  }, [appliedSegment, id, broadcast])
+
   if (loading) {
     return (
       <div>
@@ -236,7 +269,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
             <div className="flex justify-between">
               <dt className="text-gray-500">対象</dt>
               <dd className="text-gray-900">
-                {broadcast.targetType === 'all' ? '全員' : `タグ: ${broadcast.targetTagId ?? '-'}`}
+                {appliedSegment ? 'セグメント' : broadcast.targetType === 'all' ? '全員' : `タグ: ${broadcast.targetTagId ?? '-'}`}
                 {targetCount != null && <span className="ml-1 text-gray-500">({targetCount.toLocaleString('ja-JP')}人)</span>}
               </dd>
             </div>
@@ -266,24 +299,34 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
       {/* Segment Builder */}
       {broadcast.status === 'draft' && (
         <div className="mb-4">
-          {!showSegmentBuilder ? (
+          {showSegmentBuilder ? (
+            <SegmentBuilder
+              tags={tags}
+              accountId={accountId}
+              initialConditions={appliedSegment ?? undefined}
+              onApply={(conditions) => {
+                // 送信は confirm→handleSendSegment で send-segment に流す。
+                // 対象人数は appliedSegment の useEffect が segments/count で更新する。
+                setAppliedSegment(conditions)
+                setShowSegmentBuilder(false)
+              }}
+              onCancel={() => setShowSegmentBuilder(false)}
+            />
+          ) : appliedSegment ? (
+            <div className="flex items-center gap-3 text-xs">
+              <span className="text-gray-700 font-medium">
+                🎯 セグメント適用中（{targetCount != null ? `${targetCount.toLocaleString('ja-JP')}人` : '計算中'}）
+              </span>
+              <button onClick={() => setShowSegmentBuilder(true)} className="text-blue-500 hover:text-blue-700">条件を編集</button>
+              <button onClick={() => { setAppliedSegment(null); load() }} className="text-red-500 hover:text-red-700">解除（全員に戻す）</button>
+            </div>
+          ) : (
             <button
               onClick={() => setShowSegmentBuilder(true)}
               className="text-xs text-blue-500 hover:text-blue-700"
             >
-              セグメント条件を編集
+              セグメントで絞り込む
             </button>
-          ) : (
-            <SegmentBuilder
-              tags={tags}
-              accountId={accountId}
-              onApply={async (conditions) => {
-                await api.broadcasts.update(id, { segmentConditions: JSON.stringify(conditions) } as unknown as Parameters<typeof api.broadcasts.update>[1])
-                setShowSegmentBuilder(false)
-                load()
-              }}
-              onCancel={() => setShowSegmentBuilder(false)}
-            />
           )}
         </div>
       )}
@@ -498,7 +541,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
                 })
               : undefined
           }
-          onConfirm={handleSend}
+          onConfirm={appliedSegment ? handleSendSegment : handleSend}
           onCancel={() => setShowConfirm(false)}
         />
       )}
