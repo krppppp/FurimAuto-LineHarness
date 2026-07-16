@@ -474,6 +474,8 @@ export default function ChatsPage() {
       await api.chats.update(chatId, { status: 'in_progress' })
       setChats((prev) => prev.map((c) => c.id === chatId ? { ...c, status: 'in_progress' as const } : c))
       setChatDetail((prev) => (prev && prev.id === chatId) ? { ...prev, status: 'in_progress' as const } : prev)
+      // 未読→対応中で未読が 1 件減るので、サイドバーの未読バッジを即時更新させる
+      window.dispatchEvent(new Event(UNANSWERED_REFRESH_EVENT))
     } catch { /* 既読化失敗は表示上の問題のみなので無視 */ }
   }, [])
 

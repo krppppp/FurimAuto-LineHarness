@@ -191,6 +191,11 @@ export type FriendCouponState = {
 }
 
 export const api = {
+  // FurimAuto fork 独自: サイドバー未読バッジ用の軽量カウント(chats.status='unread')
+  furimChats: {
+    unreadCount: () =>
+      fetchApi<ApiResponse<{ total: number }>>('/api/furim/chats/unread-count'),
+  },
   furimCoupons: {
     list: () =>
       fetchApi<ApiResponse<StripeCouponItem[]>>('/api/furim/coupons'),
