@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
+import { countUnreadChats } from '../services/unread-count.js';
 
 // FurimAuto fork 独自: サイドバーの未読バッジ用の軽量カウント。
 // upstream の /api/inbox/unanswered/count(messages_log 全走査の重い集計)ではなく、
@@ -9,10 +10,8 @@ export const furimChats = new Hono<Env>();
 
 furimChats.get('/api/furim/chats/unread-count', async (c) => {
   try {
-    const row = await c.env.DB.prepare(
-      `SELECT COUNT(*) AS total FROM chats WHERE COALESCE(status, 'resolved') = 'unread'`,
-    ).first<{ total: number }>();
-    return c.json({ success: true, data: { total: row?.total ?? 0 } });
+    const total = await countUnreadChats(c.env.DB);
+    return c.json({ success: true, data: { total } });
   } catch (err) {
     console.error('GET /api/furim/chats/unread-count error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);

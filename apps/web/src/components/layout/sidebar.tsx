@@ -223,7 +223,20 @@ export default function Sidebar() {
       try {
         const { api } = await import('@/lib/api')
         const res = await api.furimChats.unreadCount()
-        if (!cancelled && mySeq === seq && res.success) setUnreadCount(res.data.total)
+        if (!cancelled && mySeq === seq && res.success) {
+          const total = res.data.total
+          setUnreadCount(total)
+          // PWA ホーム画面アイコンのバッジも未読数に同期する。push の badge だけだと
+          // 「受信時にセットされたきり読んでも減らない」ため、アプリ表示中はここで更新/クリア。
+          const nav = navigator as Navigator & {
+            setAppBadge?: (n?: number) => Promise<void>
+            clearAppBadge?: () => Promise<void>
+          }
+          if (nav.setAppBadge) {
+            if (total > 0) nav.setAppBadge(total).catch(() => {})
+            else nav.clearAppBadge?.().catch(() => {})
+          }
+        }
       } catch {
         // サイレント失敗
       }

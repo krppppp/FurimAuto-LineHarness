@@ -1,7 +1,7 @@
 import { buildPushPayload } from '@block65/webcrypto-web-push';
 import type { PushMessage, PushSubscription } from '@block65/webcrypto-web-push';
 import { jstNow } from '@line-crm/db';
-import { countUnanswered } from './unanswered-inbox.js';
+import { countUnreadChats } from './unread-count.js';
 
 export type PushEnv = {
   VAPID_PUBLIC_KEY?: string;
@@ -76,7 +76,8 @@ export async function sendPushToAll(db: D1Database, env: PushEnv, data: PushPayl
 }
 
 // 顧客からの受信メッセージをスタッフ全端末に通知する。
-// title は「アカウント名｜友だち名」、badge は未対応件数。失敗しても throw しない。
+// title は「アカウント名｜友だち名」、badge は未読件数(サイドバーの未読バッジと統一)。
+// 失敗しても throw しない。
 export async function notifyStaffOfIncomingMessage(
   db: D1Database,
   env: PushEnv,
@@ -97,12 +98,12 @@ export async function notifyStaffOfIncomingMessage(
         .first<{ name: string }>();
       if (acc?.name) title = `${acc.name}｜${title}`;
     }
-    const { total } = await countUnanswered(db);
+    const unreadTotal = await countUnreadChats(db);
     await sendPushToAll(db, env, {
       title,
       body: args.preview.slice(0, 80),
       url: `/chats?friend=${args.friendId}`,
-      badge: total,
+      badge: unreadTotal,
     });
   } catch (err) {
     console.error('[push] notifyStaffOfIncomingMessage failed', err);
