@@ -220,6 +220,17 @@ export async function handleButtonAction(
     return true;
   }
 
+  // 在庫管理シート無料プロモ: フラグ(InventorySheet)をTRUE・自動削除巡回(AutoMultiChannel)を全サイトに設定。
+  // 該当ユーザーのマスターシート行を GAS が書き換える。拡張は次回 getKeyCodeSet 取得で有効判定する。
+  if (text.includes('在庫管理シート無料お試し')) {
+    await gasPost(env.GAS_DEPLOY_ID, { method: 'enableInventorySheet', lineUserId });
+    await lineClient.replyMessage(replyToken, [{
+      type: 'text',
+      text: '✅在庫管理シートを有効化しました！\n\nメルカリ・ラクマ・Shops・ヤフオク・ヤフフリの在庫を1枚のスプレッドシートでまとめて管理し、売れたら他サイトの出品を自動でお知らせ・削除できます📦\n\n【使い始め方】\n①FurimAuto拡張でキーコードを再取得（または再入力）して最新状態にする\n②先ほどの動画の手順で、あなた専用の在庫管理シートを作成する\n\nうまく表示されない時は一度拡張を開き直してキーコードを再取得してみてください🙏',
+    } as never]);
+    return true;
+  }
+
   await lineClient.replyMessage(replyToken, [{ type: 'text', text: '現在急ピッチで準備中です！' } as never]);
   return true;
 }
