@@ -913,7 +913,9 @@ broadcasts.post('/api/segments/count', async (c) => {
       accountBindings.unshift(body.accountId);
     }
 
-    const countSql = accountSql.replace(/^SELECT .+ FROM/, 'SELECT COUNT(*) as count FROM');
+    // 非貪欲マッチ必須: tag_exists 等はサブクエリに FROM friend_tags を含むため、
+    // 貪欲 (.+) だと最後の FROM まで飲み込み COUNT クエリが壊れて 400 になる。
+    const countSql = accountSql.replace(/^SELECT .+? FROM /, 'SELECT COUNT(*) as count FROM ');
     const result = await c.env.DB.prepare(countSql).bind(...accountBindings).first<{ count: number }>();
 
     return c.json({ success: true, count: result?.count ?? 0 });
