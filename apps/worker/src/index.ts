@@ -893,6 +893,16 @@ async function scheduled(
     );
   }
 
+  // GASシート認可ヘルスチェック: 毎時30分にシート読み取りを実叩きし、
+  // 認可失効（7日周期事故の再発）を顧客報告より先に検知してスタッフへWeb Push
+  if (jstMinutes === 30) {
+    ctx.waitUntil(
+      import('./services/gas-health.js')
+        .then(({ checkGasSheetAuth }) => checkGasSheetAuth(env.DB, env))
+        .catch((err) => console.error('[cron] gas-health error:', err)),
+    );
+  }
+
   // Get all active accounts from DB
   const dbAccounts = await getLineAccounts(env.DB);
 
