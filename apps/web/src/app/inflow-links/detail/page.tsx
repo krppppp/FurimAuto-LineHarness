@@ -41,7 +41,7 @@ export default function InflowLinkDetailPage() {
     )
   }
 
-  const url = `${process.env.NEXT_PUBLIC_API_URL ?? ''}/r/${route.refCode}`
+  const url = `${process.env.NEXT_PUBLIC_WORKER_URL ?? process.env.NEXT_PUBLIC_API_URL ?? ''}/r/${route.refCode}`
 
   return (
     <div>

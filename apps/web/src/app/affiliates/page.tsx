@@ -5,9 +5,9 @@ import Header from '@/components/layout/header'
 import { api, type AffiliateOffer, type ConversionApprovalItem } from '@/lib/api'
 import type { Tag, Scenario, LineAccount } from '@line-crm/shared'
 
-const WORKER_BASE = process.env.NEXT_PUBLIC_API_URL
+const WORKER_BASE = process.env.NEXT_PUBLIC_WORKER_URL ?? process.env.NEXT_PUBLIC_API_URL
 if (!WORKER_BASE) {
-  throw new Error('NEXT_PUBLIC_API_URL is not set. Build cannot proceed.')
+  throw new Error('NEXT_PUBLIC_WORKER_URL / NEXT_PUBLIC_API_URL is not set. Build cannot proceed.')
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

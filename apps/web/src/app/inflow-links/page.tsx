@@ -51,7 +51,7 @@ interface RefDetail {
   friends: RefFriend[]
 }
 
-const WORKER_BASE = process.env.NEXT_PUBLIC_API_URL ?? ''
+const WORKER_BASE = process.env.NEXT_PUBLIC_WORKER_URL ?? process.env.NEXT_PUBLIC_API_URL ?? ''
 
 export default function InflowLinksPage() {
   const { selectedAccountId } = useAccount()
