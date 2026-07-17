@@ -898,6 +898,17 @@ async function scheduled(
     );
   }
 
+  // アンバサダー紹介URLの再試行（毎回）: 友だち追加時の processReferral が、被紹介者の
+  // GASマスター登録(CF eventFollow)より先に走って保留になったケースを catch-up で成立させる。
+  // タイミング非依存で確実に紹介成立させるための機構（冪等・silent）。
+  if (env.GAS_DEPLOY_ID && env.FURIM_AMBASSADOR_OFFER_ID) {
+    ctx.waitUntil(
+      import('./furim/keyword-actions.js')
+        .then(({ retryPendingAmbassadorReferrals }) => retryPendingAmbassadorReferrals(env, env.DB))
+        .catch((err) => console.error('[cron] ambassador referral retry error:', err)),
+    );
+  }
+
   // GASシート認可ヘルスチェック: 毎時30分にシート読み取りを実叩きし、
   // 認可失効（7日周期事故の再発）を顧客報告より先に検知してスタッフへWeb Push
   if (jstMinutes === 30) {

@@ -122,7 +122,7 @@ export async function processReferral(
   ambassadorCode: string,
   env: KeywordActionsEnv,
   db?: D1Database,
-  opts: { replyToken?: string } = {},
+  opts: { replyToken?: string; silent?: boolean } = {},
 ): Promise<{ ok: boolean; reason?: string }> {
   const targetDb = db ?? env.DB;
 
@@ -163,12 +163,12 @@ export async function processReferral(
 
   // 被紹介者が既に有料会員 → 紹介特典の対象外である旨を返答（GAS側でプラン判定）
   if (data?.res === 'ineligible_paid_member') {
-    await notifyIntroduced([{ type: 'text', text: `恐れ入りますが、既に月額プランをご利用中のため、お友達紹介特典（無料期間の延長・初月半額クーポン）の対象外となります🙇` } as never]);
+    if (!opts.silent) await notifyIntroduced([{ type: 'text', text: `恐れ入りますが、既に月額プランをご利用中のため、お友達紹介特典（無料期間の延長・初月半額クーポン）の対象外となります🙇` } as never]);
     return { ok: false, reason: 'paid_member' };
   }
 
   if (!data?.introducedCouponID || !env.STRIPE_SECRET_KEY) {
-    await notifyIntroduced([{ type: 'text', text: `友達紹介コードが有効ではないようです。\n確認後、弊アカウントからご連絡差し上げます。` } as never]);
+    if (!opts.silent) await notifyIntroduced([{ type: 'text', text: `友達紹介コードが有効ではないようです。\n確認後、弊アカウントからご連絡差し上げます。` } as never]);
     return { ok: false, reason: 'invalid_code' };
   }
 
@@ -254,4 +254,62 @@ export async function processReferral(
   }
 
   return { ok: true };
+}
+
+/**
+ * アンバサダー紹介URLの再試行（cron 毎回）。友だち追加時に processReferral が走っても、
+ * 被紹介者のGASマスター登録(CF eventFollow)が非同期で間に合わず保留(introduced_not_registered)に
+ * なるレースを、タイミング非依存で確実に成立させるための catch-up。
+ *
+ * 対象: アンバサダーoffer の ref_code を持ち、「紹介経由」タグが無く、metadataに解決済フラグが無く、
+ * 直近2時間に作成された friend。processReferral は冪等（成立で紹介経由タグ→次回から対象外）。
+ * 通知連投を避けるため silent:true（成立時の確認/アンバサダーpushは出す。エラー/対象外の通知は抑制）。
+ * 保留以外の終端（対象外/無効/自己紹介）は metadata.ambReferralDone=1 でマークし再試行を止める。
+ */
+export async function retryPendingAmbassadorReferrals(
+  env: { GAS_DEPLOY_ID?: string; STRIPE_SECRET_KEY?: string; DB?: D1Database; FURIM_AMBASSADOR_OFFER_ID?: string; LINE_CHANNEL_ACCESS_TOKEN: string },
+  db: D1Database,
+): Promise<void> {
+  if (!env.FURIM_AMBASSADOR_OFFER_ID || !env.GAS_DEPLOY_ID) return;
+  // 2時間前(JST)の閾値。friends.created_at は JST ISO(+09:00)。
+  const cutoff = new Date(Date.now() - 2 * 60 * 60_000 + 9 * 60 * 60_000).toISOString().slice(0, -1) + '+09:00';
+  const rows = await db.prepare(
+    `SELECT f.id AS friend_id, f.line_user_id, f.line_account_id, af.code AS ambassador_code
+       FROM friends f
+       JOIN affiliate_links al ON al.ref_code = f.ref_code AND al.offer_id = ?
+       JOIN affiliates af ON af.id = al.affiliate_id
+      WHERE f.ref_code IS NOT NULL
+        AND f.created_at > ?
+        AND (f.metadata IS NULL OR f.metadata NOT LIKE '%ambReferralDone%')
+        AND NOT EXISTS (
+          SELECT 1 FROM friend_tags ft JOIN tags t ON t.id = ft.tag_id
+           WHERE ft.friend_id = f.id AND t.name = '紹介経由'
+        )
+      LIMIT 20`,
+  ).bind(env.FURIM_AMBASSADOR_OFFER_ID, cutoff).all<{ friend_id: string; line_user_id: string; line_account_id: string | null; ambassador_code: string }>();
+
+  if (!rows.results.length) return;
+  const { LineClient } = await import('@line-crm/line-sdk');
+  const { getLineAccountById } = await import('@line-crm/db');
+
+  for (const row of rows.results) {
+    try {
+      let token = env.LINE_CHANNEL_ACCESS_TOKEN;
+      if (row.line_account_id) {
+        const acct = await getLineAccountById(db, row.line_account_id);
+        if (acct?.channel_access_token) token = acct.channel_access_token;
+      }
+      const result = await processReferral(new LineClient(token), row.line_user_id, row.ambassador_code, env as KeywordActionsEnv, db, { silent: true });
+      // 保留(introduced_not_registered)は次回に委ねる。成立は紹介経由タグで対象外になる。
+      // それ以外の終端（対象外/無効/自己紹介）は再試行を止める。
+      const terminalUnsuccessful = !result.ok && result.reason !== 'introduced_not_registered' && result.reason !== 'already_referred';
+      if (terminalUnsuccessful) {
+        await db.prepare(`UPDATE friends SET metadata = json_set(COALESCE(metadata,'{}'), '$.ambReferralDone', ?) WHERE id = ?`)
+          .bind(result.reason ?? 'done', row.friend_id).run();
+      }
+      if (result.ok) console.log(`[furim] ambassador referral retry succeeded: friend=${row.friend_id}`);
+    } catch (err) {
+      console.error('[furim] ambassador referral retry error (non-blocking):', row.friend_id, err);
+    }
+  }
 }
