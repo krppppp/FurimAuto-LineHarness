@@ -155,6 +155,12 @@ export async function processReferral(
     ...(ambassadorCouponName ? { ambassadorCouponName } : {}),
   }) as Record<string, string>;
 
+  // 被紹介者がまだマスター未登録（友だち追加直後のレース）→ 保留。エラー通知は出さず静かに終了。
+  // 手動code経路なら実質発生しない（送信時点で登録済み）。URL経路のみ後続の再試行に委ねる。
+  if (data?.res === 'introduced_not_registered') {
+    return { ok: false, reason: 'introduced_not_registered' };
+  }
+
   // 被紹介者が既に有料会員 → 紹介特典の対象外である旨を返答（GAS側でプラン判定）
   if (data?.res === 'ineligible_paid_member') {
     await notifyIntroduced([{ type: 'text', text: `恐れ入りますが、既に月額プランをご利用中のため、お友達紹介特典（無料期間の延長・初月半額クーポン）の対象外となります🙇` } as never]);
