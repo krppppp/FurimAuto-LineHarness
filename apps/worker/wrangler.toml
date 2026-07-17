@@ -40,6 +40,9 @@ CF_ACCOUNT_ID = "f2b335f4f9d276383643c76f1e5cc6f9"
 # 管理UI(Pages)はworkerとクロスサイト。CORS許可＋SameSite=None cookie に必要。
 ADMIN_ORIGIN = "https://furim-dev.line-harness-admin-7je.pages.dev"
 ADMIN_ALLOW_CROSS_SITE = "true"
+# アンバサダー紹介offer（dev=line-crm-rebase で作成した id）。deploy:dev はこのトップレベル
+# [vars] を焼き込む。ref がこのofferの affiliate_link なら URL経由紹介処理を走らせる。
+FURIM_AMBASSADOR_OFFER_ID = "e1fa71aa-2d1d-4fb6-8daa-0e448c95ad32"
 
 # ─── DEV環境（Worker名: line-harness）────────────────────────────────────────
 [env.dev]
@@ -71,6 +74,9 @@ LIFF_PUBLIC_URL = "https://line-harness.furimuato.workers.dev"
 CF_ACCOUNT_ID = "f2b335f4f9d276383643c76f1e5cc6f9"
 ADMIN_ORIGIN = "https://furim-dev.line-harness-admin-7je.pages.dev"
 ADMIN_ALLOW_CROSS_SITE = "true"
+# アンバサダー紹介offer（dev=line-crm-rebase で作成した id）。ref がこのofferの
+# affiliate_link なら URL経由の紹介成立処理を走らせる。prodは別値。
+FURIM_AMBASSADOR_OFFER_ID = "e1fa71aa-2d1d-4fb6-8daa-0e448c95ad32"
 
 # ─── PROD環境（Worker名: line-harness-prod）─────────────────────────────────
 [env.prod]

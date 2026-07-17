@@ -135,6 +135,9 @@ export type Env = {
     ADMIN_PUBLIC_URL?: string;
     LIFF_PUBLIC_URL?: string;
     GAS_DEPLOY_ID?: string;
+    // アンバサダー紹介offer の id（環境ごとに別値）。ref がこの offer の affiliate_link
+    // なら紹介URL経由の紹介成立処理を走らせる。未設定なら URL経由紹介は静かに無効。
+    FURIM_AMBASSADOR_OFFER_ID?: string;
     FIREBASE_DATABASE_URL?: string;
     FIREBASE_DB_SECRET?: string;
     STRIPE_SECRET_KEY?: string;

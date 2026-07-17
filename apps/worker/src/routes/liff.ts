@@ -192,7 +192,11 @@ async function applyRefAttribution(
       // Self-clicks (the affiliate adding their own bot) are suppressed. Runs
       // even for a 汎用リンク (offer_id NULL) — offerName is then null.
       // Wrapped so a notify failure can never break attribution.
-      if (options?.isNewFriend) {
+      // アンバサダー紹介offerのみ除外: 紹介成立の確認pushは processReferral が
+      // 送るため、ここで汎用の友だち追加通知を出すとアンバサダーに二重pushになる。
+      const isAmbassadorOffer =
+        !!c.env.FURIM_AMBASSADOR_OFFER_ID && affiliateLink.offer_id === c.env.FURIM_AMBASSADOR_OFFER_ID;
+      if (options?.isNewFriend && !isAmbassadorOffer) {
         try {
           const affiliate = await getAffiliateById(db, affiliateLink.affiliate_id);
           if (affiliate && affiliate.friend_id !== friend.id) {
@@ -909,6 +913,38 @@ liffRoutes.get('/auth/callback', async (c) => {
         accountChannelId: accountParam || null,
         isNewFriend,
       });
+
+      // アンバサダー紹介URL: ref がアンバサダーoffer の affiliate_link なら、
+      // 手動code送信と同じ紹介成立処理（スプシ集計・クーポン・紹介シナリオ）を走らせる。
+      // 副作用は processReferral に集約（アンバサダーofferは tag/scenario=NULL のため
+      // applyRefAttribution 側の自動flowとは二重発火しない）。
+      if (c.env.GAS_DEPLOY_ID && c.env.FURIM_AMBASSADOR_OFFER_ID) {
+        try {
+          const ambLink = await getAffiliateLinkByRefCode(db, ref);
+          if (ambLink && ambLink.offer_id === c.env.FURIM_AMBASSADOR_OFFER_ID) {
+            const ambAff = await getAffiliateById(db, ambLink.affiliate_id);
+            if (ambAff && ambAff.friend_id !== friend.id) {
+              const { processReferral } = await import('../furim/keyword-actions.js');
+              const { LineClient } = await import('@line-crm/line-sdk');
+              let ambToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+              if (accountParam) {
+                const acct = await getLineAccountByChannelId(db, accountParam);
+                if (acct) ambToken = acct.channel_access_token;
+              }
+              await processReferral(
+                new LineClient(ambToken),
+                lineUserId,
+                ambAff.code,
+                { GAS_DEPLOY_ID: c.env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: c.env.STRIPE_SECRET_KEY, DB: db },
+                db,
+                {},
+              );
+            }
+          }
+        } catch (err) {
+          console.error('[furim] Ambassador referral URL processing error (non-blocking):', err);
+        }
+      }
     }
 
     // Save ad click IDs + UTM to friend metadata (for future ad API postback)

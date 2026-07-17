@@ -7,7 +7,13 @@ import {
   copyTicketFlexMessage,
   surveyButton,
 } from './messages.js';
-import { completeFriendActiveScenarios } from '@line-crm/db';
+import {
+  completeFriendActiveScenarios,
+  getFriendByLineUserId,
+  getAffiliateByFriendId,
+  createAffiliate,
+  enrollAffiliateInOffer,
+} from '@line-crm/db';
 
 export type FurimActionsEnv = {
   GAS_DEPLOY_ID?: string;
@@ -15,6 +21,11 @@ export type FurimActionsEnv = {
   STRIPE_SECRET_KEY?: string;
   // plan-builder LIFF（プラン診断・申込UI）。未設定時はdevのLIFFにフォールバック
   PLAN_BUILDER_LIFF_URL?: string;
+  // アンバサダー紹介URL生成用。WORKER_PUBLIC_URL 優先、無ければ WORKER_URL。
+  // FURIM_AMBASSADOR_OFFER_ID 未設定 or base未設定なら手動code方式のみにフォールバック。
+  WORKER_URL?: string;
+  WORKER_PUBLIC_URL?: string;
+  FURIM_AMBASSADOR_OFFER_ID?: string;
 };
 
 const PREFIX = '【リッチメニュー】';
@@ -220,7 +231,7 @@ export async function handleFurimAction(
         } as never]);
         return true;
       case 'アンバサダー制度':
-        await actionAmbassador(lineClient, lineUserId, replyToken, resolvedEnv);
+        await actionAmbassador(lineClient, lineUserId, replyToken, resolvedEnv, db);
         return true;
       case 'Meet予約':
         await actionMeetReservation(lineClient, lineUserId, replyToken, resolvedEnv);
@@ -469,11 +480,78 @@ async function actionAmbassador(
   lineUserId: string,
   replyToken: string,
   env: ResolvedEnv,
+  db?: D1Database,
 ) {
   const data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getAmbassadorInfo', lineUserId }) as Record<string, unknown>;
+  const ambassadorCode = data?.ambassadorCode ? String(data.ambassadorCode) : null;
+
+  // アンバサダー固有の紹介URLを用意（affiliate.code = ambassadorCode に揃え、
+  // URL経由attribution時に手動code方式と同じ processReferral へ載せる）。
+  // db未接続 / offer未設定 / friend未取得 / WORKER base未設定 のいずれかなら
+  // refUrl=null となり、従来の手動code方式にフォールバックする。
+  let refUrl: string | null = null;
+  if (db && ambassadorCode && env.FURIM_AMBASSADOR_OFFER_ID) {
+    try {
+      const friend = await getFriendByLineUserId(db, lineUserId);
+      if (friend) {
+        let affiliate = await getAffiliateByFriendId(db, friend.id);
+        if (!affiliate) {
+          try {
+            affiliate = await createAffiliate(db, { name: `Ambassador ${ambassadorCode}`, code: ambassadorCode, friendId: friend.id });
+          } catch {
+            // 同時押し等のrace（friend_id / code のUNIQUE衝突）→ 既存を引き直す
+            affiliate = await getAffiliateByFriendId(db, friend.id);
+          }
+        }
+        if (affiliate) {
+          const { link } = await enrollAffiliateInOffer(db, { affiliateId: affiliate.id, offerId: env.FURIM_AMBASSADOR_OFFER_ID });
+          const base = env.WORKER_PUBLIC_URL ?? env.WORKER_URL;
+          if (base) refUrl = `${base}/auth/line?ref=${link.ref_code}`;
+        }
+      }
+    } catch (err) {
+      console.error('[furim] Ambassador referral URL build failed (fallback to manual code):', err);
+    }
+  }
+
   const messages: unknown[] = [
     { type: 'image', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ambassador.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ambassador.png' },
-    {
+  ];
+
+  if (refUrl) {
+    // 紹介URL版: コピー(clipboard)＋LINE転送(share)＋説明書発行を1つのFlexに集約。
+    // clipboard は LINE 13.6.0+ 限定のため、body に URL テキストも併記してフォールバック。
+    const shareText = `FurimAuto公式LINEの友達紹介URLです！\n下のURLからお友達追加で特典が受け取れます👇\n${refUrl}`;
+    messages.push({
+      type: 'flex',
+      altText: 'お友達紹介URL',
+      contents: {
+        type: 'bubble',
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'md',
+          contents: [
+            { type: 'text', text: 'お友達紹介URL', weight: 'bold', size: 'lg' },
+            { type: 'text', text: 'このURLをお友達に送るだけで紹介が成立します。お友達がタップ→友だち追加するだけで自動で紐付きます✨', size: 'sm', color: '#666666', wrap: true },
+            { type: 'text', text: refUrl, size: 'xs', color: '#1565C0', wrap: true },
+          ],
+        },
+        footer: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'sm',
+          contents: [
+            { type: 'button', style: 'primary', action: { type: 'clipboard', label: 'URLをコピー', clipboardText: refUrl } },
+            { type: 'button', style: 'secondary', action: { type: 'uri', label: 'お友達に転送する', uri: `https://line.me/R/share?text=${encodeURIComponent(shareText)}` } },
+            { type: 'button', style: 'link', action: { type: 'message', label: 'お友達向け説明書の発行', text: '【ボタン】お友達向け説明書の発行' } },
+          ],
+        },
+      },
+    });
+  } else {
+    // フォールバック（従来）: OA登録URLの転送template。
+    messages.push({
       type: 'template',
       altText: 'アカウントURL転送ボタン',
       template: {
@@ -484,10 +562,13 @@ async function actionAmbassador(
           { type: 'message', label: 'お友達向け説明書の発行', text: '【ボタン】お友達向け説明書の発行' },
         ],
       },
-    },
+    });
+  }
+
+  messages.push(
     { type: 'text', text: `👇アンバサダー制度についてはコチラから👇\nhttps://furimauto.com/ambassador/index.html\n\nお友達がFurimAuto公式ラインの友達登録が完了したら\n下の友達紹介コードをコピペしてそのまま送信するようにお伝えください。\n\n※注: 【】 ← も含めて送るように必ずお伝えください！！` },
-    { type: 'text', text: `【キーワード】友達紹介コード:${data?.ambassadorCode ?? '取得中...'}` },
-  ];
+    { type: 'text', text: `【キーワード】友達紹介コード:${ambassadorCode ?? '取得中...'}` },
+  );
 
   if (data?.numberIntroduced && Number(data.numberIntroduced) > 0) {
     messages.push({ type: 'text', text: `【自動送信】\n招待人数確認用メッセージ\n\nあなたは現在までに${data.numberIntroduced}名のお友達をご紹介していただきました🙇` });

@@ -455,6 +455,9 @@ async function handleEvent(
         FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL,
         STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
         PLAN_BUILDER_LIFF_URL: env.PLAN_BUILDER_LIFF_URL,
+        WORKER_URL: env.WORKER_URL,
+        WORKER_PUBLIC_URL: workerUrl,
+        FURIM_AMBASSADOR_OFFER_ID: env.FURIM_AMBASSADOR_OFFER_ID,
       }, db);
       if (furimHandled) return;
     }
