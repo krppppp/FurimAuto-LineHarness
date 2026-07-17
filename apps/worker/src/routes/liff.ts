@@ -1351,9 +1351,18 @@ liffRoutes.post('/api/liff/link', async (c) => {
     const email = verified.email || null;
 
     const db = c.env.DB;
-    const friend = await getFriendByLineUserId(db, lineUserId);
+    // follow webhook より LIFF の /api/liff/link が先に着弾するレース対策:
+    // friend 未作成なら upsert して ref(紹介コード等)を取りこぼさない。follow 到達時に
+    // upsertFriend が profile を更新する（冪等）。以前は 404 で弾き、モバイルの紹介URLが
+    // タイミング次第で不発になっていた。
+    let friend = await getFriendByLineUserId(db, lineUserId);
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      friend = await upsertFriend(db, {
+        lineUserId,
+        displayName: body.displayName ?? verified.name ?? null,
+        pictureUrl: null,
+        statusMessage: null,
+      });
     }
 
     // IG cross-link: runs regardless of already-linked vs new-link branch so
