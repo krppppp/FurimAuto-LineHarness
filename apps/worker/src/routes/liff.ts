@@ -1363,6 +1363,9 @@ liffRoutes.post('/api/liff/link', async (c) => {
         pictureUrl: null,
         statusMessage: null,
       });
+      // follow より先行作成した印。follow ハンドラが isNewUser=true(初回追加)と判定し
+      // リフォロー誤判定を避けるため。is_following は follow(本フォロー)が立てる。
+      await db.prepare(`UPDATE friends SET is_following = 0, metadata = json_set(COALESCE(metadata, '{}'), '$.pendingFollow', 1) WHERE id = ?`).bind(friend.id).run();
     }
 
     // IG cross-link: runs regardless of already-linked vs new-link branch so

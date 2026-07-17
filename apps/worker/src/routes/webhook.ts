@@ -203,8 +203,14 @@ async function handleEvent(
     }
 
     // 新規 vs ブロック解除の判別（upsert前にチェック）
+    // /api/liff/link が follow より先に ref 捕捉のため作成した friend は metadata.pendingFollow を
+    // 持つ（is_following=0）。これは「初回追加」であってリフォローではないので isNewUser=true 扱いにする。
     const existingFriend = await getFriendByLineUserId(db, userId);
-    const isNewUser = !existingFriend;
+    let pendingFollow = false;
+    if (existingFriend) {
+      try { pendingFollow = !!JSON.parse((existingFriend as unknown as { metadata?: string }).metadata || '{}').pendingFollow; } catch { /* ignore */ }
+    }
+    const isNewUser = !existingFriend || pendingFollow;
 
     const friend = await upsertFriend(db, {
       lineUserId: userId,
@@ -212,6 +218,11 @@ async function handleEvent(
       pictureUrl: profile?.pictureUrl ?? null,
       statusMessage: profile?.statusMessage ?? null,
     });
+
+    // 本フォロー確認済み → 先行作成マーカーを消す
+    if (pendingFollow) {
+      await db.prepare(`UPDATE friends SET metadata = json_remove(metadata, '$.pendingFollow') WHERE id = ?`).bind(friend.id).run();
+    }
 
     // Set line_account_id for multi-account tracking
     if (lineAccountId) {
