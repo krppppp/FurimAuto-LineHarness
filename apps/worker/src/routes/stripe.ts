@@ -189,9 +189,13 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
         try {
           const subRes = await fetch(`https://api.stripe.com/v1/subscriptions/${subscriptionId}`, { headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` } });
           if (subRes.ok) {
-            const sub = await subRes.json() as { plan?: { nickname?: string; amount?: number }; current_period_start?: number; current_period_end?: number; metadata?: Record<string, string> };
+            const sub = await subRes.json() as { plan?: { nickname?: string; amount?: number }; items?: { data?: Array<{ price?: { unit_amount?: number }; quantity?: number }> }; current_period_start?: number; current_period_end?: number; metadata?: Record<string, string> };
             planName = sub.plan?.nickname ?? '';
-            subscriptionPrice = sub.plan?.amount ?? 0;
+            // サブスク価格＝継続課金の月額総額。plan-builder(複数item)では plan.amount が取れないため
+            // 全item の unit_amount×quantity を合計する。これは差額invoice(アップグレード)でも常に
+            // 「新プランの月額総額」を返す（invoice合計=差額 とは別物）。単一itemのlegacyでも sum=plan.amount。
+            const itemsTotal = (sub.items?.data ?? []).reduce((t, it) => t + (it.price?.unit_amount ?? 0) * (it.quantity ?? 1), 0);
+            subscriptionPrice = itemsTotal || (sub.plan?.amount ?? 0);
             subMetadata = sub.metadata ?? {};
             const jstOffset = (9 * 60 + 15) * 60000;
             if (sub.current_period_start) subscriptionStartDateTime = new Date(sub.current_period_start * 1000 + jstOffset).toISOString().replace('T', ' ').slice(0, 19);
@@ -297,11 +301,15 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
       }
 
       // プラン金額tier計算（19800超は最上位タグに丸める）
-      // PBは複数line itemのためsub.plan/先頭itemでは取れない → invoiceの税抜合計を使う
+      // サブスク継続課金の月額総額（上で算出した subscriptionPrice=全item合計）を最優先。
+      // アップグレードの差額invoiceでは invoice合計(total_excluding_tax/subtotal)=差額 になるため、
+      // サブスク価格・tier判定には継続課金総額を使う必要がある（差額を使うと過小評価）。
+      // 継続課金総額が取れない場合のみ従来フォールバック（PB=invoice税抜合計 / legacy=先頭item単価）。
       const tiers = [3000, 5000, 8000, 10000, 15000, 19800];
-      const planAmount = isPlanBuilder
-        ? (obj.total_excluding_tax ?? obj.subtotal ?? 0)
-        : (subscriptionPrice || (obj.lines?.data?.[0]?.price?.unit_amount ?? 0));
+      const planAmount = subscriptionPrice
+        || (isPlanBuilder
+          ? (obj.total_excluding_tax ?? obj.subtotal ?? 0)
+          : (obj.lines?.data?.[0]?.price?.unit_amount ?? 0));
       const planTier = tiers.find((t) => planAmount <= t) ?? 19800;
 
       // 複数discountスタック対応: 併用割引+キャンペーンクーポン等の合算（[0]だけだと2枚目以降が漏れる）

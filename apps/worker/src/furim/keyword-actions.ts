@@ -1,10 +1,49 @@
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
 import { copyTicketFlexMessage } from './messages.js';
-import { getFriendByLineUserId, completeFriendActiveScenarios, getScenarioByName, enrollFriendInScenario } from '@line-crm/db';
+import { getFriendByLineUserId, getFriendById, getAffiliateByCode, completeFriendActiveScenarios, getScenarioByName, enrollFriendInScenario } from '@line-crm/db';
 
 // seed-furimauto-all-scenarios.mjs v2 の命名と一致させること（旧統合7本命名だと見つからず切替が空振りする）
 const REFERRAL_SCENARIO_NAME = 'FurimAuto 紹介 ステップ配信（セグメント1: アンケート未回答）';
+
+// アンバサダー報酬クーポンの額を、アンバサダー自身の月額（Stripe実額）帯で決める。
+// クーポン名は GAS couponSheet の名称と完全一致させること（GAS側でIDに解決される）。
+function ambassadorCouponNameFromPrice(monthlyAmount: number): string | null {
+  if (!(monthlyAmount > 0)) return null;
+  if (monthlyAmount < 4000) return 'アンバサダー500円引きクーポン';
+  if (monthlyAmount < 8000) return 'アンバサダー1500円引きクーポン';
+  if (monthlyAmount < 12000) return 'アンバサダー3000円引きクーポン';
+  return 'アンバサダー5000円引きクーポン';
+}
+
+/**
+ * アンバサダーの現サブスク月額(Stripe実額)からアンバサダー報酬クーポン名を決める。
+ * ambassadorCode → affiliate → friend → lineUserId → GAS getStripeIDwithLINEID → 顧客ID
+ * → Stripe の active サブスク（前提: アンバサダーは常に1本）の全item合計 → 金額帯 → クーポン名。
+ * 解決できなければ null（GAS側の従来ロジックにフォールバック）。
+ */
+async function resolveAmbassadorCouponName(ambassadorCode: string, env: KeywordActionsEnv, db?: D1Database): Promise<string | null> {
+  try {
+    if (!db || !env.STRIPE_SECRET_KEY) return null;
+    const affiliate = await getAffiliateByCode(db, ambassadorCode);
+    if (!affiliate?.friend_id) return null;
+    const friend = await getFriendById(db, affiliate.friend_id);
+    if (!friend?.line_user_id) return null;
+    const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getStripeIDwithLINEID', lineUserId: friend.line_user_id }) as Record<string, string>;
+    const customerId = gasData?.customer_stripe_id;
+    if (!customerId) return null;
+    const res = await fetch(`https://api.stripe.com/v1/subscriptions?customer=${customerId}&status=active&limit=1`, {
+      headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
+    }).then(r => r.json()) as { data?: Array<{ items?: { data?: Array<{ price?: { unit_amount?: number }; quantity?: number }> } }> };
+    const sub = res.data?.[0];
+    if (!sub) return null;
+    const monthly = (sub.items?.data ?? []).reduce((t, it) => t + (it.price?.unit_amount ?? 0) * (it.quantity ?? 1), 0);
+    return ambassadorCouponNameFromPrice(monthly);
+  } catch (err) {
+    console.error('[furim] resolveAmbassadorCouponName failed (fallback to GAS plan logic):', err);
+    return null;
+  }
+}
 
 export type KeywordActionsEnv = {
   GAS_DEPLOY_ID: string;
@@ -105,7 +144,16 @@ export async function processReferral(
     }
   }
 
-  const data = await gasGet(env.GAS_DEPLOY_ID, { method: 'stackLINEIntroductionInfo', lineUserId: introducedLineUserId, ambassadorCode }) as Record<string, string>;
+  // アンバサダー報酬クーポン額は、アンバサダーの現サブスク月額(Stripe実額)で決める。
+  // 解決できた場合のみ GAS へ渡し、GAS側のプラン名突合を回避する（プラン改名に非依存）。
+  const ambassadorCouponName = await resolveAmbassadorCouponName(ambassadorCode, env, db);
+
+  const data = await gasGet(env.GAS_DEPLOY_ID, {
+    method: 'stackLINEIntroductionInfo',
+    lineUserId: introducedLineUserId,
+    ambassadorCode,
+    ...(ambassadorCouponName ? { ambassadorCouponName } : {}),
+  }) as Record<string, string>;
 
   // 被紹介者が既に有料会員 → 紹介特典の対象外である旨を返答（GAS側でプラン判定）
   if (data?.res === 'ineligible_paid_member') {
