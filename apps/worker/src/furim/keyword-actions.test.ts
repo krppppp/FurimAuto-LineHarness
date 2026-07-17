@@ -71,6 +71,19 @@ describe('processReferral 冪等ガード', () => {
     expect(client.replyMessage).toHaveBeenCalled();
   });
 
+  it('被紹介者が有料会員（GAS res=ineligible_paid_member）→ 対象外の趣旨を返答し paid_member で return', async () => {
+    gasGet.mockResolvedValueOnce({ res: 'ineligible_paid_member' });
+    const client = makeClient();
+    const db = makeDb({ alreadyReferred: false });
+
+    const result = await processReferral(client as never, 'Uintroduced', 'AMB12345', env, db as never, { replyToken: 'rt' });
+
+    expect(result).toEqual({ ok: false, reason: 'paid_member' });
+    expect(client.replyMessage).toHaveBeenCalled();
+    const msg = (client.replyMessage.mock.calls[0][1] as { text: string }[])[0].text;
+    expect(msg).toContain('対象外');
+  });
+
   it('自己紹介（ambassadorLineID === 被紹介者）→ self_referral で return', async () => {
     gasGet.mockResolvedValueOnce({ introducedCouponID: 'cp_1', introducedStripeID: 'cus_1', ambassadorLineID: 'Uintroduced' });
     const client = makeClient();

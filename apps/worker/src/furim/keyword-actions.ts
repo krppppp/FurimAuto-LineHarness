@@ -107,6 +107,12 @@ export async function processReferral(
 
   const data = await gasGet(env.GAS_DEPLOY_ID, { method: 'stackLINEIntroductionInfo', lineUserId: introducedLineUserId, ambassadorCode }) as Record<string, string>;
 
+  // 被紹介者が既に有料会員 → 紹介特典の対象外である旨を返答（GAS側でプラン判定）
+  if (data?.res === 'ineligible_paid_member') {
+    await notifyIntroduced([{ type: 'text', text: `恐れ入りますが、既に月額プランをご利用中のため、お友達紹介特典（無料期間の延長・初月半額クーポン）の対象外となります🙇` } as never]);
+    return { ok: false, reason: 'paid_member' };
+  }
+
   if (!data?.introducedCouponID || !env.STRIPE_SECRET_KEY) {
     await notifyIntroduced([{ type: 'text', text: `友達紹介コードが有効ではないようです。\n確認後、弊アカウントからご連絡差し上げます。` } as never]);
     return { ok: false, reason: 'invalid_code' };
