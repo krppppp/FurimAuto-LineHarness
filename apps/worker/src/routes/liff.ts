@@ -390,6 +390,49 @@ async function applyRefAttribution(
   }
 }
 
+/**
+ * アンバサダー紹介URL: ref がアンバサダーoffer の affiliate_link なら、手動code送信と同じ
+ * 紹介成立処理（スプシ集計・クーポン・紹介シナリオ）を processReferral(push) で走らせる。
+ * 全経路（/auth/callback = PC OAuth, /api/liff/link = モバイルLIFF の新規/既存両分岐）から
+ * applyRefAttribution 直後に呼ぶこと。アンバサダーofferは tag/scenario=NULL のため
+ * applyRefAttribution 側の自動flowとは二重発火しない。副作用/例外は全てここで吸収する。
+ */
+async function maybeProcessAmbassadorReferral(
+  c: Context<Env>,
+  ref: string,
+  friend: { id: string; line_account_id?: string | null },
+  lineUserId: string,
+): Promise<void> {
+  if (!ref || ref.startsWith('xh:')) return;
+  if (!c.env.GAS_DEPLOY_ID || !c.env.FURIM_AMBASSADOR_OFFER_ID) return;
+  const db = c.env.DB;
+  try {
+    const ambLink = await getAffiliateLinkByRefCode(db, ref);
+    if (!ambLink || ambLink.offer_id !== c.env.FURIM_AMBASSADOR_OFFER_ID) return;
+    const ambAff = await getAffiliateById(db, ambLink.affiliate_id);
+    if (!ambAff || ambAff.friend_id === friend.id) return; // 自己紹介除外
+    const { processReferral } = await import('../furim/keyword-actions.js');
+    const { LineClient } = await import('@line-crm/line-sdk');
+    const { getLineAccountById: getAcctById } = await import('@line-crm/db');
+    // token解決: friend の所属アカウント → 既定
+    let token = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (friend.line_account_id) {
+      const acct = await getAcctById(db, friend.line_account_id);
+      if (acct?.channel_access_token) token = acct.channel_access_token;
+    }
+    await processReferral(
+      new LineClient(token),
+      lineUserId,
+      ambAff.code,
+      { GAS_DEPLOY_ID: c.env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: c.env.STRIPE_SECRET_KEY, DB: db },
+      db,
+      {},
+    );
+  } catch (err) {
+    console.error('[furim] Ambassador referral URL processing error (non-blocking):', err);
+  }
+}
+
 // ─── LINE Login OAuth (bot_prompt=aggressive) ───────────────────
 
 /**
@@ -914,37 +957,8 @@ liffRoutes.get('/auth/callback', async (c) => {
         isNewFriend,
       });
 
-      // アンバサダー紹介URL: ref がアンバサダーoffer の affiliate_link なら、
-      // 手動code送信と同じ紹介成立処理（スプシ集計・クーポン・紹介シナリオ）を走らせる。
-      // 副作用は processReferral に集約（アンバサダーofferは tag/scenario=NULL のため
-      // applyRefAttribution 側の自動flowとは二重発火しない）。
-      if (c.env.GAS_DEPLOY_ID && c.env.FURIM_AMBASSADOR_OFFER_ID) {
-        try {
-          const ambLink = await getAffiliateLinkByRefCode(db, ref);
-          if (ambLink && ambLink.offer_id === c.env.FURIM_AMBASSADOR_OFFER_ID) {
-            const ambAff = await getAffiliateById(db, ambLink.affiliate_id);
-            if (ambAff && ambAff.friend_id !== friend.id) {
-              const { processReferral } = await import('../furim/keyword-actions.js');
-              const { LineClient } = await import('@line-crm/line-sdk');
-              let ambToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
-              if (accountParam) {
-                const acct = await getLineAccountByChannelId(db, accountParam);
-                if (acct) ambToken = acct.channel_access_token;
-              }
-              await processReferral(
-                new LineClient(ambToken),
-                lineUserId,
-                ambAff.code,
-                { GAS_DEPLOY_ID: c.env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: c.env.STRIPE_SECRET_KEY, DB: db },
-                db,
-                {},
-              );
-            }
-          }
-        } catch (err) {
-          console.error('[furim] Ambassador referral URL processing error (non-blocking):', err);
-        }
-      }
+      // アンバサダー紹介URL処理（PC OAuth経路）。モバイルは /api/liff/link 側で呼ぶ。
+      await maybeProcessAmbassadorReferral(c, ref, friend, lineUserId);
     }
 
     // Save ad click IDs + UTM to friend metadata (for future ad API postback)
@@ -1372,6 +1386,8 @@ liffRoutes.post('/api/liff/link', async (c) => {
       }
       if (body.ref) {
         await applyRefAttribution(c, body.ref, friend, lineUserId);
+        // アンバサダー紹介URL処理（モバイルLIFF・既存友だち分岐）
+        await maybeProcessAmbassadorReferral(c, body.ref, friend, lineUserId);
       }
       // X Harness token resolution for already-linked friends
       if (body.ref && body.ref.startsWith('xh:')) {
@@ -1439,6 +1455,8 @@ liffRoutes.post('/api/liff/link', async (c) => {
 
       // Apply ref attribution (tag + scenario push) for newly-linked friends
       await applyRefAttribution(c, body.ref, friend, lineUserId);
+      // アンバサダー紹介URL処理（モバイルLIFF・新規友だち分岐）
+      await maybeProcessAmbassadorReferral(c, body.ref, friend, lineUserId);
     }
 
     // X Harness token resolution: ref starting with "xh:" links X account to LINE friend
