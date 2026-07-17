@@ -106,3 +106,5 @@ LIFF_PUBLIC_URL = "https://line-harness-prod.furimuato.workers.dev"
 CF_ACCOUNT_ID = "f2b335f4f9d276383643c76f1e5cc6f9"
 ADMIN_ORIGIN = "https://line-harness-admin-prod-6mo.pages.dev"
 ADMIN_ALLOW_CROSS_SITE = "true"
+# アンバサダー紹介offer（prod=line-crm-prod で作成した id。devとは別値）。
+FURIM_AMBASSADOR_OFFER_ID = "5468b932-575d-454e-8628-9f2d32402f10"
