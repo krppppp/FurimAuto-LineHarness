@@ -212,9 +212,13 @@ insertAction({ automationId: invoiceNewId, stepOrder: nextStep + 1, actionType: 
   AMBASSADOR_IMAGE,
   AMBASSADOR_TEXT,
 ]}});
-// plan-builder: キーコード据え置き・機能フラグ即時反映のため再入力不要
+// plan-builder新規登録: 新規サブスク(isNewSubscription)は有効な有料キーコードを持たない状態
+// からの登録（トライアル移行・完全新規・再登録いずれも）のため、キーコードは必ず刷新される。
+// cron再処理をまたぐとsyncのkeyCodeIssuedは冪等でfalseに反転し、揮発的なその値で分岐すると
+// 「不要」誤配信や両方配信が起きるため、再処理をまたいでも安定するisNewSubscription+PB条件で
+// 「再入力必要」に固定する。
 insertAction({ automationId: invoiceNewId, stepOrder: nextStep + 2, actionType: 'send_messages', label: '新規登録メッセージ3通 (plan-builder)', conditionJson: { isNewSubscription: true, isLegacyPlan: false }, params: { messages: [
-  { messageType: 'text', content: '【自動送信】\n月額プランへのご登録ありがとうございました🌟\n\nご選択いただいた機能はすでにあなたのキーコードに反映済みです✨\nキーコードの再入力は不要で、そのままお使いいただけます。\n\nプランの内容変更はいつでもリッチメニューの「プラン変更」から行えます。\n\n引き続き仕様変更への迅速な対応、ユーザー様の声をできる限り汲んで運営してまいりますので\nよろしくお願いいたします。' },
+  { messageType: 'text', content: '【自動送信】\n月額プランへのご登録ありがとうございました🌟\nまた、それに伴いましてお客様のキーコードが更新されましたので、お手数ですがリッチメニューのホームタブ「キーコード発行」から新しいキーコードを発行の上、拡張機能に再入力してください。\n\n引き続き仕様変更への迅速な対応、ユーザー様の声をできる限り汲んで運営してまいりますので\nよろしくお願いいたします。' },
   AMBASSADOR_IMAGE,
   AMBASSADOR_TEXT,
 ]}});
