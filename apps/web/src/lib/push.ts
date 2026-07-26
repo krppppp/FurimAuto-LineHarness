@@ -98,11 +98,12 @@ export async function unsubscribeFromPush(): Promise<void> {
   await api.push.unsubscribe({ endpoint }).catch(() => {})
 }
 
-// アイコンバッジを未対応件数に同期する。非対応環境では何もしない。
+// アイコンバッジを未読数に同期する (sidebar.tsx の未読ポーリングと同じ基準)。
+// 非対応環境では何もしない。
 export async function syncAppBadge(): Promise<void> {
   if (typeof navigator === 'undefined' || !('setAppBadge' in navigator)) return
   try {
-    const res = await api.inbox.unanswered.count()
+    const res = await api.furimChats.unreadCount()
     if (!res.success) return
     const total = res.data.total
     if (total > 0) {
