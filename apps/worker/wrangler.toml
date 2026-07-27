@@ -24,6 +24,10 @@ binding = "DB"
 database_name = "line-crm-rebase"
 database_id = "2fa9387e-61fb-4f81-9b18-4087837feabd"
 
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "line-harness-images"
+
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 
@@ -59,6 +63,10 @@ binding = "DB"
 database_name = "line-crm-rebase"
 database_id = "2fa9387e-61fb-4f81-9b18-4087837feabd"
 
+[[env.dev.r2_buckets]]
+binding = "IMAGES"
+bucket_name = "line-harness-images"
+
 [env.dev.triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 
@@ -90,6 +98,10 @@ binding = "ASSETS"
 binding = "DB"
 database_name = "line-crm-prod"
 database_id = "24650d0d-e165-4220-9ebe-9a5fab202d7c"
+
+[[env.prod.r2_buckets]]
+binding = "IMAGES"
+bucket_name = "line-harness-images"
 
 [env.prod.triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]

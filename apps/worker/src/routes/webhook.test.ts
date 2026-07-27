@@ -299,3 +299,149 @@ describe('POST /webhook — first-contact existing friends', () => {
     expect(getMessageTemplateById).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /webhook — incoming image/video → R2 JSON', () => {
+  const existingFriend = {
+    id: 'friend-1',
+    line_user_id: 'U-media',
+    display_name: 'Media Friend',
+    picture_url: null,
+    status_message: null,
+    is_following: 1,
+    user_id: null,
+    line_account_id: null,
+    metadata: '{}',
+    first_tracked_link_id: null,
+    created_at: '2026-07-20T12:00:00.000+09:00',
+    updated_at: '2026-07-20T12:00:00.000+09:00',
+  };
+
+  function makeMediaFetchStub() {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/content/preview')) {
+        return new Response(new ArrayBuffer(10), {
+          status: 200,
+          headers: { 'Content-Type': 'image/jpeg' },
+        });
+      }
+      if (url.includes('api-data.line.me')) {
+        const isVideo = url.includes('msg-video');
+        return new Response(new ArrayBuffer(100), {
+          status: 200,
+          headers: { 'Content-Type': isVideo ? 'video/mp4' : 'image/jpeg' },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+  }
+
+  async function postMediaEvent(messageType: 'image' | 'video', messageId: string) {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue(existingFriend);
+    vi.mocked(jstNow).mockReturnValue('2026-07-20T12:00:00.000+09:00');
+    vi.mocked(upsertChatOnMessage).mockResolvedValue({
+      id: 'chat-1',
+      friend_id: 'friend-1',
+      operator_id: null,
+      status: 'unread',
+      notes: null,
+      last_message_at: '2026-07-20T12:00:00.000+09:00',
+      created_at: '2026-07-20T12:00:00.000+09:00',
+      updated_at: '2026-07-20T12:00:00.000+09:00',
+    });
+
+    const stmt = {
+      bind: vi.fn(),
+      run: vi.fn().mockResolvedValue({}),
+      all: vi.fn().mockResolvedValue({ results: [] }),
+      first: vi.fn().mockResolvedValue(null),
+    };
+    stmt.bind.mockReturnValue(stmt);
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database;
+
+    const r2 = {
+      put: vi.fn().mockResolvedValue(null),
+    };
+
+    const executionCtx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+
+    const app = setupApp();
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body: JSON.stringify({
+          destination: 'bot',
+          events: [
+            {
+              type: 'message',
+              replyToken: 'reply-token',
+              message: { type: messageType, id: messageId },
+              timestamp: Date.now(),
+              source: { type: 'user', userId: 'U-media' },
+              webhookEventId: 'event-media',
+              deliveryContext: { isRedelivery: false },
+              mode: 'active',
+            },
+          ],
+        }),
+      },
+      { ...baseEnv, DB: db, IMAGES: r2, WORKER_URL: 'https://worker.example.com' },
+      executionCtx,
+    );
+
+    expect(res.status).toBe(200);
+    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
+    await processing;
+    return { stmt, r2 };
+  }
+
+  test('画像受信で messages_log に R2 URL の JSON が入る', async () => {
+    const fetchStub = makeMediaFetchStub();
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      const { stmt, r2 } = await postMediaEvent('image', 'msg-image-1');
+
+      expect(r2.put).toHaveBeenCalled();
+      const contentArg = stmt.bind.mock.calls
+        .flat()
+        .find((arg) => typeof arg === 'string' && arg.includes('originalContentUrl')) as string;
+      expect(contentArg).toBeTruthy();
+      const parsed = JSON.parse(contentArg);
+      expect(parsed.originalContentUrl).toBe('https://worker.example.com/images/incoming-unknown-msg-image-1.jpg');
+      expect(parsed.previewImageUrl).toBe(parsed.originalContentUrl);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('動画受信で messages_log に本体+サムネ URL の JSON が入る', async () => {
+    const fetchStub = makeMediaFetchStub();
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      const { stmt, r2 } = await postMediaEvent('video', 'msg-video-1');
+
+      const keys = r2.put.mock.calls.map((call) => call[0]);
+      expect(keys).toContain('incoming-unknown-msg-video-1.mp4');
+      expect(keys).toContain('incoming-unknown-msg-video-1-preview.jpg');
+      const contentArg = stmt.bind.mock.calls
+        .flat()
+        .find((arg) => typeof arg === 'string' && arg.includes('originalContentUrl')) as string;
+      expect(contentArg).toBeTruthy();
+      const parsed = JSON.parse(contentArg);
+      expect(parsed.originalContentUrl).toBe('https://worker.example.com/images/incoming-unknown-msg-video-1.mp4');
+      expect(parsed.previewImageUrl).toBe('https://worker.example.com/images/incoming-unknown-msg-video-1-preview.jpg');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

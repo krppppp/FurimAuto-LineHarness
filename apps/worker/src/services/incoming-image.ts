@@ -6,6 +6,10 @@ const CONTENT_TYPE_TO_EXT: Record<string, string> = {
   'image/png': 'png',
   'image/gif': 'gif',
   'image/webp': 'webp',
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'video/webm': 'webm',
+  'video/x-m4v': 'm4v',
 };
 
 export interface FetchAndStoreOptions {
@@ -24,14 +28,42 @@ export interface IncomingImageRefs {
   previewImageUrl: string;
 }
 
+function sanitizeKeyPart(part: string): string {
+  // accountId / messageId は実質 UUID / LINE 数字 ID で安全だが、念のため
+  // R2 キーに不正な文字（スラッシュ等）が混入しないよう sanitize する。
+  return part.replace(/[^a-zA-Z0-9-]/g, '_');
+}
+
+async function putResponseToR2(
+  r2: R2Bucket,
+  key: string,
+  res: Response,
+  contentType: string,
+): Promise<void> {
+  // 動画は最大200MB級で arrayBuffer だと Workers のメモリ上限に当たり得るため、
+  // Content-Length が分かる場合は FixedLengthStream 経由でストリーム PUT する。
+  const len = Number(res.headers.get('Content-Length') ?? '');
+  const FLS = (globalThis as { FixedLengthStream?: new (n: number) => { readable: ReadableStream; writable: WritableStream } }).FixedLengthStream;
+  if (res.body && Number.isFinite(len) && len > 0 && FLS) {
+    const fls = new FLS(len);
+    const pipe = res.body.pipeTo(fls.writable);
+    await Promise.all([r2.put(key, fls.readable, { httpMetadata: { contentType } }), pipe]);
+    return;
+  }
+  const data = await res.arrayBuffer();
+  await r2.put(key, data, { httpMetadata: { contentType } });
+}
+
 /**
- * LINE Content API から incoming 画像バイナリを取得し R2 に保存して URL を返す。
- * 失敗時は null を返し、呼び出し元は `[画像]` ラベルフォールバックを使う。
+ * LINE Content API から incoming 画像/動画バイナリを取得し R2 に保存して URL を返す。
+ * 動画は /content/preview のサムネイルも保存し previewImageUrl に使う。
+ * 失敗時は null を返し、呼び出し元は `[画像]` / `[動画]` ラベルフォールバックを使う。
  */
-export async function fetchAndStoreIncomingImage(
-  opts: FetchAndStoreOptions,
+export async function fetchAndStoreIncomingMedia(
+  opts: FetchAndStoreOptions & { messageType?: 'image' | 'video' },
 ): Promise<IncomingImageRefs | null> {
   const fetcher = opts.fetch ?? fetch;
+  const messageType = opts.messageType ?? 'image';
 
   let res: Response;
   try {
@@ -54,22 +86,12 @@ export async function fetchAndStoreIncomingImage(
     console.error('incoming-image: unsupported content-type', { contentType, messageId: opts.messageId, accountId: opts.accountId });
     return null;
   }
-  // accountId / messageId は実質 UUID / LINE 数字 ID で安全だが、念のため
-  // R2 キーに不正な文字（スラッシュ等）が混入しないよう sanitize する。
-  const safeAccountId = opts.accountId.replace(/[^a-zA-Z0-9-]/g, '_');
-  const safeMessageId = opts.messageId.replace(/[^a-zA-Z0-9-]/g, '_');
+  const safeAccountId = sanitizeKeyPart(opts.accountId);
+  const safeMessageId = sanitizeKeyPart(opts.messageId);
   const key = `incoming-${safeAccountId}-${safeMessageId}.${ext}`;
 
-  let data: ArrayBuffer;
   try {
-    data = await res.arrayBuffer();
-  } catch (err) {
-    console.error('incoming-image: arrayBuffer failed', { err, messageId: opts.messageId, accountId: opts.accountId });
-    return null;
-  }
-
-  try {
-    await opts.r2.put(key, data, { httpMetadata: { contentType } });
+    await putResponseToR2(opts.r2, key, res, contentType);
   } catch (err) {
     console.error('incoming-image: R2 put failed', { err, messageId: opts.messageId, accountId: opts.accountId });
     return null;
@@ -77,5 +99,34 @@ export async function fetchAndStoreIncomingImage(
 
   const base = opts.workerUrl.replace(/\/$/, '');
   const url = `${base}/images/${key}`;
-  return { originalContentUrl: url, previewImageUrl: url };
+
+  // 動画: LINE の preview エンドポイントからサムネ JPEG を取得して保存。
+  // 失敗しても動画本体は使えるので originalContentUrl でフォールバック。
+  let previewUrl = url;
+  if (messageType === 'video') {
+    try {
+      const previewRes = await fetcher(`${LINE_CONTENT_API_BASE}/${opts.messageId}/content/preview`, {
+        headers: { Authorization: `Bearer ${opts.channelAccessToken}` },
+      });
+      if (previewRes.ok) {
+        const previewKey = `incoming-${safeAccountId}-${safeMessageId}-preview.jpg`;
+        const previewType = previewRes.headers.get('Content-Type')?.split(';')[0].trim() ?? 'image/jpeg';
+        await putResponseToR2(opts.r2, previewKey, previewRes, previewType);
+        previewUrl = `${base}/images/${previewKey}`;
+      }
+    } catch (err) {
+      console.error('incoming-image: preview fetch failed', { err, messageId: opts.messageId, accountId: opts.accountId });
+    }
+  }
+
+  return { originalContentUrl: url, previewImageUrl: previewUrl };
+}
+
+/**
+ * 後方互換の画像専用ラッパー。
+ */
+export async function fetchAndStoreIncomingImage(
+  opts: FetchAndStoreOptions,
+): Promise<IncomingImageRefs | null> {
+  return fetchAndStoreIncomingMedia({ ...opts, messageType: 'image' });
 }
