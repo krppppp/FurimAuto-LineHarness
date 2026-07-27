@@ -439,6 +439,19 @@ export default function ChatsPage() {
     setMsgSearchQuery('')
   }
 
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false)
+  const statusMenuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (statusMenuRef.current && !statusMenuRef.current.contains(e.target as Node)) setStatusMenuOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  useEffect(() => { setStatusMenuOpen(false) }, [selectedChatId])
+
   // ページング用カーソル。表示リストは楽観更新で並び替わるため、
   // 「サーバから最後に受け取った行」を ref で保持して次ページの起点にする
   // (offset 方式だと新着で行が押し下げられた分が欠落する)。
@@ -1240,11 +1253,6 @@ export default function ChatsPage() {
                       <p className="text-sm font-medium text-gray-900 truncate">
                         {chatDetail.friendName}
                       </p>
-                      <span
-                        className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium flex-shrink-0 ${statusConfig[chatDetail.status].className}`}
-                      >
-                        {statusConfig[chatDetail.status].label}
-                      </span>
                       {chatDetail.planName && (
                         <span
                           className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium flex-shrink-0 bg-blue-50 text-blue-700 truncate max-w-[140px]"
@@ -1290,30 +1298,34 @@ export default function ChatsPage() {
                       次の未対応 →
                     </button>
                   )}
-                  {chatDetail.status !== 'unread' && (
+                  <div ref={statusMenuRef} className="relative flex-shrink-0">
                     <button
-                      onClick={() => handleStatusUpdate('unread')}
-                      className="px-1.5 py-0.5 text-[11px] font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded transition-colors"
+                      type="button"
+                      onClick={() => setStatusMenuOpen((v) => !v)}
+                      className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium transition-colors ${statusConfig[chatDetail.status].className}`}
                     >
-                      未読
+                      {statusConfig[chatDetail.status].label}
+                      <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
                     </button>
-                  )}
-                  {chatDetail.status !== 'in_progress' && (
-                    <button
-                      onClick={() => handleStatusUpdate('in_progress')}
-                      className="px-1.5 py-0.5 text-[11px] font-medium text-yellow-700 bg-yellow-50 hover:bg-yellow-100 rounded transition-colors"
-                    >
-                      対応中
-                    </button>
-                  )}
-                  {chatDetail.status !== 'resolved' && (
-                    <button
-                      onClick={() => handleStatusUpdate('resolved')}
-                      className="px-1.5 py-0.5 text-[11px] font-medium text-green-700 bg-green-50 hover:bg-green-100 rounded transition-colors"
-                    >
-                      解決済
-                    </button>
-                  )}
+                    {statusMenuOpen && (
+                      <div className="absolute right-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-md shadow-lg overflow-hidden whitespace-nowrap">
+                        {(['unread', 'in_progress', 'resolved'] as const)
+                          .filter((s) => s !== chatDetail.status)
+                          .map((s) => (
+                            <button
+                              key={s}
+                              type="button"
+                              onClick={() => { handleStatusUpdate(s); setStatusMenuOpen(false) }}
+                              className="block w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                            >
+                              {statusConfig[s].label}に変更
+                            </button>
+                          ))}
+                      </div>
+                    )}
+                  </div>
                   <button
                     type="button"
                     onClick={() => setMsgSearchOpen((v) => !v)}
