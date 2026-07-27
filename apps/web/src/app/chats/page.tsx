@@ -37,6 +37,7 @@ interface ChatMessage {
 interface ChatDetail extends Chat {
   friendName: string
   friendPictureUrl: string | null
+  planName: string | null
   messages?: ChatMessage[]
 }
 
@@ -1244,6 +1245,14 @@ export default function ChatsPage() {
                       >
                         {statusConfig[chatDetail.status].label}
                       </span>
+                      {chatDetail.planName && (
+                        <span
+                          className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium flex-shrink-0 bg-blue-50 text-blue-700 truncate max-w-[140px]"
+                          title={chatDetail.planName}
+                        >
+                          {chatDetail.planName}
+                        </span>
+                      )}
                     </div>
                     {/* タグを一目で確認できるようヘッダーに表示（サイドバーと同じ配色） */}
                     {headerTags.length > 0 && (

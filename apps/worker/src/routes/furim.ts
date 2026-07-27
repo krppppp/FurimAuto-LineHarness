@@ -6,6 +6,7 @@ import {
   upsertFriend,
   jstNow,
 } from '@line-crm/db';
+import { gasGet } from '../furim/gas-client.js';
 import type { Env } from '../index.js';
 
 const furim = new Hono<Env>();
@@ -644,6 +645,83 @@ furim.post('/api/furim/setup-prices', async (c) => {
     return c.json({ success: true, dryRun, counts, results });
   } catch (err) {
     console.error('[furim/setup-prices] error:', err);
+    return c.json({ success: false, error: String(err) }, 500);
+  }
+});
+
+/**
+ * POST /api/furim/backfill-plan-names
+ * GASスプシ「顧客情報-サブスク情報-キーコード」の既存プラン名データをD1 friends.plan_nameへ
+ * 一括バックフィルする。Stripe webhook同期(stripe-processor.ts)導入前の既存データ用、および
+ * スプシ側が手動編集された場合の再同期用リカバリ手段として維持する。
+ * Body: { dryRun?: boolean = true, confirmProd?: boolean }
+ */
+furim.post('/api/furim/backfill-plan-names', async (c) => {
+  const isDev = c.env.WORKER_NAME === 'line-harness';
+  try {
+    const body = await c.req.json<{ dryRun?: boolean; confirmProd?: boolean }>().catch(() => ({}) as { dryRun?: boolean; confirmProd?: boolean });
+    const dryRun = body.dryRun !== false;
+    if (!dryRun && !isDev && body.confirmProd !== true) {
+      return c.json({ success: false, error: '本番workerでの実行には confirmProd: true が必要です' }, 403);
+    }
+    if (!c.env.GAS_DEPLOY_ID) return c.json({ success: false, error: 'GAS_DEPLOY_ID not configured' }, 500);
+
+    const gasRes = (await gasGet(c.env.GAS_DEPLOY_ID, {
+      method: 'getData',
+      sheet: '顧客情報-サブスク情報-キーコード',
+      headerRow: '3',
+    })) as { success: boolean; rows?: Array<Record<string, unknown>> };
+    if (!gasRes.success || !gasRes.rows) {
+      return c.json({ success: false, error: 'GASからのデータ取得に失敗しました' }, 500);
+    }
+
+    const targets = gasRes.rows
+      .map((row) => ({
+        lineUserId: String(row['LINE_ID'] ?? '').trim(),
+        planName: String(row['プラン名'] ?? '').trim(),
+      }))
+      .filter((r) => r.lineUserId && r.planName);
+
+    if (dryRun) {
+      return c.json({
+        success: true,
+        dryRun,
+        totalRows: gasRes.rows.length,
+        targetCount: targets.length,
+        sample: targets.slice(0, 5),
+      });
+    }
+
+    // Workersのサブリクエスト上限対策で100件単位のbatchに分割
+    const CHUNK = 100;
+    let updated = 0;
+    for (let i = 0; i < targets.length; i += CHUNK) {
+      const chunk = targets.slice(i, i + CHUNK);
+      const now = jstNow();
+      const stmts = chunk.map((t) =>
+        c.env.DB.prepare(`UPDATE friends SET plan_name = ?, updated_at = ? WHERE line_user_id = ?`).bind(
+          t.planName,
+          now,
+          t.lineUserId,
+        ),
+      );
+      await c.env.DB.batch(stmts);
+      updated += chunk.length;
+    }
+
+    console.log(
+      '[furim/backfill-plan-names]',
+      JSON.stringify({ dryRun, totalRows: gasRes.rows.length, targetCount: targets.length, updated }),
+    );
+    return c.json({
+      success: true,
+      dryRun,
+      totalRows: gasRes.rows.length,
+      targetCount: targets.length,
+      updated,
+    });
+  } catch (err) {
+    console.error('[furim/backfill-plan-names] error:', err);
     return c.json({ success: false, error: String(err) }, 500);
   }
 });

@@ -236,3 +236,20 @@ export async function getFriendCount(db: D1Database): Promise<number> {
     .first<{ count: number }>();
   return row?.count ?? 0;
 }
+
+// Stripe webhook（プラン確定時）とGASスプシからのバックフィルの両方から呼ばれる。
+// line_user_id 不一致時は 0 行更新の無害な no-op。
+export async function updateFriendPlanName(
+  db: D1Database,
+  lineUserId: string,
+  planName: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE friends
+       SET plan_name = ?, updated_at = ?
+       WHERE line_user_id = ?`,
+    )
+    .bind(planName, jstNow(), lineUserId)
+    .run();
+}
