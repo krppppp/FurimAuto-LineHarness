@@ -300,6 +300,8 @@ export default function ChatsPage() {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
   const [selectedFriendId, setSelectedFriendId] = useState<string | null>(null)
   const [chatDetail, setChatDetail] = useState<ChatDetail | null>(null)
+  // チャットヘッダーに一目でタグを出すため、開いている friend のタグを取得する。
+  const [headerTags, setHeaderTags] = useState<Array<{ id: string; name: string; color: string }>>([])
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const statusFilterRef = useRef<StatusFilter>('all')
   const unansweredOnlyRef = useRef(false)
@@ -307,6 +309,21 @@ export default function ChatsPage() {
     if (typeof window === 'undefined') return false
     return new URLSearchParams(window.location.search).get('unanswered') === '1'
   })
+
+  // 開いている friend のタグをヘッダー表示用に取得（friend変更時のみ）
+  useEffect(() => {
+    const fid = chatDetail?.friendId
+    if (!fid) { setHeaderTags([]); return }
+    let cancelled = false
+    api.friends.get(fid).then((res) => {
+      if (cancelled) return
+      const tags = (res.success && res.data)
+        ? ((res.data as unknown as { tags?: Array<{ id: string; name: string; color: string }> }).tags ?? [])
+        : []
+      setHeaderTags(tags)
+    }).catch(() => { if (!cancelled) setHeaderTags([]) })
+    return () => { cancelled = true }
+  }, [chatDetail?.friendId])
 
   // unansweredOnly 変更時に URL を書き戻す
   useEffect(() => {
@@ -330,6 +347,7 @@ export default function ChatsPage() {
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
   const [uploadingImage, setUploadingImage] = useState(false)
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const isComposingRef = useRef(false)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
@@ -1065,14 +1083,30 @@ export default function ChatsPage() {
                     <img src={chatDetail.friendPictureUrl} alt="" className="w-8 h-8 rounded-full flex-shrink-0" />
                   )}
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">
-                      {chatDetail.friendName}
-                    </p>
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium mt-1 ${statusConfig[chatDetail.status].className}`}
-                    >
-                      {statusConfig[chatDetail.status].label}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {chatDetail.friendName}
+                      </p>
+                      <span
+                        className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium flex-shrink-0 ${statusConfig[chatDetail.status].className}`}
+                      >
+                        {statusConfig[chatDetail.status].label}
+                      </span>
+                    </div>
+                    {/* タグを一目で確認できるようヘッダーに表示（サイドバーと同じ配色） */}
+                    {headerTags.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1 mt-1">
+                        {headerTags.map((tag) => (
+                          <span
+                            key={tag.id}
+                            className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium"
+                            style={{ backgroundColor: `${tag.color}20`, color: tag.color }}
+                          >
+                            {tag.name}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -1098,7 +1132,7 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'unread' && (
                     <button
                       onClick={() => handleStatusUpdate('unread')}
-                      className="px-3 py-1 min-h-[44px] lg:min-h-0 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
+                      className="px-2 py-0.5 text-[11px] font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded transition-colors"
                     >
                       未読に戻す
                     </button>
@@ -1106,7 +1140,7 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'in_progress' && (
                     <button
                       onClick={() => handleStatusUpdate('in_progress')}
-                      className="px-3 py-1 min-h-[44px] lg:min-h-0 text-xs font-medium text-yellow-700 bg-yellow-50 hover:bg-yellow-100 rounded-md transition-colors"
+                      className="px-2 py-0.5 text-[11px] font-medium text-yellow-700 bg-yellow-50 hover:bg-yellow-100 rounded transition-colors"
                     >
                       対応中にする
                     </button>
@@ -1114,7 +1148,7 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'resolved' && (
                     <button
                       onClick={() => handleStatusUpdate('resolved')}
-                      className="px-3 py-1 min-h-[44px] lg:min-h-0 text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 rounded-md transition-colors"
+                      className="px-2 py-0.5 text-[11px] font-medium text-green-700 bg-green-50 hover:bg-green-100 rounded transition-colors"
                     >
                       解決済にする
                     </button>
@@ -1145,8 +1179,14 @@ export default function ChatsPage() {
                     } else if (msg.messageType === 'image') {
                       try {
                         const parsed = JSON.parse(msg.content)
+                        const fullUrl = parsed.originalContentUrl || parsed.previewImageUrl
                         bubbleContent = (
-                          <img src={parsed.originalContentUrl || parsed.previewImageUrl} alt="" className="max-w-[200px] rounded" />
+                          <img
+                            src={fullUrl}
+                            alt=""
+                            className="max-w-[200px] rounded cursor-pointer"
+                            onClick={() => setLightboxUrl(fullUrl)}
+                          />
                         )
                       } catch {
                         bubbleContent = <span>🖼️ [画像]</span>
@@ -1397,6 +1437,29 @@ export default function ChatsPage() {
         )}
       </div>
       <CcPromptButton prompts={ccPrompts} />
+
+      {/* 画像タップ拡大表示（ライトボックス）。背景クリックで閉じる */}
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <img
+            src={lightboxUrl}
+            alt=""
+            className="max-w-full max-h-full object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            type="button"
+            onClick={() => setLightboxUrl(null)}
+            className="absolute top-4 right-4 w-10 h-10 rounded-full bg-black/50 text-white text-2xl flex items-center justify-center"
+            aria-label="閉じる"
+          >
+            ×
+          </button>
+        </div>
+      )}
     </div>
   )
 }
