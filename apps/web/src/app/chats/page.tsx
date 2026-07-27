@@ -113,6 +113,18 @@ function formatYmdSlash(iso: string): string {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
 }
 
+// メッセージ内検索の該当文字列を <mark> で黄色ハイライトする
+function highlightQuery(text: string, query: string): React.ReactNode {
+  if (!query) return text
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const parts = text.split(new RegExp(`(${escaped})`, 'gi'))
+  return parts.map((part, i) =>
+    part.toLowerCase() === query.toLowerCase()
+      ? <mark key={i} className="bg-yellow-300 rounded-sm text-inherit">{part}</mark>
+      : part
+  )
+}
+
 const ccPrompts = [
   {
     title: 'チャット対応テンプレート',
@@ -1462,7 +1474,9 @@ export default function ChatsPage() {
                       }
                     } else {
                       // JSON形式の未対応メッセージは生JSONを出さずtype+altTextで要約表示
-                      let fallback: React.ReactNode = <span>{msg.content}</span>
+                      let fallback: React.ReactNode = (
+                        <span>{highlightQuery(msg.content, msgSearchOpen ? msgSearchQuery.trim() : '')}</span>
+                      )
                       if (msg.content.startsWith('{')) {
                         try {
                           const parsed = JSON.parse(msg.content)
