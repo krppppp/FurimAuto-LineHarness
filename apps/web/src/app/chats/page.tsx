@@ -114,6 +114,10 @@ function formatYmdSlash(iso: string): string {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
 }
 
+function formatPlanName(planName: string): string {
+  return planName.replace(/^PB\s*プラン[:：]\s*/, '')
+}
+
 // メッセージ内検索の該当文字列を <mark> で黄色ハイライトする
 function highlightQuery(text: string, query: string): React.ReactNode {
   if (!query) return text
@@ -1249,19 +1253,17 @@ export default function ChatsPage() {
                     <img src={chatDetail.friendPictureUrl} alt="" className="w-8 h-8 rounded-full flex-shrink-0" />
                   )}
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="text-sm font-medium text-gray-900 truncate">
-                        {chatDetail.friendName}
-                      </p>
-                      {chatDetail.planName && (
-                        <span
-                          className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium flex-shrink-0 bg-blue-50 text-blue-700 truncate max-w-[140px]"
-                          title={chatDetail.planName}
-                        >
-                          {chatDetail.planName}
-                        </span>
-                      )}
-                    </div>
+                    <p className="text-sm font-medium text-gray-900 truncate">
+                      {chatDetail.friendName}
+                    </p>
+                    {chatDetail.planName && (
+                      <span
+                        className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium mt-0.5 max-w-full truncate bg-blue-50 text-blue-700"
+                        title={chatDetail.planName}
+                      >
+                        {formatPlanName(chatDetail.planName)}
+                      </span>
+                    )}
                     {/* タグを一目で確認できるようヘッダーに表示（サイドバーと同じ配色） */}
                     {headerTags.length > 0 && (
                       <div className="flex flex-wrap items-center gap-1 mt-1">
