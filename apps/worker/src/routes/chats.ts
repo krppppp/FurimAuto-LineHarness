@@ -183,6 +183,70 @@ chats.delete('/api/operators/:id', async (c) => {
 
 // ========== チャットCRUD ==========
 
+// メッセージ本文 or LINE表示名でのリアルタイム検索。friend_id ごとにグルーピングし、
+// 直近マッチ順（LINE公式アプリの検索結果画面と同じ並び）で返す。
+// :id ルートより手前に置いて "search" が friend_id として解釈されないようにする。
+chats.get('/api/chats/search', async (c) => {
+  try {
+    const q = (c.req.query('q') ?? '').trim();
+    const type = c.req.query('type') === 'user' ? 'user' : 'message';
+    const lineAccountId = c.req.query('lineAccountId') ?? undefined;
+    if (!q) return c.json({ success: true, data: [] });
+
+    const db = c.env.DB;
+    const like = `%${q}%`;
+    const accountFilterSql = lineAccountId ? 'AND f.line_account_id = ?' : '';
+    const binds: unknown[] = lineAccountId ? [like, lineAccountId] : [like];
+
+    // type=user: 表示名がマッチした友だち一覧（件数は全メッセージ数）
+    // type=message: 本文(text)がマッチしたメッセージを friend_id で集計
+    const sql =
+      type === 'user'
+        ? `
+          SELECT f.id AS friend_id, f.display_name AS friend_name, f.picture_url AS friend_picture_url,
+                 COUNT(m.id) AS match_count, MAX(m.created_at) AS last_match_at
+          FROM friends f
+          LEFT JOIN messages_log m ON m.friend_id = f.id AND (m.delivery_type IS NULL OR m.delivery_type != 'test')
+          WHERE f.display_name LIKE ? ${accountFilterSql}
+          GROUP BY f.id
+          ORDER BY last_match_at DESC
+          LIMIT 50
+        `
+        : `
+          SELECT f.id AS friend_id, f.display_name AS friend_name, f.picture_url AS friend_picture_url,
+                 COUNT(m.id) AS match_count, MAX(m.created_at) AS last_match_at
+          FROM messages_log m
+          JOIN friends f ON f.id = m.friend_id
+          WHERE m.message_type = 'text' AND m.content LIKE ? ${accountFilterSql}
+          GROUP BY m.friend_id
+          ORDER BY last_match_at DESC
+          LIMIT 50
+        `;
+
+    const { results } = await db.prepare(sql).bind(...binds).all<{
+      friend_id: string;
+      friend_name: string | null;
+      friend_picture_url: string | null;
+      match_count: number;
+      last_match_at: string | null;
+    }>();
+
+    return c.json({
+      success: true,
+      data: results.map((r) => ({
+        friendId: r.friend_id,
+        friendName: r.friend_name,
+        friendPictureUrl: r.friend_picture_url,
+        matchCount: r.match_count,
+        lastMatchAt: r.last_match_at,
+      })),
+    });
+  } catch (err) {
+    console.error('GET /api/chats/search error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 chats.get('/api/chats', async (c) => {
   try {
     const status = c.req.query('status') ?? undefined;

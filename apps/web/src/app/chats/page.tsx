@@ -40,6 +40,14 @@ interface ChatDetail extends Chat {
   messages?: ChatMessage[]
 }
 
+interface SearchResult {
+  friendId: string
+  friendName: string | null
+  friendPictureUrl: string | null
+  matchCount: number
+  lastMatchAt: string | null
+}
+
 type StatusFilter = 'all' | 'unread' | 'in_progress' | 'resolved'
 
 const statusConfig: Record<Chat['status'], { label: string; className: string }> = {
@@ -309,6 +317,34 @@ export default function ChatsPage() {
     if (typeof window === 'undefined') return false
     return new URLSearchParams(window.location.search).get('unanswered') === '1'
   })
+
+  // チャット一覧検索（メッセージ本文 / LINE表示名）。入力から300ms後にリアルタイム検索する。
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchType, setSearchType] = useState<'message' | 'user'>('message')
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [searchLoading, setSearchLoading] = useState(false)
+  const isSearching = searchQuery.trim().length > 0
+
+  useEffect(() => {
+    const q = searchQuery.trim()
+    if (!q) {
+      setSearchResults([])
+      setSearchLoading(false)
+      return
+    }
+    setSearchLoading(true)
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.chats.search({ q, type: searchType, accountId: selectedAccountId || undefined })
+        if (res.success) setSearchResults(res.data)
+      } catch {
+        // サイレント失敗（一覧側の error 表示を検索の失敗で汚さない）
+      } finally {
+        setSearchLoading(false)
+      }
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery, searchType, selectedAccountId])
 
   // 開いている friend のタグをヘッダー表示用に取得（friend変更時のみ）
   useEffect(() => {
@@ -909,6 +945,33 @@ export default function ChatsPage() {
         <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-none lg:rounded-lg shadow-sm border-0 lg:border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
           {/* タブ (全て / 未読 / 対応中 / 解決済) は意図的に削除。直近メッセージが見やすい LINE 風一覧を優先。 */}
 
+          {/* 検索 — 検索ボタンは置かず、入力から300ms後にリアルタイム検索する */}
+          <div className="px-3 pt-2 flex items-center gap-2">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="検索"
+              className="flex-1 min-w-0 px-3 py-1.5 text-sm border border-gray-200 rounded-full focus:outline-none focus:ring-1 focus:ring-green-500"
+            />
+            <div className="flex-shrink-0 flex text-[11px] rounded-full border border-gray-200 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setSearchType('message')}
+                className={`px-2 py-1.5 transition-colors ${searchType === 'message' ? 'bg-green-500 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
+              >
+                メッセージ
+              </button>
+              <button
+                type="button"
+                onClick={() => setSearchType('user')}
+                className={`px-2 py-1.5 transition-colors ${searchType === 'user' ? 'bg-green-500 text-white' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
+              >
+                ユーザー
+              </button>
+            </div>
+          </div>
+
           {/* Filter row */}
           <div className="px-3 py-2 border-b border-gray-100 flex flex-wrap items-center gap-2">
             {statusFilters.map((f) => (
@@ -944,6 +1007,44 @@ export default function ChatsPage() {
             onTouchMove={handleListTouchMove}
             onTouchEnd={handleListTouchEnd}
           >
+            {isSearching ? (
+              searchLoading && searchResults.length === 0 ? (
+                <div className="text-center py-8"><p className="text-gray-400 text-sm">検索中...</p></div>
+              ) : searchResults.length === 0 ? (
+                <div className="text-center py-8"><p className="text-gray-400 text-sm">見つかりませんでした</p></div>
+              ) : (
+                <>
+                  <h6 className="px-4 pt-3 pb-1 text-xs text-gray-400">
+                    {searchType === 'message' ? 'メッセージ' : 'ユーザー'} ({searchResults.length})
+                  </h6>
+                  {searchResults.map((r) => (
+                    <button
+                      key={r.friendId}
+                      onClick={() => { setSearchQuery(''); setSelectedFriendId(null); handleSelectChat(r.friendId) }}
+                      className="w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-gray-50 transition-colors"
+                    >
+                      <div className="flex items-start gap-3">
+                        {r.friendPictureUrl ? (
+                          <img src={r.friendPictureUrl} alt="" className="w-10 h-10 rounded-full flex-shrink-0" />
+                        ) : (
+                          <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
+                            <span className="text-gray-500 text-sm">{(r.friendName ?? '?').charAt(0)}</span>
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-sm font-medium text-gray-900 truncate min-w-0 flex-1">{r.friendName ?? '(表示名なし)'}</p>
+                            <span className="text-[10px] text-gray-400 flex-shrink-0">{formatDatetime(r.lastMatchAt)}</span>
+                          </div>
+                          <p className="text-xs text-gray-400 mt-0.5">{r.matchCount}件のメッセージ</p>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </>
+              )
+            ) : (
+            <>
             {(pullY > 0 || pullRefreshing) && (
               <div
                 style={{ height: pullRefreshing ? 48 : pullY }}
@@ -1043,6 +1144,8 @@ export default function ChatsPage() {
                   </button>
                 )}
               </>
+            )}
+            </>
             )}
           </div>
         </div>

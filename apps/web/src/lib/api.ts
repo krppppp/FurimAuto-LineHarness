@@ -69,6 +69,8 @@ export type ApiBroadcast = Omit<Broadcast, 'targetType'> & {
   dedupPriority: string[] | null;
   failedAccountIds: string[] | null;
   trackLinks: boolean;
+  // 複数メッセージ配信: [{type,content,altText?}] or null (単一メッセージ)。
+  messages: Array<{ type: string; content: string; altText?: string }> | null;
 };
 
 export type BroadcastInsight = {
@@ -836,6 +838,13 @@ export const api = {
       ),
   },
   chats: {
+    search: (params: { q: string; type: 'message' | 'user'; accountId?: string }) => {
+      const query: Record<string, string> = { q: params.q, type: params.type }
+      if (params.accountId) query.lineAccountId = params.accountId
+      return fetchApi<ApiResponse<{ friendId: string; friendName: string | null; friendPictureUrl: string | null; matchCount: number; lastMatchAt: string | null }[]>>(
+        '/api/chats/search?' + new URLSearchParams(query),
+      )
+    },
     list: (params?: { status?: string; operatorId?: string; accountId?: string; unansweredOnly?: boolean; limit?: number; beforeAt?: string; beforeId?: string }) => {
       const query: Record<string, string> = {}
       if (params?.status) query.status = params.status
