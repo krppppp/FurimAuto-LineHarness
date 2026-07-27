@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
 import { api, fetchApi } from '@/lib/api'
 import { UNANSWERED_REFRESH_EVENT } from '@/lib/events'
@@ -388,6 +388,43 @@ export default function ChatsPage() {
   const isComposingRef = useRef(false)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // メッセージ内検索（開いているチャット内をブラウザの Cmd+F のように検索）
+  const [msgSearchOpen, setMsgSearchOpen] = useState(false)
+  const [msgSearchQuery, setMsgSearchQuery] = useState('')
+  const [msgSearchCurrentIndex, setMsgSearchCurrentIndex] = useState(0)
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  const msgSearchMatches = useMemo(() => {
+    const q = msgSearchQuery.trim()
+    if (!q) return []
+    return (chatDetail?.messages ?? [])
+      .filter((m) => m.messageType === 'text' && m.content.includes(q))
+      .map((m) => m.id)
+  }, [msgSearchQuery, chatDetail?.messages])
+
+  // クエリが変わったら先頭ヒットに戻す
+  useEffect(() => { setMsgSearchCurrentIndex(0) }, [msgSearchQuery])
+
+  // 現在のヒットが変わったら該当メッセージへスクロール移動
+  useEffect(() => {
+    if (msgSearchMatches.length === 0) return
+    const id = msgSearchMatches[msgSearchCurrentIndex % msgSearchMatches.length]
+    messageRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [msgSearchCurrentIndex, msgSearchMatches])
+
+  const gotoPrevMatch = () => {
+    if (msgSearchMatches.length === 0) return
+    setMsgSearchCurrentIndex((i) => (i - 1 + msgSearchMatches.length) % msgSearchMatches.length)
+  }
+  const gotoNextMatch = () => {
+    if (msgSearchMatches.length === 0) return
+    setMsgSearchCurrentIndex((i) => (i + 1) % msgSearchMatches.length)
+  }
+  const closeMsgSearch = () => {
+    setMsgSearchOpen(false)
+    setMsgSearchQuery('')
+  }
 
   // ページング用カーソル。表示リストは楽観更新で並び替わるため、
   // 「サーバから最後に受け取った行」を ref で保持して次ページの起点にする
@@ -1171,7 +1208,7 @@ export default function ChatsPage() {
           ) : chatDetail ? (
             <>
               {/* Chat Header */}
-              <div className="px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-2">
+              <div className="px-4 py-2 border-b border-gray-200 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <button
                     onClick={() => setSelectedChatId(null)}
@@ -1212,7 +1249,7 @@ export default function ChatsPage() {
                     )}
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
                   {unansweredOnly && chats.length > 1 && (
                     <button
                       type="button"
@@ -1235,29 +1272,95 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'unread' && (
                     <button
                       onClick={() => handleStatusUpdate('unread')}
-                      className="px-2 py-0.5 text-[11px] font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded transition-colors"
+                      className="px-1.5 py-0.5 text-[11px] font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded transition-colors"
                     >
-                      未読に戻す
+                      未読
                     </button>
                   )}
                   {chatDetail.status !== 'in_progress' && (
                     <button
                       onClick={() => handleStatusUpdate('in_progress')}
-                      className="px-2 py-0.5 text-[11px] font-medium text-yellow-700 bg-yellow-50 hover:bg-yellow-100 rounded transition-colors"
+                      className="px-1.5 py-0.5 text-[11px] font-medium text-yellow-700 bg-yellow-50 hover:bg-yellow-100 rounded transition-colors"
                     >
-                      対応中にする
+                      対応中
                     </button>
                   )}
                   {chatDetail.status !== 'resolved' && (
                     <button
                       onClick={() => handleStatusUpdate('resolved')}
-                      className="px-2 py-0.5 text-[11px] font-medium text-green-700 bg-green-50 hover:bg-green-100 rounded transition-colors"
+                      className="px-1.5 py-0.5 text-[11px] font-medium text-green-700 bg-green-50 hover:bg-green-100 rounded transition-colors"
                     >
-                      解決済にする
+                      解決済
                     </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => setMsgSearchOpen((v) => !v)}
+                    className={`p-1 rounded transition-colors ${msgSearchOpen ? 'bg-green-100 text-green-700' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
+                    aria-label="メッセージ内を検索"
+                    title="メッセージ内を検索"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
+                    </svg>
+                  </button>
                 </div>
               </div>
+
+              {/* メッセージ内検索バー — ブラウザの Cmd+F と同じ感覚で、開いているチャット内のみ検索する */}
+              {msgSearchOpen && (
+                <div className="px-4 py-1.5 border-b border-gray-200 bg-gray-50 flex items-center gap-2">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={msgSearchQuery}
+                    onChange={(e) => setMsgSearchQuery(e.target.value)}
+                    placeholder="メッセージ内を検索"
+                    className="flex-1 min-w-0 px-3 py-1 text-sm border border-gray-200 rounded-full focus:outline-none focus:ring-1 focus:ring-green-500"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        if (e.shiftKey) gotoPrevMatch(); else gotoNextMatch()
+                      } else if (e.key === 'Escape') {
+                        closeMsgSearch()
+                      }
+                    }}
+                  />
+                  <span className="text-xs text-gray-400 flex-shrink-0 tabular-nums w-10 text-right">
+                    {msgSearchQuery.trim() === ''
+                      ? ''
+                      : msgSearchMatches.length === 0
+                        ? '0件'
+                        : `${msgSearchCurrentIndex + 1}/${msgSearchMatches.length}`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={gotoPrevMatch}
+                    disabled={msgSearchMatches.length === 0}
+                    className="p-1 text-gray-500 hover:text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                    aria-label="前のヒットへ"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={gotoNextMatch}
+                    disabled={msgSearchMatches.length === 0}
+                    className="p-1 text-gray-500 hover:text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                    aria-label="次のヒットへ"
+                  >
+                    ↓
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeMsgSearch}
+                    className="p-1 text-gray-400 hover:text-gray-600"
+                    aria-label="検索を閉じる"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
 
               {/* Messages — LINE-style chat bubbles */}
               <div ref={messagesScrollRef} className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
@@ -1375,8 +1478,17 @@ export default function ChatsPage() {
                     // imagemap・テンプレート等のリッチコンテンツは LINE と同じく背景なしで表示する
                     const isPlainBubble = !['flex', 'image', 'sticker', 'video', 'imagemap', 'template'].includes(msg.messageType)
 
+                    const isCurrentSearchMatch =
+                      msgSearchOpen &&
+                      msgSearchMatches.length > 0 &&
+                      msgSearchMatches[msgSearchCurrentIndex % msgSearchMatches.length] === msg.id
+
                     return (
-                      <div key={msg.id}>
+                      <div
+                        key={msg.id}
+                        ref={(el) => { messageRefs.current[msg.id] = el }}
+                        className={isCurrentSearchMatch ? 'ring-2 ring-yellow-400 rounded-2xl -m-1 p-1' : undefined}
+                      >
                         {showDateSep && (
                           <div className="flex justify-center my-3">
                             <span className="text-[11px] text-white/85 bg-black/20 px-2.5 py-0.5 rounded-full">
