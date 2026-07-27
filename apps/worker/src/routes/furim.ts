@@ -692,7 +692,10 @@ furim.post('/api/furim/backfill-plan-names', async (c) => {
       });
     }
 
-    // Workersのサブリクエスト上限対策で100件単位のbatchに分割
+    // Workersのサブリクエスト上限対策で100件単位のbatchに分割。
+    // updated は「実際にUPDATEがマッチした行数」(meta.changesの合計)。試行数(targets.length)
+    // ではない — D1のline_user_idにマッチする行が無ければ changes=0 のまま無言で通り過ぎるため、
+    // 差分を notMatched として可視化する（GAS側の表記ゆれ・削除済み友だち等の検知用）。
     const CHUNK = 100;
     let updated = 0;
     for (let i = 0; i < targets.length; i += CHUNK) {
@@ -705,13 +708,14 @@ furim.post('/api/furim/backfill-plan-names', async (c) => {
           t.lineUserId,
         ),
       );
-      await c.env.DB.batch(stmts);
-      updated += chunk.length;
+      const results = await c.env.DB.batch(stmts);
+      updated += results.reduce((sum, r) => sum + (r.meta?.changes ?? 0), 0);
     }
+    const notMatched = targets.length - updated;
 
     console.log(
       '[furim/backfill-plan-names]',
-      JSON.stringify({ dryRun, totalRows: gasRes.rows.length, targetCount: targets.length, updated }),
+      JSON.stringify({ dryRun, totalRows: gasRes.rows.length, targetCount: targets.length, updated, notMatched }),
     );
     return c.json({
       success: true,
@@ -719,6 +723,7 @@ furim.post('/api/furim/backfill-plan-names', async (c) => {
       totalRows: gasRes.rows.length,
       targetCount: targets.length,
       updated,
+      notMatched,
     });
   } catch (err) {
     console.error('[furim/backfill-plan-names] error:', err);
