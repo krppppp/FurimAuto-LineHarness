@@ -123,6 +123,89 @@ profileRefresh.post('/api/admin/refresh-profiles', async (c) => {
 });
 
 /**
+ * picture_url が実際に 404 化しているかを HEAD で先に確認し、stale な friend だけ
+ * LINE Messaging API から再取得する。毎回全件 getProfile を叩くと、404 化していない
+ * 大多数に対しても無駄打ちになるため、まず軽量な HEAD で絞り込んでから叩く2段構成にする。
+ * stale が 0 件なら getProfile は一度も呼ばれない。
+ */
+export async function sweepStalePictureUrls(
+  db: D1Database,
+  env: { LINE_CHANNEL_ACCESS_TOKEN: string },
+): Promise<{ checked: number; stale: number; updated: number; notFound: number; otherErrors: number }> {
+  const rows = await db
+    .prepare(
+      `SELECT f.id, f.line_user_id, f.picture_url, a.channel_access_token
+         FROM friends f
+         LEFT JOIN line_accounts a ON a.id = f.line_account_id
+        WHERE f.is_following = 1 AND f.line_user_id IS NOT NULL AND f.picture_url IS NOT NULL`,
+    )
+    .all<{ id: string; line_user_id: string; picture_url: string; channel_access_token: string | null }>();
+
+  const candidates = rows.results ?? [];
+  const CONCURRENCY = 50;
+
+  const staleRows: typeof candidates = [];
+  for (let i = 0; i < candidates.length; i += CONCURRENCY) {
+    const chunk = candidates.slice(i, i + CONCURRENCY);
+    await Promise.all(chunk.map(async (row) => {
+      try {
+        const res = await fetch(row.picture_url, { method: 'HEAD' });
+        if (res.status === 404) staleRows.push(row);
+      } catch {
+        // ネットワーク不調等は無視。次回サイクルで再判定させる。
+      }
+    }));
+  }
+
+  if (staleRows.length === 0) {
+    return { checked: candidates.length, stale: 0, updated: 0, notFound: 0, otherErrors: 0 };
+  }
+
+  const defaultToken = env.LINE_CHANNEL_ACCESS_TOKEN;
+  let updated = 0;
+  let notFound = 0;
+  let otherErrors = 0;
+
+  for (let i = 0; i < staleRows.length; i += CONCURRENCY) {
+    const chunk = staleRows.slice(i, i + CONCURRENCY);
+    await Promise.all(chunk.map(async (row) => {
+      const token = row.channel_access_token ?? defaultToken;
+      const client = new LineClient(token);
+      try {
+        const profile = await client.getProfile(row.line_user_id);
+        await db
+          .prepare(
+            `UPDATE friends
+                SET display_name    = ?,
+                    picture_url     = ?,
+                    status_message  = ?,
+                    updated_at      = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00'
+              WHERE id = ?`,
+          )
+          .bind(profile.displayName ?? null, profile.pictureUrl ?? null, profile.statusMessage ?? null, row.id)
+          .run();
+        updated += 1;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('404') || msg.includes('403')) {
+          notFound += 1;
+        } else {
+          otherErrors += 1;
+          console.error(`sweep-stale-profile failed friend=${row.id}:`, msg);
+        }
+      }
+    }));
+  }
+
+  return { checked: candidates.length, stale: staleRows.length, updated, notFound, otherErrors };
+}
+
+profileRefresh.post('/api/admin/sweep-stale-profiles', async (c) => {
+  const result = await sweepStalePictureUrls(c.env.DB, c.env);
+  return c.json({ success: true, data: result });
+});
+
+/**
  * 既送信 broadcast を draft に戻す (再送用)。multicast/db.batch エラー等で
  * 0 件成功で完了した broadcast を試し直すための運用 endpoint。
  * messages_log がゼロ件であることを安全条件に強制する (誤って配信済の

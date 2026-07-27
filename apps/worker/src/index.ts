@@ -1022,6 +1022,19 @@ async function scheduled(
     }
   }
 
+  // プロフィール画像 URL の 404 化スイープ — 6h cron tick。
+  if (event.cron === '0 */6 * * *') {
+    try {
+      const { sweepStalePictureUrls } = await import('./routes/profile-refresh.js');
+      const result = await sweepStalePictureUrls(env.DB, env);
+      console.log(
+        `[profile-sweep] checked=${result.checked} stale=${result.stale} updated=${result.updated} notFound=${result.notFound} otherErrors=${result.otherErrors}`,
+      );
+    } catch (e) {
+      console.error('profile-sweep error:', e);
+    }
+  }
+
   // Event-booking expirer — 6h cron tick.
   if (event.cron === '0 */6 * * *') {
     try {
