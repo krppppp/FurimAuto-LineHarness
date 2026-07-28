@@ -12,6 +12,9 @@ import { sendPushToAll, type PushEnv } from './push-notify.js';
  * JSON ではなく承認要求の HTML エラーページを返す / HTTP エラー) を検知したら
  * スタッフの Web Push へ即時通知する。cron の ping (シート非接触) では認可切れを
  * 検知できないため別建て。
+ *
+ * GAS 側の一時的な瞬断でも1回失敗しただけで通知が飛んでいたため、1分間隔で
+ * 最大3回連続失敗した場合のみ通知するようにリトライを挟む (2026-07-28)。
  */
 
 export type GasHealthEnv = PushEnv & { GAS_DEPLOY_ID?: string };
@@ -19,28 +22,38 @@ export type GasHealthEnv = PushEnv & { GAS_DEPLOY_ID?: string };
 export async function checkGasSheetAuth(
   db: D1Database,
   env: GasHealthEnv,
+  opts: { maxAttempts?: number; retryDelayMs?: number } = {},
 ): Promise<'ok' | 'unhealthy' | 'skipped'> {
   if (!env.GAS_DEPLOY_ID) return 'skipped';
 
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const retryDelayMs = opts.retryDelayMs ?? 60_000;
+
   let detail = '';
-  try {
-    // 存在しない ID でもシート読み取りが走り {customer_stripe_id: null} の JSON が返る。
-    // 認可切れなら gasGet が throw するか、Google の HTML ページ (string) が返る
-    const res = await gasGet(env.GAS_DEPLOY_ID, {
-      method: 'getStripeIDwithLINEID',
-      lineUserId: 'gas-health-canary',
-    });
-    if (typeof res === 'object' && res !== null) return 'ok';
-    detail = String(res).slice(0, 150);
-  } catch (err) {
-    detail = String(err).slice(0, 200);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      // 存在しない ID でもシート読み取りが走り {customer_stripe_id: null} の JSON が返る。
+      // 認可切れなら gasGet が throw するか、Google の HTML ページ (string) が返る
+      const res = await gasGet(env.GAS_DEPLOY_ID, {
+        method: 'getStripeIDwithLINEID',
+        lineUserId: 'gas-health-canary',
+      });
+      if (typeof res === 'object' && res !== null) return 'ok';
+      detail = String(res).slice(0, 150);
+    } catch (err) {
+      detail = String(err).slice(0, 200);
+    }
+
+    console.error(`[gas-health] GAS sheet auth check FAILED (attempt ${attempt}/${maxAttempts}):`, detail);
+    if (attempt < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
   }
 
-  console.error('[gas-health] GAS sheet auth check FAILED:', detail);
   try {
     await sendPushToAll(db, env, {
       title: '⚠️ GAS認可エラー検知',
-      body: 'GASがスプレッドシートにアクセスできません（認可失効の可能性）。キーコード発行・顧客同期が止まっています。Apps Scriptを開いて再認可してください。',
+      body: `GASがスプレッドシートにアクセスできません（認可失効の可能性、${maxAttempts}回連続失敗）。キーコード発行・顧客同期が止まっています。Apps Scriptを開いて再認可してください。`,
       url: '/notifications',
     });
   } catch (err) {
