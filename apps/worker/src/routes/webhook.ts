@@ -474,8 +474,8 @@ async function handleEvent(
       if (furimHandled) return;
     }
 
-    // 【キーワード】アクション
-    if (incomingText.includes('【キーワード】') && env?.GAS_DEPLOY_ID) {
+    // 【キーワード】アクション（"キーコードリセット"のみプレフィックスなしの単体文字列でも動く特別対応）
+    if ((incomingText.includes('【キーワード】') || incomingText.includes('キーコードリセット')) && env?.GAS_DEPLOY_ID) {
       await handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
       return;
     }

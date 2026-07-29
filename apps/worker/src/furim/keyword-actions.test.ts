@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const gasGet = vi.fn();
 vi.mock('./gas-client.js', () => ({ gasGet, gasPost: vi.fn() }));
 
-const { processReferral } = await import('./keyword-actions.js');
+const { processReferral, handleKeywordAction } = await import('./keyword-actions.js');
 
 function makeClient() {
   return {
@@ -92,5 +92,48 @@ describe('processReferral 冪等ガード', () => {
     const result = await processReferral(client as never, 'Uintroduced', 'AMB12345', env, db as never, {});
 
     expect(result).toEqual({ ok: false, reason: 'self_referral' });
+  });
+});
+
+describe('handleKeywordAction キーコードリセットの特別対応', () => {
+  it('【キーワード】プレフィックスなしの単体文字列でも resetKeyCode が呼ばれる', async () => {
+    gasGet.mockResolvedValueOnce({});
+    const client = makeClient();
+
+    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env);
+
+    expect(result).toBe(true);
+    expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
+    expect(client.replyMessage).toHaveBeenCalledWith('rt', [{ type: 'text', text: '紐づいた設定のリセットが完了しました。' }]);
+  });
+
+  it('文中に含まれる場合でも部分一致で発火する（既存の他キーワードと同じ判定方式）', async () => {
+    gasGet.mockResolvedValueOnce({});
+    const client = makeClient();
+
+    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'お手数ですがキーコードリセットお願いします', env);
+
+    expect(result).toBe(true);
+    expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
+  });
+
+  it('従来通り【キーワード】プレフィックス付きでも動く', async () => {
+    gasGet.mockResolvedValueOnce({});
+    const client = makeClient();
+
+    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', '【キーワード】キーコードリセット', env);
+
+    expect(result).toBe(true);
+    expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
+  });
+
+  it('無関係なメッセージには反応しない', async () => {
+    const client = makeClient();
+
+    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'こんにちは', env);
+
+    expect(result).toBe(false);
+    expect(gasGet).not.toHaveBeenCalled();
+    expect(client.replyMessage).not.toHaveBeenCalled();
   });
 });

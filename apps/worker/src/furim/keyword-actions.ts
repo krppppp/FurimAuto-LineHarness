@@ -59,6 +59,13 @@ export async function handleKeywordAction(
   env: KeywordActionsEnv,
   db?: D1Database,
 ): Promise<boolean> {
+  // "キーコードリセット"のみ【キーワード】プレフィックスなしの単体文字列でも動く特別対応
+  if (rawText.includes('キーコードリセット')) {
+    await gasGet(env.GAS_DEPLOY_ID, { method: 'resetKeyCode', lineUserId });
+    await lineClient.replyMessage(replyToken, [{ type: 'text', text: '紐づいた設定のリセットが完了しました。' } as never]);
+    return true;
+  }
+
   if (!rawText.includes('【キーワード】')) return false;
   const text = rawText.replace('【キーワード】', '');
 
@@ -71,12 +78,6 @@ export async function handleKeywordAction(
       baseSize: { width: 1040, height: 1040 },
       actions: [{ type: 'uri', linkUri: data.checkoutURL, area: { x: 0, y: 0, width: 1040, height: 1040 } }],
     } as never]);
-    return true;
-  }
-
-  if (text.includes('キーコードリセット')) {
-    await gasGet(env.GAS_DEPLOY_ID, { method: 'resetKeyCode', lineUserId });
-    await lineClient.replyMessage(replyToken, [{ type: 'text', text: '紐づいた設定のリセットが完了しました。' } as never]);
     return true;
   }
 
