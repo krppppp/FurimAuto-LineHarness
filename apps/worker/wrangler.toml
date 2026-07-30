@@ -14,12 +14,6 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 account_id = "f2b335f4f9d276383643c76f1e5cc6f9"
 
-# デフォルト(paidプランで1万)だと sweepStalePictureUrls 等の全friend走査系cronが
-# 「Too many subrequests by single Worker invocation」で失敗する(2026-07-30発覚)。
-# friend数の増加に耐えるよう明示的に引き上げておく。
-[limits]
-subrequests = 50000
-
 [assets]
 directory = "dist/client"
 binding = "ASSETS"
@@ -59,9 +53,6 @@ FURIM_AMBASSADOR_OFFER_ID = "e1fa71aa-2d1d-4fb6-8daa-0e448c95ad32"
 name = "line-harness"
 workers_dev = true
 
-[env.dev.limits]
-subrequests = 50000
-
 [env.dev.assets]
 directory = "dist/client"
 binding = "ASSETS"
@@ -98,9 +89,6 @@ FURIM_AMBASSADOR_OFFER_ID = "e1fa71aa-2d1d-4fb6-8daa-0e448c95ad32"
 # ─── PROD環境（Worker名: line-harness-prod）─────────────────────────────────
 [env.prod]
 workers_dev = true
-
-[env.prod.limits]
-subrequests = 50000
 
 [env.prod.assets]
 directory = "dist/client"
