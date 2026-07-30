@@ -495,7 +495,7 @@ chats.get('/api/chats/:id', async (c) => {
     // 現状の最重量ユーザー(481件)の2倍バッファ。これ以上の履歴はページング未実装（Phase 2 TODO）。
     const messages = await c.env.DB
       .prepare(
-        `SELECT id, friend_id, direction, message_type, content, created_at
+        `SELECT id, friend_id, direction, message_type, content, quote_token, reply_to_message_id, created_at
          FROM messages_log
          WHERE friend_id = ? AND (delivery_type IS NULL OR delivery_type != 'test')
          ORDER BY created_at DESC LIMIT 1000`,
@@ -522,6 +522,8 @@ chats.get('/api/chats/:id', async (c) => {
           direction: m.direction,
           messageType: m.message_type,
           content: m.content,
+          quoteToken: m.quote_token ?? null,
+          replyToMessageId: m.reply_to_message_id ?? null,
           createdAt: m.created_at,
         })),
       },
@@ -614,7 +616,7 @@ chats.post('/api/chats/:id/send', async (c) => {
     const chat = await resolveOrCreateChat(c.env.DB, chatId);
     if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
 
-    const body = await c.req.json<{ messageType?: string; content: string }>();
+    const body = await c.req.json<{ messageType?: string; content: string; replyToMessageId?: string }>();
     if (!body.content) return c.json({ success: false, error: 'content is required' }, 400);
 
     const { friend, accessToken } = await resolveFriendAndAccessToken(
@@ -629,8 +631,23 @@ chats.post('/api/chats/:id/send', async (c) => {
     const lineClient = new LineClient(accessToken);
     const messageType = body.messageType ?? 'text';
 
+    // 引用返信はテキストのみ対応。quoteTokenはクライアントに送らせず、DBから都度解決する
+    // (単一の真実源をDBに保つ／古いUI状態からの不正・期限切れトークン送信を防ぐ／
+    //  friend_id一致チェックで他friendのtoken誤用を防ぐ)。
+    let quoteToken: string | null = null;
+    if (body.replyToMessageId) {
+      if (messageType !== 'text') {
+        return c.json({ success: false, error: 'quote reply is only supported for text messages' }, 400);
+      }
+      const quoted = await c.env.DB
+        .prepare(`SELECT quote_token FROM messages_log WHERE id = ? AND friend_id = ? AND direction = 'incoming'`)
+        .bind(body.replyToMessageId, friend.id)
+        .first<{ quote_token: string | null }>();
+      quoteToken = quoted?.quote_token ?? null;
+    }
+
     if (messageType === 'text') {
-      await lineClient.pushTextMessage(friend.line_user_id, body.content);
+      await lineClient.pushTextMessage(friend.line_user_id, body.content, quoteToken ?? undefined);
     } else if (messageType === 'flex') {
       const contents = JSON.parse(body.content);
       await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
@@ -649,8 +666,8 @@ chats.post('/api/chats/:id/send', async (c) => {
     // メッセージログに記録
     const logId = crypto.randomUUID();
     await c.env.DB
-      .prepare(`INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, created_at) VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?)`)
-      .bind(logId, friend.id, messageType, body.content, jstNow())
+      .prepare(`INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, reply_to_message_id, created_at) VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?, ?)`)
+      .bind(logId, friend.id, messageType, body.content, body.replyToMessageId ?? null, jstNow())
       .run();
 
     // チャットの最終メッセージ日時を更新（chat.id を直接使う — friend_id で呼ばれても resolveOrCreateChat 済み）

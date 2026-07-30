@@ -300,6 +300,158 @@ describe('POST /webhook — first-contact existing friends', () => {
   });
 });
 
+describe('POST /webhook — テキスト受信での quote_token 保存', () => {
+  const existingTextFriend = {
+    id: 'friend-quote-1',
+    line_user_id: 'U-quote',
+    display_name: 'Quote Friend',
+    picture_url: null,
+    status_message: null,
+    is_following: 1,
+    user_id: null,
+    line_account_id: null,
+    metadata: '{}',
+    first_tracked_link_id: null,
+    created_at: '2026-07-30T12:00:00.000+09:00',
+    updated_at: '2026-07-30T12:00:00.000+09:00',
+  };
+
+  test('message.quoteToken が messages_log の INSERT に渡る', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue(existingTextFriend);
+    vi.mocked(jstNow).mockReturnValue('2026-07-30T12:00:00.000+09:00');
+    vi.mocked(upsertChatOnMessage).mockResolvedValue({
+      id: 'chat-quote-1',
+      friend_id: 'friend-quote-1',
+      operator_id: null,
+      status: 'unread',
+      notes: null,
+      last_message_at: '2026-07-30T12:00:00.000+09:00',
+      created_at: '2026-07-30T12:00:00.000+09:00',
+      updated_at: '2026-07-30T12:00:00.000+09:00',
+    });
+
+    const stmt = {
+      bind: vi.fn(),
+      run: vi.fn().mockResolvedValue({}),
+      all: vi.fn().mockResolvedValue({ results: [] }),
+      first: vi.fn().mockResolvedValue(null),
+    };
+    stmt.bind.mockReturnValue(stmt);
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database;
+
+    const executionCtx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+
+    const app = setupApp();
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body: JSON.stringify({
+          destination: 'bot',
+          events: [
+            {
+              type: 'message',
+              replyToken: 'reply-token',
+              message: { type: 'text', id: 'message-quote-1', text: 'これに返信して', quoteToken: 'quote-token-abc' },
+              timestamp: Date.now(),
+              source: { type: 'user', userId: 'U-quote' },
+              webhookEventId: 'event-quote',
+              deliveryContext: { isRedelivery: false },
+              mode: 'active',
+            },
+          ],
+        }),
+      },
+      { ...baseEnv, DB: db },
+      executionCtx,
+    );
+
+    expect(res.status).toBe(200);
+    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
+    await processing;
+
+    const boundArgs = stmt.bind.mock.calls.flat();
+    expect(boundArgs).toContain('quote-token-abc');
+  });
+
+  test('quoteToken なしのテキスト受信では null が渡る (undefined送信で型エラーにならない)', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue(existingTextFriend);
+    vi.mocked(jstNow).mockReturnValue('2026-07-30T12:00:00.000+09:00');
+    vi.mocked(upsertChatOnMessage).mockResolvedValue({
+      id: 'chat-quote-2',
+      friend_id: 'friend-quote-1',
+      operator_id: null,
+      status: 'unread',
+      notes: null,
+      last_message_at: '2026-07-30T12:00:00.000+09:00',
+      created_at: '2026-07-30T12:00:00.000+09:00',
+      updated_at: '2026-07-30T12:00:00.000+09:00',
+    });
+
+    const stmt = {
+      bind: vi.fn(),
+      run: vi.fn().mockResolvedValue({}),
+      all: vi.fn().mockResolvedValue({ results: [] }),
+      first: vi.fn().mockResolvedValue(null),
+    };
+    stmt.bind.mockReturnValue(stmt);
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database;
+
+    const executionCtx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+
+    const app = setupApp();
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body: JSON.stringify({
+          destination: 'bot',
+          events: [
+            {
+              type: 'message',
+              replyToken: 'reply-token',
+              message: { type: 'text', id: 'message-quote-2', text: 'quoteTokenなし' },
+              timestamp: Date.now(),
+              source: { type: 'user', userId: 'U-quote' },
+              webhookEventId: 'event-noquote',
+              deliveryContext: { isRedelivery: false },
+              mode: 'active',
+            },
+          ],
+        }),
+      },
+      { ...baseEnv, DB: db },
+      executionCtx,
+    );
+
+    expect(res.status).toBe(200);
+    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
+    await processing;
+
+    const boundArgs = stmt.bind.mock.calls.flat();
+    expect(boundArgs).toContain(null);
+    expect(boundArgs).not.toContain(undefined);
+  });
+});
+
 describe('POST /webhook — incoming image/video → R2 JSON', () => {
   const existingFriend = {
     id: 'friend-1',

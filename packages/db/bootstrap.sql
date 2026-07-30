@@ -226,7 +226,7 @@ CREATE TABLE "broadcasts" (
   account_ids        TEXT CHECK (account_ids IS NULL OR json_valid(account_ids)),
   dedup_priority     TEXT CHECK (dedup_priority IS NULL OR json_valid(dedup_priority)),
   failed_account_ids TEXT CHECK (failed_account_ids IS NULL OR json_valid(failed_account_ids))
-, dedup_progress TEXT, batch_lock_at TEXT, track_links INTEGER NOT NULL DEFAULT 1);
+, dedup_progress TEXT, batch_lock_at TEXT, track_links INTEGER NOT NULL DEFAULT 1, messages TEXT CHECK (messages IS NULL OR json_valid(messages)));
 
 CREATE TABLE calendar_bookings (
   id             TEXT PRIMARY KEY,
@@ -549,6 +549,8 @@ CREATE TABLE messages_log (
   delivery_type    TEXT CHECK (delivery_type IN ('push', 'reply', 'test')),
   source           TEXT,
   line_account_id  TEXT,
+  quote_token      TEXT,
+  reply_to_message_id TEXT REFERENCES messages_log (id) ON DELETE SET NULL,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
@@ -962,6 +964,8 @@ CREATE INDEX idx_messages_log_friend_id ON messages_log (friend_id);
 
 CREATE INDEX idx_messages_log_friend_source ON messages_log (friend_id, source);
 
+CREATE INDEX idx_messages_log_reply_to_message_id ON messages_log (reply_to_message_id);
+
 CREATE INDEX idx_notifications_created ON notifications (created_at);
 
 CREATE INDEX idx_notifications_status ON notifications (status);
@@ -997,6 +1001,13 @@ CREATE INDEX idx_staff_members_role ON staff_members(role);
 CREATE INDEX idx_stripe_events_friend ON stripe_events (friend_id);
 
 CREATE INDEX idx_stripe_events_type ON stripe_events (event_type);
+
+CREATE TABLE IF NOT EXISTS stripe_processed_actions (
+  stripe_event_id TEXT NOT NULL,
+  action_key      TEXT NOT NULL,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  PRIMARY KEY (stripe_event_id, action_key)
+);
 
 CREATE INDEX idx_templates_category ON templates (category);
 

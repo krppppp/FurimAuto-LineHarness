@@ -6,6 +6,7 @@ import type {
   PushMessageRequest,
   ReplyMessageRequest,
   RichMenuObject,
+  TextMessage,
   UserProfile,
 } from './types.js';
 
@@ -194,8 +195,9 @@ export class LineClient {
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
-  async pushTextMessage(to: string, text: string): Promise<unknown> {
-    return this.pushMessage(to, [{ type: 'text', text }]);
+  async pushTextMessage(to: string, text: string, quoteToken?: string): Promise<unknown> {
+    const message: TextMessage = quoteToken ? { type: 'text', text, quoteToken } : { type: 'text', text };
+    return this.pushMessage(to, [message]);
   }
 
   async pushFlexMessage(

@@ -418,10 +418,10 @@ async function handleEvent(
     // 受信メッセージをログに記録
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, created_at)
-         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, quote_token, created_at)
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, ?, ?)`,
       )
-      .bind(logId, friend.id, incomingText, now)
+      .bind(logId, friend.id, incomingText, textMessage.quoteToken ?? null, now)
       .run();
 
     // 【プラン変更】PB-XXXXXX: 既存契約者のLIFF申込。新規Checkoutではなく

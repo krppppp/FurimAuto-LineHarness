@@ -873,7 +873,7 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
-    send: (id: string, data: { content: string; messageType?: string }) =>
+    send: (id: string, data: { content: string; messageType?: string; replyToMessageId?: string }) =>
       fetchApi<ApiResponse<unknown>>(`/api/chats/${id}/send`, {
         method: 'POST',
         body: JSON.stringify(data),

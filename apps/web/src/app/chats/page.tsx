@@ -31,6 +31,8 @@ interface ChatMessage {
   direction: 'incoming' | 'outgoing'
   messageType: string
   content: string
+  quoteToken?: string | null
+  replyToMessageId?: string | null
   createdAt: string
 }
 
@@ -455,6 +457,16 @@ export default function ChatsPage() {
   }, [])
 
   useEffect(() => { setStatusMenuOpen(false) }, [selectedChatId])
+
+  // 引用返信（LINEの「引用して返信」相当）。返信先を選ぶと入力欄上部にプレビューが出る。
+  const [replyTarget, setReplyTarget] = useState<{ id: string; content: string } | null>(null)
+  useEffect(() => { setReplyTarget(null) }, [selectedChatId])
+
+  const messagesById = useMemo(() => {
+    const map = new Map<string, ChatMessage>()
+    for (const m of chatDetail?.messages ?? []) map.set(m.id, m)
+    return map
+  }, [chatDetail?.messages])
 
   // ページング用カーソル。表示リストは楽観更新で並び替わるため、
   // 「サーバから最後に受け取った行」を ref で保持して次ページの起点にする
@@ -895,8 +907,10 @@ export default function ChatsPage() {
       // --- Text send path (runs independently — both paths execute when both image and text are present) ---
       if (messageContent.trim()) {
         const content = messageContent.trim()
-        await api.chats.send(sendingChatId, { content })
+        const replyToMessageId = replyTarget?.id
+        await api.chats.send(sendingChatId, { content, ...(replyToMessageId ? { replyToMessageId } : {}) })
         setMessageContent('')
+        setReplyTarget(null)
         // Optimistic update: append message locally instead of refetching (prevents scroll jump / full reload feel)
         // Only mutate chatDetail if it still corresponds to the chat we just sent to
         setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
@@ -910,6 +924,7 @@ export default function ChatsPage() {
               direction: 'outgoing',
               messageType: 'text',
               content,
+              replyToMessageId: replyToMessageId ?? null,
               createdAt: now,
             },
           ],
@@ -1534,7 +1549,7 @@ export default function ChatsPage() {
                           </div>
                         )}
                         <div
-                          className={`flex items-end gap-2 ${isOutgoing ? 'justify-end' : 'justify-start'}`}
+                          className={`group flex items-end gap-2 ${isOutgoing ? 'justify-end' : 'justify-start'}`}
                         >
                           {/* 相手のアイコン（incoming のみ） */}
                           {!isOutgoing && (
@@ -1556,6 +1571,17 @@ export default function ChatsPage() {
                                 }`}
                                 style={isOutgoing ? { backgroundColor: '#06C755' } : undefined}
                               >
+                                {msg.replyToMessageId && messagesById.get(msg.replyToMessageId) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => messageRefs.current[msg.replyToMessageId!]?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                                    className={`block w-full text-left mb-1.5 rounded-md px-2 py-1 text-xs truncate border-l-2 ${
+                                      isOutgoing ? 'bg-white/15 border-white/50 text-white/85' : 'bg-black/5 border-gray-300 text-gray-500'
+                                    }`}
+                                  >
+                                    {messagesById.get(msg.replyToMessageId)!.content}
+                                  </button>
+                                )}
                                 {bubbleContent}
                               </div>
                             ) : (
@@ -1568,6 +1594,25 @@ export default function ChatsPage() {
                               {new Date(msg.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
                             </span>
                           </div>
+
+                          {/* 引用して返信ボタン。quote_tokenを持つ受信テキストにのみ表示 */}
+                          {!isOutgoing && msg.messageType === 'text' && msg.quoteToken && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReplyTarget({ id: msg.id, content: msg.content })
+                                textareaRef.current?.focus()
+                              }}
+                              aria-label="このメッセージに引用返信"
+                              title="引用して返信"
+                              className="mb-1 flex-shrink-0 p-1.5 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-opacity opacity-70 md:opacity-0 md:group-hover:opacity-100"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
+                                <path d="M9 17 4 12l5-5" strokeLinecap="round" strokeLinejoin="round" />
+                                <path d="M4 12h10a6 6 0 0 1 6 6v1" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            </button>
+                          )}
                         </div>
                       </div>
                     )
@@ -1607,6 +1652,22 @@ export default function ChatsPage() {
                       className="text-xs font-medium text-rose-600 underline"
                     >
                       取り消し
+                    </button>
+                  </div>
+                )}
+                {replyTarget && (
+                  <div className="mb-2 flex items-center gap-2 rounded-lg bg-gray-50 border-l-4 pl-3 pr-2 py-2" style={{ borderColor: '#06C755' }}>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium" style={{ color: '#06C755' }}>返信</p>
+                      <p className="text-sm text-gray-600 truncate">{replyTarget.content}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setReplyTarget(null)}
+                      className="p-1 text-gray-400 hover:text-gray-600 flex-shrink-0"
+                      aria-label="返信を取り消す"
+                    >
+                      ×
                     </button>
                   </div>
                 )}
