@@ -131,36 +131,52 @@ profileRefresh.post('/api/admin/refresh-profiles', async (c) => {
  * 生死確認は GET を使う。LINE CDN (sprofile.line-scdn.net) は HEAD を 405 で
  * 一律拒否するため、当初 HEAD で判定していたときは 404 が絶対に検出できず、
  * 定期スイープが実質何もしていない状態になっていた (2026-07-30 発覚)。
+ *
+ * Cloudflare アカウントが Free プランのため、1回の invocation で使える
+ * external subrequest は50件程度しかない (有料プランへの引き上げは見送り)。
+ * 全friend一括ではこれを即座に超えて LINE API 呼び出しが軒並み失敗するため、
+ * picture_checked_at が古い順(未チェック優先)に少数だけ処理するカーソル方式にした。
+ * デフォルトのバッチサイズ15・6時間cronなら friend 数400件強で約1週間で一巡する
+ * (即時性は求められておらず「そのうち直る」で十分という運用判断、2026-07-30)。
  */
 export async function sweepStalePictureUrls(
   db: D1Database,
   env: { LINE_CHANNEL_ACCESS_TOKEN: string },
+  opts: { batchSize?: number } = {},
 ): Promise<{ checked: number; stale: number; updated: number; notFound: number; otherErrors: number }> {
+  const batchSize = opts.batchSize ?? 15;
+
   const rows = await db
     .prepare(
       `SELECT f.id, f.line_user_id, f.picture_url, a.channel_access_token
          FROM friends f
          LEFT JOIN line_accounts a ON a.id = f.line_account_id
-        WHERE f.is_following = 1 AND f.line_user_id IS NOT NULL AND f.picture_url IS NOT NULL`,
+        WHERE f.is_following = 1 AND f.line_user_id IS NOT NULL AND f.picture_url IS NOT NULL
+        ORDER BY f.picture_checked_at IS NOT NULL, f.picture_checked_at ASC
+        LIMIT ?`,
     )
+    .bind(batchSize)
     .all<{ id: string; line_user_id: string; picture_url: string; channel_access_token: string | null }>();
 
   const candidates = rows.results ?? [];
-  const CONCURRENCY = 50;
 
   const staleRows: typeof candidates = [];
-  for (let i = 0; i < candidates.length; i += CONCURRENCY) {
-    const chunk = candidates.slice(i, i + CONCURRENCY);
-    await Promise.all(chunk.map(async (row) => {
-      try {
-        const res = await fetch(row.picture_url, { method: 'GET' });
-        if (res.status === 404) staleRows.push(row);
-        await res.body?.cancel().catch(() => {});
-      } catch {
-        // ネットワーク不調等は無視。次回サイクルで再判定させる。
-      }
-    }));
-  }
+  await Promise.all(candidates.map(async (row) => {
+    try {
+      const res = await fetch(row.picture_url, { method: 'GET' });
+      if (res.status === 404) staleRows.push(row);
+      await res.body?.cancel().catch(() => {});
+    } catch {
+      // ネットワーク不調等は無視。次回サイクルで再判定させる(checked_atも更新しない)。
+      return;
+    }
+    await db
+      .prepare(
+        `UPDATE friends SET picture_checked_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00' WHERE id = ?`,
+      )
+      .bind(row.id)
+      .run();
+  }));
 
   if (staleRows.length === 0) {
     return { checked: candidates.length, stale: 0, updated: 0, notFound: 0, otherErrors: 0 };
@@ -171,42 +187,41 @@ export async function sweepStalePictureUrls(
   let notFound = 0;
   let otherErrors = 0;
 
-  for (let i = 0; i < staleRows.length; i += CONCURRENCY) {
-    const chunk = staleRows.slice(i, i + CONCURRENCY);
-    await Promise.all(chunk.map(async (row) => {
-      const token = row.channel_access_token ?? defaultToken;
-      const client = new LineClient(token);
-      try {
-        const profile = await client.getProfile(row.line_user_id);
-        await db
-          .prepare(
-            `UPDATE friends
-                SET display_name    = ?,
-                    picture_url     = ?,
-                    status_message  = ?,
-                    updated_at      = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00'
-              WHERE id = ?`,
-          )
-          .bind(profile.displayName ?? null, profile.pictureUrl ?? null, profile.statusMessage ?? null, row.id)
-          .run();
-        updated += 1;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('404') || msg.includes('403')) {
-          notFound += 1;
-        } else {
-          otherErrors += 1;
-          console.error(`sweep-stale-profile failed friend=${row.id}:`, msg);
-        }
+  await Promise.all(staleRows.map(async (row) => {
+    const token = row.channel_access_token ?? defaultToken;
+    const client = new LineClient(token);
+    try {
+      const profile = await client.getProfile(row.line_user_id);
+      await db
+        .prepare(
+          `UPDATE friends
+              SET display_name    = ?,
+                  picture_url     = ?,
+                  status_message  = ?,
+                  updated_at      = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00'
+            WHERE id = ?`,
+        )
+        .bind(profile.displayName ?? null, profile.pictureUrl ?? null, profile.statusMessage ?? null, row.id)
+        .run();
+      updated += 1;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('404') || msg.includes('403')) {
+        notFound += 1;
+      } else {
+        otherErrors += 1;
+        console.error(`sweep-stale-profile failed friend=${row.id}:`, msg);
       }
-    }));
-  }
+    }
+  }));
 
   return { checked: candidates.length, stale: staleRows.length, updated, notFound, otherErrors };
 }
 
 profileRefresh.post('/api/admin/sweep-stale-profiles', async (c) => {
-  const result = await sweepStalePictureUrls(c.env.DB, c.env);
+  const batchSizeParam = c.req.query('batchSize');
+  const batchSize = batchSizeParam ? Number.parseInt(batchSizeParam, 10) : undefined;
+  const result = await sweepStalePictureUrls(c.env.DB, c.env, { batchSize });
   return c.json({ success: true, data: result });
 });
 
