@@ -123,10 +123,14 @@ profileRefresh.post('/api/admin/refresh-profiles', async (c) => {
 });
 
 /**
- * picture_url が実際に 404 化しているかを HEAD で先に確認し、stale な friend だけ
+ * picture_url が実際に 404 化しているかを先に確認し、stale な friend だけ
  * LINE Messaging API から再取得する。毎回全件 getProfile を叩くと、404 化していない
- * 大多数に対しても無駄打ちになるため、まず軽量な HEAD で絞り込んでから叩く2段構成にする。
+ * 大多数に対しても無駄打ちになるため、まず軽量なリクエストで絞り込んでから叩く2段構成にする。
  * stale が 0 件なら getProfile は一度も呼ばれない。
+ *
+ * 生死確認は GET を使う。LINE CDN (sprofile.line-scdn.net) は HEAD を 405 で
+ * 一律拒否するため、当初 HEAD で判定していたときは 404 が絶対に検出できず、
+ * 定期スイープが実質何もしていない状態になっていた (2026-07-30 発覚)。
  */
 export async function sweepStalePictureUrls(
   db: D1Database,
@@ -149,8 +153,9 @@ export async function sweepStalePictureUrls(
     const chunk = candidates.slice(i, i + CONCURRENCY);
     await Promise.all(chunk.map(async (row) => {
       try {
-        const res = await fetch(row.picture_url, { method: 'HEAD' });
+        const res = await fetch(row.picture_url, { method: 'GET' });
         if (res.status === 404) staleRows.push(row);
+        await res.body?.cancel().catch(() => {});
       } catch {
         // ネットワーク不調等は無視。次回サイクルで再判定させる。
       }
