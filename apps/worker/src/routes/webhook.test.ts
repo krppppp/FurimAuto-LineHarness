@@ -46,6 +46,21 @@ vi.mock('../services/step-delivery.js', () => ({
   expandVariables: vi.fn(),
 }));
 
+vi.mock('../furim/actions.js', () => ({
+  handleFurimAction: vi.fn().mockResolvedValue(false),
+  actionFurimanCoupon: vi.fn().mockResolvedValue(undefined),
+  actionExtendTrial: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../furim/ai-chat.js', () => ({
+  handleAIChat: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../furim/firebase-client.js', async () => {
+  const actual = await vi.importActual<typeof import('../furim/firebase-client.js')>('../furim/firebase-client.js');
+  return { ...actual, getAiMode: vi.fn() };
+});
+
 import { verifySignature } from '@line-crm/line-sdk';
 import {
   addTagToFriend,
@@ -66,6 +81,9 @@ import {
   upsertFriend,
 } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
+import { actionExtendTrial, actionFurimanCoupon, handleFurimAction } from '../furim/actions.js';
+import { handleAIChat } from '../furim/ai-chat.js';
+import { getAiMode } from '../furim/firebase-client.js';
 import { webhook } from './webhook.js';
 
 function setupApp() {
@@ -595,5 +613,106 @@ describe('POST /webhook — incoming image/video → R2 JSON', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('POST /webhook — 特定キーワードはAIチャットモード中でも通る', () => {
+  const aiModeFriend = {
+    id: 'friend-ai-1',
+    line_user_id: 'U-ai',
+    display_name: 'AI Mode Friend',
+    picture_url: null,
+    status_message: null,
+    is_following: 1,
+    user_id: null,
+    line_account_id: null,
+    metadata: '{}',
+    first_tracked_link_id: null,
+    created_at: '2026-07-31T12:00:00.000+09:00',
+    updated_at: '2026-07-31T12:00:00.000+09:00',
+  };
+
+  const aiEnv = {
+    ...baseEnv,
+    GAS_DEPLOY_ID: 'gas-deploy-id',
+    STRIPE_SECRET_KEY: 'sk_test_dummy',
+    FIREBASE_DATABASE_URL: 'https://example.firebaseio.com',
+    GEMINI_API_KEY: 'gemini-key',
+    GITHUB_PAT: 'github-pat',
+  };
+
+  async function postText(text: string) {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue(aiModeFriend);
+    vi.mocked(jstNow).mockReturnValue('2026-07-31T12:00:00.000+09:00');
+    vi.mocked(getAiMode).mockResolvedValue(true);
+    vi.mocked(handleFurimAction).mockResolvedValue(false);
+
+    const stmt = {
+      bind: vi.fn(),
+      run: vi.fn().mockResolvedValue({}),
+      all: vi.fn().mockResolvedValue({ results: [] }),
+      first: vi.fn().mockResolvedValue(null),
+    };
+    stmt.bind.mockReturnValue(stmt);
+    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database;
+
+    const executionCtx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+
+    const app = setupApp();
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body: JSON.stringify({
+          destination: 'bot',
+          events: [
+            {
+              type: 'message',
+              replyToken: 'reply-token',
+              message: { type: 'text', id: 'message-ai-1', text },
+              timestamp: Date.now(),
+              source: { type: 'user', userId: 'U-ai' },
+              webhookEventId: 'event-ai',
+              deliveryContext: { isRedelivery: false },
+              mode: 'active',
+            },
+          ],
+        }),
+      },
+      { ...aiEnv, DB: db },
+      executionCtx,
+    );
+
+    expect(res.status).toBe(200);
+    const processing = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
+    await processing;
+  }
+
+  test('AIモードONでも「Furimanです」はクーポン処理に到達する', async () => {
+    await postText('Furimanです');
+    expect(actionFurimanCoupon).toHaveBeenCalledTimes(1);
+    expect(handleAIChat).not.toHaveBeenCalled();
+  });
+
+  test('AIモードONでも「解説見た」は無料期間延長処理に到達する', async () => {
+    await postText('解説見た');
+    expect(actionExtendTrial).toHaveBeenCalledTimes(1);
+    expect(handleAIChat).not.toHaveBeenCalled();
+  });
+
+  test('AIモードONの通常テキストは引き続きAIチャットが応答する', async () => {
+    await postText('こんにちは、使い方を教えて');
+    expect(handleAIChat).toHaveBeenCalledTimes(1);
+    expect(actionFurimanCoupon).not.toHaveBeenCalled();
+    expect(actionExtendTrial).not.toHaveBeenCalled();
   });
 });

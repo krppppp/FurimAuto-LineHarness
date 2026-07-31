@@ -480,6 +480,18 @@ async function handleEvent(
       return;
     }
 
+    // Furimanですクーポン（AIチャットモード中でも通す）
+    if ((incomingText.includes('furimanです') || incomingText.includes('Furimanです')) && env?.GAS_DEPLOY_ID && env?.STRIPE_SECRET_KEY) {
+      await actionFurimanCoupon(loggingClient, userId, event.replyToken, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
+      return;
+    }
+
+    // 解説見た/解説みたキーワード（AIチャットモード中でも通す）
+    if ((incomingText.trim() === '解説見た' || incomingText.trim() === '解説みた') && env?.GAS_DEPLOY_ID) {
+      await actionExtendTrial(loggingClient, userId, event.replyToken, env.GAS_DEPLOY_ID, db);
+      return;
+    }
+
     // AIチャットモード
     if (env?.FIREBASE_DATABASE_URL && env?.GEMINI_API_KEY && env?.GITHUB_PAT) {
       const isAIMode = await getAiMode(env.FIREBASE_DATABASE_URL, userId);
@@ -487,18 +499,6 @@ async function handleEvent(
         await handleAIChat(loggingClient, userId, event.replyToken, incomingText, { GEMINI_API_KEY: env.GEMINI_API_KEY, GITHUB_PAT: env.GITHUB_PAT, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL });
         return;
       }
-    }
-
-    // Furimanですクーポン
-    if ((incomingText.includes('furimanです') || incomingText.includes('Furimanです')) && env?.GAS_DEPLOY_ID && env?.STRIPE_SECRET_KEY) {
-      await actionFurimanCoupon(loggingClient, userId, event.replyToken, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
-      return;
-    }
-
-    // 解説見た/解説みたキーワード
-    if ((incomingText.trim() === '解説見た' || incomingText.trim() === '解説みた') && env?.GAS_DEPLOY_ID) {
-      await actionExtendTrial(loggingClient, userId, event.replyToken, env.GAS_DEPLOY_ID, db);
-      return;
     }
 
     // チャットを作成/更新（ユーザーの自発的メッセージのみ unread にする）
