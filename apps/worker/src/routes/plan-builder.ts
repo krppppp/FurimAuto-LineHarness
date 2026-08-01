@@ -208,6 +208,8 @@ export type PlanSelectionInput = {
   features?: string[];
   multiChannelSites?: string[];
   lineUserId?: string;
+  // Checkoutリンクの有効期限（秒）。Stripeの許容範囲1800〜86400にクランプ。省略時は従来どおり1時間
+  expiresInSeconds?: number;
 };
 
 export type PlanCheckoutEnv = {
@@ -279,7 +281,7 @@ export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: Plan
     mode: 'subscription',
     success_url: `${env.WORKER_PUBLIC_URL}/plan-builder/thanks`,
     cancel_url: `${env.WORKER_PUBLIC_URL}/plan-builder`,
-    expires_at: String(Math.floor(Date.now() / 1000) + 3600),
+    expires_at: String(Math.floor(Date.now() / 1000) + Math.min(Math.max(Math.floor(body.expiresInSeconds ?? 3600), 1800), 86400)),
   };
   let i = 0;
   for (const p of pkgs) {
