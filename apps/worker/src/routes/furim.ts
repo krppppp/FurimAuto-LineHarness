@@ -53,11 +53,12 @@ furim.post('/api/furim/scenario-switch', async (c) => {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
 
-    // 月額会員は既に課金済みのためセグメント管理対象外
-    const memberTag = await db.prepare(`SELECT t.id FROM tags t JOIN friend_tags ft ON t.id = ft.tag_id WHERE ft.friend_id = ? AND t.name = '月額会員' LIMIT 1`).bind(friend.id).first<{ id: string }>();
-    if (memberTag) {
-      console.log(`[furim/scenario-switch] friend=${friend.id} は月額会員のためセグメント切り替えをスキップ`);
-      return c.json({ success: true, data: { friendId: friend.id, scenarioId: null, scenarioName: 'skipped_member' } });
+    // 月額会員は既に課金済み、キャンセル済み(解約者)は試用導線の対象外のためセグメント管理対象外。
+    // 解約者への掘り起こし配信は自動enrollではなく、管理側の手動enroll(dayZeroAt指定)で行う
+    const excludedTag = await db.prepare(`SELECT t.name FROM tags t JOIN friend_tags ft ON t.id = ft.tag_id WHERE ft.friend_id = ? AND t.name IN ('月額会員', 'キャンセル済み') LIMIT 1`).bind(friend.id).first<{ name: string }>();
+    if (excludedTag) {
+      console.log(`[furim/scenario-switch] friend=${friend.id} は${excludedTag.name}のためセグメント切り替えをスキップ`);
+      return c.json({ success: true, data: { friendId: friend.id, scenarioId: null, scenarioName: excludedTag.name === '月額会員' ? 'skipped_member' : 'skipped_cancelled' } });
     }
 
     // セグメントタグ切り替え（古いセグメント全削除 → 新規付与）
