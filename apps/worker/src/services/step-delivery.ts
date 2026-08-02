@@ -136,6 +136,7 @@ async function processSingleDelivery(
     status: string;
     next_delivery_at: string | null;
     started_at: string;
+    day_zero_at?: string | null;
   },
   workerUrl?: string,
 ): Promise<number> {
@@ -170,7 +171,8 @@ async function processSingleDelivery(
   // (setHours/getDate が JST clock 通りに動くようにオフセット済みの Date)。
   // fs.started_at は "+09:00" 付き ISO で本物の UTC instant として parse されるため、
   // +9h ずらして JST clock-time 表現に揃える必要がある。
-  const enrolledAtDate = new Date(new Date(fs.started_at).getTime() + 9 * 60 * 60_000);
+  // day_zero_at があればDay計算の基準はそちら（掘り起こし配信で任意の日をDay0にできる）
+  const enrolledAtDate = new Date(new Date(fs.day_zero_at ?? fs.started_at).getTime() + 9 * 60 * 60_000);
   const nowJstDate = new Date(Date.now() + 9 * 60 * 60_000);
   const nextDeliveryFor = (step: { delay_minutes: number; offset_days: number | null; offset_minutes: number | null; delivery_time: string | null }): Date =>
     computeNextDeliveryAt(

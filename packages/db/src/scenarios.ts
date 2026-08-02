@@ -49,6 +49,7 @@ export interface FriendScenario {
   started_at: string;
   next_delivery_at: string | null;
   updated_at: string;
+  day_zero_at: string | null;
 }
 
 // ============================================================
@@ -365,9 +366,13 @@ export async function enrollFriendInScenario(
   db: D1Database,
   friendId: string,
   scenarioId: string,
+  // dayZeroAt: Day計算の基準日(ISO)。省略時は登録時刻(started_at)基準。
+  // 過去日を渡すと途中日程からの掘り起こし配信になる
+  opts: { dayZeroAt?: string } = {},
 ): Promise<FriendScenario | null> {
   const id = crypto.randomUUID();
   const now = jstNow();
+  const dayZeroAt = opts.dayZeroAt ?? null;
 
   // delivery_mode を取得（migration 037 適用前の DB では 'relative' が DEFAULT で既に入っている）
   const scenarioRow = await db
@@ -408,11 +413,12 @@ export async function enrollFriendInScenario(
       .first<FriendScenario>())!;
   }
 
-  const enrolledAtDate = new Date(Date.now() + 9 * 60 * 60_000);
+  const nowJstDate = new Date(Date.now() + 9 * 60 * 60_000);
+  const enrolledAtDate = dayZeroAt ? new Date(new Date(dayZeroAt).getTime() + 9 * 60 * 60_000) : nowJstDate;
   const nextDeliveryDate = computeNextDeliveryAt(
     { delivery_mode: scenarioRow.delivery_mode },
     firstStep,
-    { enrolledAt: enrolledAtDate, previousDeliveredAt: enrolledAtDate, now: enrolledAtDate },
+    { enrolledAt: enrolledAtDate, previousDeliveredAt: enrolledAtDate, now: nowJstDate },
   );
   const nextDeliveryAt = nextDeliveryDate.toISOString().slice(0, -1) + '+09:00';
 
@@ -425,10 +431,10 @@ export async function enrollFriendInScenario(
   // ~10 friend_scenarios silently completed for a 46-hour window.
   const result = await db
     .prepare(
-      `INSERT OR IGNORE INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, updated_at)
-       VALUES (?, ?, ?, -1, 'active', ?, ?, ?)`,
+      `INSERT OR IGNORE INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, updated_at, day_zero_at)
+       VALUES (?, ?, ?, -1, 'active', ?, ?, ?, ?)`,
     )
-    .bind(id, friendId, scenarioId, now, nextDeliveryAt, now)
+    .bind(id, friendId, scenarioId, now, nextDeliveryAt, now, dayZeroAt)
     .run();
 
   if (!result.meta.changes || result.meta.changes === 0) return null;

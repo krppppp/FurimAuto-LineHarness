@@ -143,3 +143,54 @@ describe('GET /api/scenarios?lineAccountId=X', () => {
     expect(body.data).toEqual([]);
   });
 });
+
+describe('POST /api/scenarios/:id/enroll/:friendId — dayZeroAt', () => {
+  const enrollmentRow = {
+    id: 'fs-1',
+    friend_id: 'friend-1',
+    scenario_id: 'scenario-1',
+    current_step_order: -1,
+    status: 'active',
+    started_at: '2026-08-02T11:00:00.000+09:00',
+    next_delivery_at: '2026-08-03T11:00:00.000+09:00',
+    updated_at: '2026-08-02T11:00:00.000+09:00',
+    day_zero_at: null as string | null,
+  };
+
+  function setup() {
+    dbMocks.getScenarioById.mockResolvedValue({ id: 'scenario-1', name: 'S' });
+    dbMocks.getFriendById.mockResolvedValue({ id: 'friend-1' });
+    dbMocks.enrollFriendInScenario.mockResolvedValue(enrollmentRow);
+    const app = new Hono();
+    app.route('/', scenariosModule);
+    return app;
+  }
+
+  test('body の dayZeroAt が enrollFriendInScenario に渡る', async () => {
+    const app = setup();
+    const res = await app.request('/api/scenarios/scenario-1/enroll/friend-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dayZeroAt: '2026-07-20T00:00:00.000+09:00' }),
+    }, { DB: {} });
+    expect(res.status).toBe(201);
+    expect(dbMocks.enrollFriendInScenario).toHaveBeenCalledWith({}, 'friend-1', 'scenario-1', { dayZeroAt: '2026-07-20T00:00:00.000+09:00' });
+  });
+
+  test('ボディなしは従来どおり dayZeroAt undefined で登録される', async () => {
+    const app = setup();
+    const res = await app.request('/api/scenarios/scenario-1/enroll/friend-1', { method: 'POST' }, { DB: {} });
+    expect(res.status).toBe(201);
+    expect(dbMocks.enrollFriendInScenario).toHaveBeenCalledWith({}, 'friend-1', 'scenario-1', { dayZeroAt: undefined });
+  });
+
+  test('不正な dayZeroAt は 400', async () => {
+    const app = setup();
+    const res = await app.request('/api/scenarios/scenario-1/enroll/friend-1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dayZeroAt: 'not-a-date' }),
+    }, { DB: {} });
+    expect(res.status).toBe(400);
+  });
+});

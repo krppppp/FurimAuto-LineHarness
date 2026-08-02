@@ -63,9 +63,10 @@ export class ScenariosResource {
     await this.http.delete(`/api/scenarios/${scenarioId}/steps/${stepId}`)
   }
 
-  async enroll(scenarioId: string, friendId: string): Promise<FriendScenarioEnrollment> {
+  async enroll(scenarioId: string, friendId: string, opts?: { dayZeroAt?: string }): Promise<FriendScenarioEnrollment> {
     const res = await this.http.post<ApiResponse<FriendScenarioEnrollment>>(
-      `/api/scenarios/${scenarioId}/enroll/${friendId}`
+      `/api/scenarios/${scenarioId}/enroll/${friendId}`,
+      opts?.dayZeroAt ? { dayZeroAt: opts.dayZeroAt } : undefined
     )
     return res.data
   }

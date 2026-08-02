@@ -11,11 +11,17 @@ export function registerEnrollScenario(server: McpServer): void {
         .string()
         .describe("The scenario ID to enroll the friend in"),
       friendId: z.string().describe("The friend's ID to enroll"),
+      dayZeroAt: z
+        .string()
+        .optional()
+        .describe(
+          "Optional ISO date used as Day 0 for the scenario's day-based schedule. Defaults to enrollment time. Use a past date to start mid-journey (re-engagement of old customers).",
+        ),
     },
-    async ({ scenarioId, friendId }) => {
+    async ({ scenarioId, friendId, dayZeroAt }) => {
       try {
         const client = getClient();
-        const enrollment = await client.scenarios.enroll(scenarioId, friendId);
+        const enrollment = await client.scenarios.enroll(scenarioId, friendId, dayZeroAt ? { dayZeroAt } : undefined);
         return {
           content: [
             {

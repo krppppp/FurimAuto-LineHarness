@@ -170,6 +170,7 @@ function serializeFriendScenario(row: DbFriendScenario) {
     startedAt: row.started_at,
     nextDeliveryAt: row.next_delivery_at,
     updatedAt: row.updated_at,
+    dayZeroAt: row.day_zero_at,
   };
 }
 
@@ -792,7 +793,21 @@ scenarios.post('/api/scenarios/:id/enroll/:friendId', async (c) => {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
 
-    const enrollment = await enrollFriendInScenario(db, friendId, scenarioId);
+    // 任意ボディ { dayZeroAt }: Day計算の基準日を指定して登録する（掘り起こし配信用）
+    let dayZeroAt: string | undefined;
+    try {
+      const body = (await c.req.json()) as { dayZeroAt?: string };
+      if (body?.dayZeroAt) {
+        if (Number.isNaN(new Date(body.dayZeroAt).getTime())) {
+          return c.json({ success: false, error: 'dayZeroAt must be a valid ISO date' }, 400);
+        }
+        dayZeroAt = body.dayZeroAt;
+      }
+    } catch {
+      // ボディなしは従来どおり
+    }
+
+    const enrollment = await enrollFriendInScenario(db, friendId, scenarioId, { dayZeroAt });
     if (!enrollment) {
       return c.json({ success: false, error: 'Already enrolled in this scenario' }, 409);
     }
