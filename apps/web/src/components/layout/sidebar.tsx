@@ -1,0 +1,441 @@
+'use client'
+
+import { useState, useEffect, useRef } from 'react'
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+import { useAccount } from '@/contexts/account-context'
+import type { AccountWithStats } from '@/contexts/account-context'
+import { countryFlag } from '@/lib/country-flag'
+import { UNANSWERED_REFRESH_EVENT } from '@/lib/events'
+
+const appVersion = process.env.APP_VERSION || '0.0.0'
+const appCommitSha = process.env.APP_COMMIT_SHA || 'local'
+const appBuildTime = process.env.APP_BUILD_TIME || ''
+const appBuildDate = appBuildTime ? appBuildTime.replace('T', ' ').replace(/\.\d{3}Z$/, 'Z') : ''
+
+// ─── メニュー定義（ユーザー目線のカテゴリ） ───
+
+const menuSections = [
+  {
+    label: null, // セクションラベルなし（メイン）
+    items: [
+      { href: '/', label: 'ダッシュボード', icon: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6' },
+      { href: '/friends', label: '友だち管理', icon: 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z' },
+      // FurimAuto独自: タグ管理画面（upstream UIには無い）
+      { href: '/tags', label: 'タグ管理', icon: 'M7 7h.01M7 3h5a1.99 1.99 0 011.414.586l7 7a2 2 0 010 2.828l-5 5a2 2 0 01-2.828 0l-7-7A1.99 1.99 0 013 9V4a1 1 0 011-1z' },
+      { href: '/chats', label: '個別チャット', icon: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z' },
+    ],
+  },
+  {
+    label: '配信',
+    items: [
+      { href: '/friend-add-settings', label: '友だち追加時設定', icon: 'M12 6v6m0 0v6m0-6h6m-6 0H6' },
+      { href: '/scenarios', label: 'シナリオ配信', icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01' },
+      { href: '/broadcasts', label: '一斉配信', icon: 'M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z' },
+      { href: '/templates', label: 'テンプレート', icon: 'M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z' },
+      { href: '/rich-menus', label: 'リッチメニュー', icon: 'M4 4h6v6H4V4zm0 10h6v6H4v-6zm10-10h6v6h-6V4zm0 10h6v6h-6v-6z' },
+      { href: '/reminders', label: 'リマインダ', icon: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z' },
+    ],
+  },
+  {
+    label: '分析',
+    items: [
+      { href: '/inflow-links', label: 'リファラルリンク', icon: 'M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1' },
+      { href: '/affiliates', label: 'アフィリエイト', icon: 'M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 12.632a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z' },
+      { href: '/conversions', label: 'CV計測', icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z' },
+      { href: '/scoring', label: 'スコアリング', icon: 'M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z' },
+      { href: '/form-submissions', label: 'フォーム回答', icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' },
+      { href: '/duplicates', label: '重複検出', icon: 'M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z' },
+    ],
+  },
+  {
+    label: '自動化',
+    items: [
+      { href: '/automations', label: 'オートメーション', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
+      { href: '/auto-replies', label: '自動返信ルール', icon: 'M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6' },
+      { href: '/webhooks', label: 'Webhook', icon: 'M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' },
+    ],
+  },
+  {
+    label: '予約',
+    items: [
+      { href: '/booking/bookings', label: '予約管理', icon: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' },
+      { href: '/booking/menus', label: 'メニュー', icon: 'M4 6h16M4 10h16M4 14h16M4 18h16' },
+      { href: '/booking/staff', label: 'スタッフ', icon: 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z' },
+      { href: '/events', label: 'イベント予約', icon: 'M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2H7a2 2 0 00-2 2v2m5-7v3m4-3v3' },
+    ],
+  },
+  {
+    label: '設定',
+    items: [
+      { href: '/staff', label: 'スタッフ管理', icon: 'M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z' },
+      { href: '/accounts', label: 'LINEアカウント', icon: 'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4' },
+      { href: '/pools', label: 'プール管理', icon: 'M3 7h18M3 12h18M3 17h18' },
+      { href: '/users', label: 'ユーザー一覧', icon: 'M10 6H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V8a2 2 0 00-2-2h-5m-4 0V5a2 2 0 114 0v1m-4 0a2 2 0 104 0m-5 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2' },
+      { href: '/health', label: 'BAN検知', icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z' },
+      { href: '/updates', label: 'アップデート履歴', icon: 'M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15' },
+      { href: '/emergency', label: '緊急コントロール', icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z', danger: true },
+    ],
+  },
+]
+
+function AccountAvatar({ account, size = 32 }: { account: AccountWithStats; size?: number }) {
+  const displayName = account.displayName || account.name
+  if (account.pictureUrl) {
+    return (
+      <img
+        src={account.pictureUrl}
+        alt={displayName}
+        className="rounded-full object-cover shrink-0"
+        style={{ width: size, height: size }}
+      />
+    )
+  }
+  return (
+    <div
+      className="rounded-full flex items-center justify-center text-white font-bold shrink-0"
+      style={{ width: size, height: size, backgroundColor: '#06C755', fontSize: size * 0.4 }}
+    >
+      {displayName.charAt(0)}
+    </div>
+  )
+}
+
+function AccountSwitcher() {
+  const { accounts, selectedAccount, setSelectedAccountId, loading } = useAccount()
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  if (loading || accounts.length === 0) return null
+
+  const displayName = selectedAccount?.displayName || selectedAccount?.name || ''
+
+  return (
+    <div ref={ref} className="px-3 py-3 border-b border-gray-200">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-gray-50 transition-colors"
+      >
+        {selectedAccount && <AccountAvatar account={selectedAccount} size={28} />}
+        <div className="flex-1 text-left min-w-0">
+          <p className="text-sm font-medium text-gray-900 truncate">
+            <span className="flex items-center gap-1.5">
+              {countryFlag(selectedAccount?.country) && (
+                <span className="text-base leading-none">{countryFlag(selectedAccount?.country)}</span>
+              )}
+              <span>{displayName}</span>
+            </span>
+          </p>
+        </div>
+        <svg
+          className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+          {accounts.map((account) => {
+            const isSelected = account.id === selectedAccount?.id
+            const name = account.displayName || account.name
+            return (
+              <button
+                key={account.id}
+                onClick={() => {
+                  setSelectedAccountId(account.id)
+                  setOpen(false)
+                }}
+                className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors ${
+                  isSelected ? 'bg-green-50' : 'hover:bg-gray-50'
+                }`}
+              >
+                <AccountAvatar account={account} size={24} />
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm truncate ${isSelected ? 'font-semibold text-green-700' : 'text-gray-700'}`}>
+                    <span className="flex items-center gap-1.5">
+                      {countryFlag(account.country) && (
+                        <span className="text-base leading-none">{countryFlag(account.country)}</span>
+                      )}
+                      <span>{name}</span>
+                    </span>
+                  </p>
+                  {account.basicId && (
+                    <p className="text-xs text-gray-400 truncate">{account.basicId}</p>
+                  )}
+                </div>
+                {isSelected && (
+                  <svg className="w-4 h-4 text-green-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function NavIcon({ d }: { d: string }) {
+  return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={d} />
+    </svg>
+  )
+}
+
+export default function Sidebar() {
+  const pathname = usePathname()
+  const [isOpen, setIsOpen] = useState(false)
+  const [staffName, setStaffName] = useState<string | null>(null)
+  const [staffRole, setStaffRole] = useState<string | null>(null)
+
+  useEffect(() => {
+    setStaffName(localStorage.getItem('lh_staff_name'))
+    setStaffRole(localStorage.getItem('lh_staff_role'))
+  }, [])
+
+  // 未読件数 polling — 「個別チャット」にバッジを出す。chats.status='unread' の数。
+  // (2026-07-16: バッジの意味を「未対応(messages_log計算)」→「未読」に変更。開いたら減る。)
+  // チャットを開いて既読化・status 変更・手動返信した直後は UNANSWERED_REFRESH_EVENT で
+  // 即時再取得する (ポーリング待ちだと操作してもバッジが減らないと感じるため)。
+  const [unreadCount, setUnreadCount] = useState<number>(0)
+  useEffect(() => {
+    let cancelled = false
+    // 連続操作で fetch が並走した際、遅い古いレスポンスが新しい値を上書きしない
+    // ように発行順 seq でガードする。
+    let seq = 0
+    const fetchCount = async () => {
+      const mySeq = ++seq
+      try {
+        const { api } = await import('@/lib/api')
+        const res = await api.furimChats.unreadCount()
+        if (!cancelled && mySeq === seq && res.success) {
+          const total = res.data.total
+          setUnreadCount(total)
+          // PWA ホーム画面アイコンのバッジも未読数に同期する。push の badge だけだと
+          // 「受信時にセットされたきり読んでも減らない」ため、アプリ表示中はここで更新/クリア。
+          const nav = navigator as Navigator & {
+            setAppBadge?: (n?: number) => Promise<void>
+            clearAppBadge?: () => Promise<void>
+          }
+          if (nav.setAppBadge) {
+            if (total > 0) nav.setAppBadge(total).catch(() => {})
+            else nav.clearAppBadge?.().catch(() => {})
+          }
+        }
+      } catch {
+        // サイレント失敗
+      }
+    }
+    fetchCount()
+    // 単純 COUNT なので旧・未対応集計より軽い。新着(受信→未読)を早く拾えるよう 60 秒間隔。
+    const id = setInterval(fetchCount, 60_000)
+    const onRefresh = () => { void fetchCount() }
+    window.addEventListener(UNANSWERED_REFRESH_EVENT, onRefresh)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+      window.removeEventListener(UNANSWERED_REFRESH_EVENT, onRefresh)
+    }
+  }, [])
+
+  useEffect(() => { setIsOpen(false) }, [pathname])
+  useEffect(() => {
+    document.body.style.overflow = isOpen ? 'hidden' : ''
+    return () => { document.body.style.overflow = '' }
+  }, [isOpen])
+
+  // モバイル: 画面左端からの右スワイプでメニューを開く（ボタンは廃止）。
+  // 誤発動防止に「開始位置が左端24px以内・横移動50px超・横優位」を条件にする
+  useEffect(() => {
+    let startX = 0
+    let startY = 0
+    let tracking = false
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.touches[0]
+      if (t.clientX <= 24) {
+        startX = t.clientX
+        startY = t.clientY
+        tracking = true
+      }
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      if (!tracking) return
+      const t = e.touches[0]
+      const dx = t.clientX - startX
+      const dy = Math.abs(t.clientY - startY)
+      if (dx > 50 && dx > dy * 1.5) {
+        setIsOpen(true)
+        tracking = false
+      }
+    }
+    const onTouchEnd = () => { tracking = false }
+    document.addEventListener('touchstart', onTouchStart, { passive: true })
+    document.addEventListener('touchmove', onTouchMove, { passive: true })
+    document.addEventListener('touchend', onTouchEnd, { passive: true })
+    return () => {
+      document.removeEventListener('touchstart', onTouchStart)
+      document.removeEventListener('touchmove', onTouchMove)
+      document.removeEventListener('touchend', onTouchEnd)
+    }
+  }, [])
+
+  const isActive = (href: string) => href === '/' ? pathname === '/' : pathname.startsWith(href)
+
+  const sidebarContent = (
+    <>
+      {/* ロゴ */}
+      <div className="px-6 py-5 border-b border-gray-200">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-sm" style={{ backgroundColor: '#06C755' }}>
+            H
+          </div>
+          <div>
+            <p className="text-sm font-bold text-gray-900 leading-tight">L Harness</p>
+            <p className="text-xs text-gray-400">管理画面</p>
+          </div>
+        </div>
+      </div>
+
+      {/* アカウント切替 */}
+      <AccountSwitcher />
+
+      {/* ナビゲーション */}
+      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+        {menuSections.map((section, si) => (
+          <div key={si}>
+            {section.label && (
+              <div className="pt-5 pb-2 px-3">
+                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">{section.label}</p>
+              </div>
+            )}
+            {section.items.filter((item) => {
+              if (item.href === '/staff' && staffRole !== 'owner') return false
+              if (item.href === '/accounts' && staffRole === 'staff') return false
+              return true
+            }).map((item) => {
+              const active = isActive(item.href)
+              const isDanger = 'danger' in item && item.danger
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                    active
+                      ? 'text-white'
+                      : isDanger
+                        ? 'text-red-500 hover:bg-red-50'
+                        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                  }`}
+                  style={active ? { backgroundColor: isDanger ? '#EF4444' : '#06C755' } : {}}
+                >
+                  <NavIcon d={item.icon} />
+                  <span className="flex-1">{item.label}</span>
+                  {item.href === '/chats' && unreadCount > 0 && (
+                    <span
+                      className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${
+                        active ? 'bg-white text-rose-600' : 'bg-rose-500 text-white'
+                      }`}
+                    >
+                      {unreadCount > 99 ? '99+' : unreadCount}
+                    </span>
+                  )}
+                </Link>
+              )
+            })}
+          </div>
+        ))}
+      </nav>
+
+      {/* フッター */}
+      <div className="border-t border-gray-200">
+        {staffName && (
+          <div className="px-3 py-2 text-xs text-gray-500 border-t border-gray-100">
+            <div className="font-medium text-gray-700">{staffName}</div>
+            <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mt-0.5 ${
+              staffRole === 'owner' ? 'bg-yellow-100 text-yellow-800' :
+              staffRole === 'admin' ? 'bg-blue-100 text-blue-800' :
+              'bg-gray-100 text-gray-600'
+            }`}>
+              {staffRole === 'owner' ? 'オーナー' : staffRole === 'admin' ? '管理者' : 'スタッフ'}
+            </span>
+          </div>
+        )}
+        <div className="px-6 py-4 space-y-3">
+        <div className="space-y-0.5">
+          <p className="text-xs text-gray-400">L Harness v{appVersion}</p>
+          <p className="text-[10px] text-gray-400 font-mono break-all">
+            build {appCommitSha}{appBuildDate ? ` · ${appBuildDate}` : ''}
+          </p>
+        </div>
+        <button
+          onClick={async () => {
+            try {
+              const apiUrl = process.env.NEXT_PUBLIC_API_URL
+              if (apiUrl) {
+                await fetch(`${apiUrl}/api/auth/logout`, {
+                  method: 'POST',
+                  credentials: 'include',
+                })
+              }
+            } catch {
+              // Local cleanup still logs the browser out if the network call fails.
+            }
+            localStorage.removeItem('lh_api_key')
+            localStorage.removeItem('lh_csrf')
+            localStorage.removeItem('lh_staff_name')
+            localStorage.removeItem('lh_staff_role')
+            window.location.href = '/login'
+          }}
+          className="flex items-center gap-2 text-xs text-gray-400 hover:text-red-500 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          </svg>
+          ログアウト
+        </button>
+        </div>
+      </div>
+    </>
+  )
+
+  return (
+    <>
+      {/* モバイル: メニューは画面左端からの右スワイプで開く（ヘッダー・ボタンは廃止） */}
+
+      {/* モバイル: オーバーレイ */}
+      {isOpen && <div className="lg:hidden fixed inset-0 z-40 bg-black/50" onClick={() => setIsOpen(false)} />}
+
+      {/* モバイル: スライドインサイドバー */}
+      <aside className={`lg:hidden fixed top-0 left-0 z-50 w-72 bg-white flex flex-col h-screen transform transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="absolute top-4 right-4">
+          <button onClick={() => setIsOpen(false)} className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-gray-100" aria-label="閉じる">
+            <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        {sidebarContent}
+      </aside>
+
+      {/* デスクトップ: 常時表示 */}
+      <aside className="hidden lg:flex w-64 bg-white border-r border-gray-200 flex-col h-screen sticky top-0">
+        {sidebarContent}
+      </aside>
+    </>
+  )
+}

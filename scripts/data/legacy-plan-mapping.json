@@ -1,0 +1,1379 @@
+{
+  "友達登録1週間トライアルプラン": {
+    "packages": [
+      "r_full",
+      "yf_full",
+      "ms_basic"
+    ],
+    "features": [
+      "mAutoTransaction",
+      "mProfileOptions",
+      "mSoldCSV",
+      "mChangePrice",
+      "mSetBottomPrice",
+      "mComment",
+      "mDeleteComment",
+      "mBackup",
+      "mRelist",
+      "mAuction",
+      "mDeleteProduct",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "mTimeReservation",
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 0,
+    "newPrice": 40140,
+    "priceMatch": false,
+    "flagCount": 42,
+    "manual": true,
+    "manualReason": "半額特例/トライアル/内部/旧価格のため要個別判断"
+  },
+  "主プラン": {
+    "packages": [
+      "r_semi"
+    ],
+    "features": [
+      "mAutoTransaction",
+      "mProfileOptions",
+      "mSoldCSV",
+      "rBackup",
+      "rDeleteProduct",
+      "rAutoComment",
+      "rAutoTransaction",
+      "yfAutoTransaction",
+      "mChangePrice",
+      "mSetBottomPrice",
+      "mComment",
+      "mDeleteComment",
+      "mBackup",
+      "mRelist",
+      "mAuction",
+      "mDeleteProduct",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "mTimeReservation",
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 1,
+    "newPrice": 37080,
+    "priceMatch": false,
+    "flagCount": 26,
+    "manual": true,
+    "manualReason": "半額特例/トライアル/内部/旧価格のため要個別判断"
+  },
+  "F&Fメルカリ全機能2980円プラン": {
+    "packages": [],
+    "features": [
+      "mProfileOptions",
+      "mSoldCSV",
+      "mChangePrice",
+      "mSetBottomPrice",
+      "mComment",
+      "mDeleteComment",
+      "mBackup",
+      "mRelist",
+      "mDeleteProduct",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "mTimeReservation",
+      "mAutoComment",
+      "mAutoTransaction"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 2980,
+    "newPrice": 22220,
+    "priceMatch": false,
+    "flagCount": 14,
+    "manual": true,
+    "manualReason": "半額特例/トライアル/内部/旧価格のため要個別判断"
+  },
+  "全フリマ全機能解放プレミアムプラン": {
+    "packages": [
+      "premium"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 19800,
+    "newPrice": 19800,
+    "priceMatch": true,
+    "flagCount": 40,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing",
+      "msSetBottomPrice",
+      "yfSetBottomPrice",
+      "InventorySheet"
+    ]
+  },
+  "全フリマ全機能解放プレミアム2台目以降プラン": {
+    "packages": [
+      "r_full",
+      "yf_semi"
+    ],
+    "features": [
+      "mAutoTransaction",
+      "mProfileOptions",
+      "mSoldCSV",
+      "msChangePrice",
+      "msDeleteProduct",
+      "msAttributeCheckbox",
+      "msListingModification",
+      "msTimeReservation",
+      "yfRelist",
+      "yfDeleteProduct",
+      "yfChangeShipping",
+      "yfAutoTransaction",
+      "mChangePrice",
+      "mSetBottomPrice",
+      "mComment",
+      "mDeleteComment",
+      "mBackup",
+      "mRelist",
+      "mAuction",
+      "mDeleteProduct",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "mTimeReservation",
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 9900,
+    "newPrice": 47000,
+    "priceMatch": false,
+    "flagCount": 40,
+    "manual": true,
+    "manualReason": "半額特例/トライアル/内部/旧価格のため要個別判断"
+  },
+  "メルカリ全自動+ラクマ半自動+ヤフフリ半自動併用プラン": {
+    "packages": [
+      "m_semi",
+      "r_semi",
+      "yf_semi"
+    ],
+    "features": [
+      "mAutoTransaction"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 16980,
+    "newPrice": 16980,
+    "priceMatch": true,
+    "flagCount": 26,
+    "lostFlags": [
+      "mSetBottomPrice",
+      "mBackup",
+      "mRelist",
+      "mAuction",
+      "mDeleteProduct",
+      "mAutoComment",
+      "rBackup"
+    ],
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ半自動+ラクマ半自動+ヤフフリ半自動プラン": {
+    "packages": [
+      "m_semi",
+      "r_semi",
+      "yf_semi"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 14000,
+    "newPrice": 14000,
+    "priceMatch": true,
+    "flagCount": 19,
+    "lostFlags": [
+      "rBackup"
+    ],
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ全自動+ラクマ半自動+ヤフフリ値段変更プラン": {
+    "packages": [
+      "m_full",
+      "r_semi"
+    ],
+    "features": [
+      "yfChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 13960,
+    "newPrice": 13960,
+    "priceMatch": true,
+    "flagCount": 23,
+    "lostFlags": [
+      "rBackup"
+    ],
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ全自動+ラクマ半自動+メルショ基本+ヤフフリ値段変更プラン": {
+    "packages": [
+      "m_full",
+      "r_semi",
+      "ms_basic"
+    ],
+    "features": [
+      "yfChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 16940,
+    "newPrice": 16940,
+    "priceMatch": true,
+    "flagCount": 28,
+    "lostFlags": [
+      "rBackup"
+    ],
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing",
+      "msSetBottomPrice"
+    ]
+  },
+  "メルカリ全自動+ラクマ半自動+メルショ基本プラン": {
+    "packages": [
+      "m_full",
+      "r_semi",
+      "ms_basic"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 14960,
+    "newPrice": 14960,
+    "priceMatch": true,
+    "flagCount": 27,
+    "lostFlags": [
+      "rBackup"
+    ],
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing",
+      "msSetBottomPrice"
+    ]
+  },
+  "メルカリ半自動+ラクマ値段変更+チェックコントローラー+ヤフフリ半自動プラン": {
+    "packages": [
+      "m_semi",
+      "yf_semi"
+    ],
+    "features": [
+      "rChangePrice",
+      "rAttributeCheckbox"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 12460,
+    "newPrice": 12460,
+    "priceMatch": true,
+    "flagCount": 14,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ全自動+ラクマ全自動プラン": {
+    "packages": [
+      "m_full",
+      "r_full"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 13960,
+    "newPrice": 13960,
+    "priceMatch": true,
+    "flagCount": 27,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ全自動+ラクマ半自動プラン": {
+    "packages": [
+      "m_full",
+      "r_semi"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 11980,
+    "newPrice": 11980,
+    "priceMatch": true,
+    "flagCount": 22,
+    "lostFlags": [
+      "rBackup"
+    ],
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ全自動+ラクマ半自動2台目以降プラン": {
+    "packages": [
+      "r_semi"
+    ],
+    "features": [
+      "mAutoTransaction",
+      "mProfileOptions",
+      "mSoldCSV",
+      "rBackup",
+      "mChangePrice",
+      "mSetBottomPrice",
+      "mComment",
+      "mDeleteComment",
+      "mBackup",
+      "mRelist",
+      "mAuction",
+      "mDeleteProduct",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "mTimeReservation",
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 5990,
+    "newPrice": 30160,
+    "priceMatch": false,
+    "flagCount": 22,
+    "manual": true,
+    "manualReason": "半額特例/トライアル/内部/旧価格のため要個別判断"
+  },
+  "メルカリ全自動+ヤフフリ全自動プラン": {
+    "packages": [
+      "m_full",
+      "yf_full"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 13960,
+    "newPrice": 13960,
+    "priceMatch": true,
+    "flagCount": 24,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ全自動+ヤフフリ全自動2台目以降プラン": {
+    "packages": [
+      "yf_full"
+    ],
+    "features": [
+      "mAutoTransaction",
+      "mProfileOptions",
+      "mSoldCSV",
+      "mChangePrice",
+      "mSetBottomPrice",
+      "mComment",
+      "mDeleteComment",
+      "mBackup",
+      "mRelist",
+      "mAuction",
+      "mDeleteProduct",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "mTimeReservation",
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 6980,
+    "newPrice": 32180,
+    "priceMatch": false,
+    "flagCount": 24,
+    "manual": true,
+    "manualReason": "半額特例/トライアル/内部/旧価格のため要個別判断"
+  },
+  "メルカリ全自動+ヤフフリ半自動プラン": {
+    "packages": [
+      "m_full",
+      "yf_semi"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 11480,
+    "newPrice": 11480,
+    "priceMatch": true,
+    "flagCount": 19,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ全自動+ヤフフリ値段変更プラン": {
+    "packages": [
+      "m_full"
+    ],
+    "features": [
+      "yfChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 10960,
+    "newPrice": 10960,
+    "priceMatch": true,
+    "flagCount": 16,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ全自動+ラクマ基本プラン": {
+    "packages": [
+      "m_full",
+      "r_basic"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 10460,
+    "newPrice": 10460,
+    "priceMatch": true,
+    "flagCount": 18,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ基本+ラクマ基本+ヤフフリ半自動プラン": {
+    "packages": [
+      "m_basic",
+      "r_basic",
+      "yf_semi"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 10960,
+    "newPrice": 10960,
+    "priceMatch": true,
+    "flagCount": 11,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ基本+ラクマ基本+ヤフフリ値段変更プラン": {
+    "packages": [
+      "m_basic",
+      "r_basic"
+    ],
+    "features": [
+      "yfChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 8940,
+    "newPrice": 8940,
+    "priceMatch": true,
+    "flagCount": 8,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ基本チェック+ラクマ基本チェック+ヤフフリ値段変更チェックプラン": {
+    "packages": [
+      "m_basic",
+      "r_basic"
+    ],
+    "features": [
+      "mAttributeCheckbox",
+      "rAttributeCheckbox",
+      "yfChangePrice",
+      "yfAttributeCheckbox"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 11880,
+    "newPrice": 11880,
+    "priceMatch": true,
+    "flagCount": 11,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ全自動化+Shops基本2台目以降プラン": {
+    "packages": [
+      "ms_basic"
+    ],
+    "features": [
+      "mAutoTransaction",
+      "mProfileOptions",
+      "mSoldCSV",
+      "mChangePrice",
+      "mSetBottomPrice",
+      "mComment",
+      "mDeleteComment",
+      "mBackup",
+      "mRelist",
+      "mAuction",
+      "mDeleteProduct",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "mTimeReservation",
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 5230,
+    "newPrice": 27180,
+    "priceMatch": false,
+    "flagCount": 21,
+    "manual": true,
+    "manualReason": "半額特例/トライアル/内部/旧価格のため要個別判断"
+  },
+  "ラクマ全自動+Shops基本プラン": {
+    "packages": [
+      "r_full",
+      "ms_basic"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 9460,
+    "newPrice": 9460,
+    "priceMatch": true,
+    "flagCount": 18
+  },
+  "メルカリ8980円全自動化プラン": {
+    "packages": [
+      "m_full"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 8980,
+    "newPrice": 8980,
+    "priceMatch": true,
+    "flagCount": 15,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ8980円全自動化2台目以降プラン": {
+    "packages": [],
+    "features": [
+      "mAutoTransaction",
+      "mProfileOptions",
+      "mSoldCSV",
+      "mChangePrice",
+      "mSetBottomPrice",
+      "mComment",
+      "mDeleteComment",
+      "mBackup",
+      "mRelist",
+      "mAuction",
+      "mDeleteProduct",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "mTimeReservation",
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 4490,
+    "newPrice": 24200,
+    "priceMatch": false,
+    "flagCount": 15,
+    "manual": true,
+    "manualReason": "半額特例/トライアル/内部/旧価格のため要個別判断"
+  },
+  "メルカリ5980円半自動化プラン": {
+    "packages": [
+      "m_semi"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 5980,
+    "newPrice": 5980,
+    "priceMatch": true,
+    "flagCount": 8,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ半自動+ヤフフリ半自動プラン": {
+    "packages": [
+      "m_semi",
+      "yf_semi"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 9500,
+    "newPrice": 9500,
+    "priceMatch": true,
+    "flagCount": 12,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ5980円半自動化＋商品別底値設定プラン": {
+    "packages": [
+      "m_semi"
+    ],
+    "features": [
+      "mSetBottomPrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 7960,
+    "newPrice": 7960,
+    "priceMatch": true,
+    "flagCount": 9,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ5980円半自動化＋ラクマ基本プラン": {
+    "packages": [
+      "m_basic",
+      "yf_semi"
+    ],
+    "features": [
+      "rDeleteComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 8960,
+    "newPrice": 8960,
+    "priceMatch": true,
+    "flagCount": 11,
+    "lostFlags": [
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "mTimeReservation",
+      "mProfileOptions",
+      "rChangePrice",
+      "rComment"
+    ],
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing",
+      "yfChangePrice",
+      "yfAttributeCheckbox",
+      "yfListingModification",
+      "yfTimeReservation"
+    ]
+  },
+  "メルカリ5980円半自動化＋ラクマ値段変更+出品一覧改良プラン": {
+    "packages": [
+      "m_semi"
+    ],
+    "features": [
+      "rChangePrice",
+      "rListingModification"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 8940,
+    "newPrice": 8940,
+    "priceMatch": true,
+    "flagCount": 10,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ5980円半自動化＋ラクマ値段変更プラン": {
+    "packages": [
+      "m_semi"
+    ],
+    "features": [
+      "rChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 7960,
+    "newPrice": 7960,
+    "priceMatch": true,
+    "flagCount": 9,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ5980円半自動化＋ヤフフリ値段変更プラン": {
+    "packages": [
+      "m_semi"
+    ],
+    "features": [
+      "yfChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 7960,
+    "newPrice": 7960,
+    "priceMatch": true,
+    "flagCount": 9,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ3980円基本プラン": {
+    "packages": [
+      "m_basic"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 3980,
+    "newPrice": 3980,
+    "priceMatch": true,
+    "flagCount": 4,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ3980円+再出品プラン": {
+    "packages": [
+      "m_basic"
+    ],
+    "features": [
+      "mRelist"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 5960,
+    "newPrice": 5960,
+    "priceMatch": true,
+    "flagCount": 5,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ3980円+再出品+商品削除プラン": {
+    "packages": [
+      "m_basic"
+    ],
+    "features": [
+      "mRelist",
+      "mDeleteProduct"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 6940,
+    "newPrice": 6940,
+    "priceMatch": true,
+    "flagCount": 6,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ基本＋ラクマ基本プラン": {
+    "packages": [
+      "m_basic",
+      "r_basic"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 6960,
+    "newPrice": 6960,
+    "priceMatch": true,
+    "flagCount": 7,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ基本+チェックボックスコントローラープラン": {
+    "packages": [
+      "m_basic"
+    ],
+    "features": [
+      "mAttributeCheckbox"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 4960,
+    "newPrice": 4960,
+    "priceMatch": true,
+    "flagCount": 5,
+    "gains": [
+      "mCopyMShopsListing",
+      "mCopyRakumaListing",
+      "mCopyYahooAuctionListing",
+      "mCopyYahooFleamarketListing"
+    ]
+  },
+  "メルカリ値段変更プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 1980,
+    "newPrice": 1980,
+    "priceMatch": true,
+    "flagCount": 1
+  },
+  "メルカリ値段変更+Shops値段変更プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "msChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 3960,
+    "newPrice": 3960,
+    "priceMatch": true,
+    "flagCount": 2
+  },
+  "メルカリ値段変更+コメント削除プラン+自動いいね対応+自動予約プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mDeleteComment",
+      "mTimeReservation",
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 7920,
+    "newPrice": 7920,
+    "priceMatch": true,
+    "flagCount": 4
+  },
+  "メルカリ値段変更+コメント+再出品+チェックボックスコントローラープラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mComment",
+      "mRelist",
+      "mAttributeCheckbox"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 5920,
+    "newPrice": 5920,
+    "priceMatch": true,
+    "flagCount": 4
+  },
+  "メルカリコメント+再出品+チェックコントローラープラン": {
+    "packages": [],
+    "features": [
+      "mComment",
+      "mRelist",
+      "mAttributeCheckbox"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 3940,
+    "newPrice": 3940,
+    "priceMatch": true,
+    "flagCount": 3
+  },
+  "メルカリ値段変更＋出品一覧追加とラクマ値段変更＋出品一覧追加プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mLoadAdditionalInfo",
+      "rChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 5920,
+    "newPrice": 4940,
+    "priceMatch": false,
+    "flagCount": 3
+  },
+  "メルカリ値段変更+自動いいね対応プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 3960,
+    "newPrice": 4960,
+    "priceMatch": false,
+    "flagCount": 2
+  },
+  "メルカリ値段変更+自動化予約機能プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mTimeReservation"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 3960,
+    "newPrice": 3960,
+    "priceMatch": true,
+    "flagCount": 2
+  },
+  "メルカリ値段変更+ラクマ値段変更プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "rChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 3960,
+    "newPrice": 3960,
+    "priceMatch": true,
+    "flagCount": 2
+  },
+  "メルカリ値段変更+チェックコントローラー+出品一覧追加情報×ヤフオク値段変更+チェックコントローラー+出品一覧追加情報プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mAttributeCheckbox",
+      "yfChangePrice",
+      "yfAttributeCheckbox"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 5920,
+    "newPrice": 5920,
+    "priceMatch": true,
+    "flagCount": 4
+  },
+  "メルカリ値段変更+チェックボックスコントローラー+出品一覧追加情報表示+ラクマ値段変更プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "rChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 5920,
+    "newPrice": 5920,
+    "priceMatch": true,
+    "flagCount": 4
+  },
+  "メルカリ値段変更+チェックボックスコントローラー+出品一覧追加情報表示+再出品プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mRelist",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 5920,
+    "newPrice": 5920,
+    "priceMatch": true,
+    "flagCount": 4
+  },
+  "メルカリ値段変更+チェックボックスコントローラー×ヤフオク値段変更+チェックボックスコントローラープラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "yfChangePrice",
+      "yfAttributeCheckbox",
+      "yfListingModification"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 7880,
+    "newPrice": 7880,
+    "priceMatch": true,
+    "flagCount": 6
+  },
+  "メルカリ値段変更+チェックボックスコントローラープラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mAttributeCheckbox"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 2960,
+    "newPrice": 2960,
+    "priceMatch": true,
+    "flagCount": 2
+  },
+  "メルカリ値段変更+再出品+チェックコントローラープラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mRelist",
+      "mAttributeCheckbox"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 4940,
+    "newPrice": 4940,
+    "priceMatch": true,
+    "flagCount": 3
+  },
+  "メルカリ値段変更+売上CSV+自動化予約機プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mTimeReservation",
+      "mSoldCSV"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 4440,
+    "newPrice": 4440,
+    "priceMatch": true,
+    "flagCount": 3
+  },
+  "メルカリ値段変更+再出品+商品削除+追加情報+チェックコントローラープラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mRelist",
+      "mDeleteProduct",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 6900,
+    "newPrice": 6900,
+    "priceMatch": true,
+    "flagCount": 5
+  },
+  "メルカリ再出品+出品一覧追加情報表示+チェックボックスコントローラー+自動いいねプラン": {
+    "packages": [],
+    "features": [
+      "mRelist",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 6920,
+    "newPrice": 6920,
+    "priceMatch": true,
+    "flagCount": 4
+  },
+  "メルカリ値段変更+再出品+出品一覧追加情報表示+チェックボックスコントローラー+予約機能プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mRelist",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo",
+      "mTimeReservation"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 7900,
+    "newPrice": 7900,
+    "priceMatch": true,
+    "flagCount": 5
+  },
+  "メルカリ値段変更+チェックコントローラー+出品一覧追加情報表示プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 3940,
+    "newPrice": 3940,
+    "priceMatch": true,
+    "flagCount": 3
+  },
+  "メルカリコメント投稿+コメント削除プラン": {
+    "packages": [],
+    "features": [
+      "mComment",
+      "mDeleteComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 1960,
+    "newPrice": 1960,
+    "priceMatch": true,
+    "flagCount": 2
+  },
+  "メルカリ値段変更+コメント投稿+コメント削除+再出品プラン": {
+    "packages": [],
+    "features": [
+      "mChangePrice",
+      "mComment",
+      "mDeleteComment",
+      "mRelist"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 5920,
+    "newPrice": 5920,
+    "priceMatch": true,
+    "flagCount": 4
+  },
+  "メルカリコメント削除+チェックボックスコントローラー+自動いいね対応プラン": {
+    "packages": [],
+    "features": [
+      "mDeleteComment",
+      "mAttributeCheckbox",
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 3940,
+    "newPrice": 4940,
+    "priceMatch": false,
+    "flagCount": 3
+  },
+  "メルカリ再出品+自動化予約機能プラン": {
+    "packages": [],
+    "features": [
+      "mRelist",
+      "mTimeReservation"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 3960,
+    "newPrice": 3960,
+    "priceMatch": true,
+    "flagCount": 2
+  },
+  "メルカリバックアップ+売上CSVプラン": {
+    "packages": [],
+    "features": [
+      "mSoldCSV"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 2460,
+    "newPrice": 480,
+    "priceMatch": false,
+    "flagCount": 1
+  },
+  "メルカリ自動いいね対応機能単品プラン": {
+    "packages": [],
+    "features": [
+      "mAutoComment"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 2980,
+    "newPrice": 2980,
+    "priceMatch": true,
+    "flagCount": 1
+  },
+  "メルカリ再出品単品プラン": {
+    "packages": [],
+    "features": [
+      "mRelist"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 1980,
+    "newPrice": 1980,
+    "priceMatch": true,
+    "flagCount": 1
+  },
+  "メルカリ再出品+売上CSVプラン": {
+    "packages": [],
+    "features": [
+      "mRelist",
+      "mSoldCSV"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 2460,
+    "newPrice": 2460,
+    "priceMatch": true,
+    "flagCount": 2
+  },
+  "メルカリ再出品+売上CSV+予約機能プラン": {
+    "packages": [],
+    "features": [
+      "mRelist",
+      "mTimeReservation",
+      "mSoldCSV"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 4440,
+    "newPrice": 4440,
+    "priceMatch": true,
+    "flagCount": 3
+  },
+  "メルカリ再出品+商品削除プラン": {
+    "packages": [],
+    "features": [
+      "mRelist",
+      "mDeleteProduct"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 2960,
+    "newPrice": 2960,
+    "priceMatch": true,
+    "flagCount": 2
+  },
+  "メルカリ再出品+商品削除+チェックコントローラー+出品一覧追加情報表示プラン": {
+    "packages": [],
+    "features": [
+      "mRelist",
+      "mDeleteProduct",
+      "mAttributeCheckbox",
+      "mLoadAdditionalInfo"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 4920,
+    "newPrice": 4920,
+    "priceMatch": true,
+    "flagCount": 4
+  },
+  "メルカリ再出品+商品削除+ヤフフリ値段変更プラン": {
+    "packages": [],
+    "features": [
+      "mRelist",
+      "mDeleteProduct",
+      "yfChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 4940,
+    "newPrice": 4940,
+    "priceMatch": true,
+    "flagCount": 3
+  },
+  "売上CSVプラン": {
+    "packages": [],
+    "features": [
+      "mSoldCSV"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 480,
+    "newPrice": 480,
+    "priceMatch": true,
+    "flagCount": 1
+  },
+  "ラクマ7980円全自動化プラン": {
+    "packages": [
+      "r_full"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 7980,
+    "newPrice": 7980,
+    "priceMatch": true,
+    "flagCount": 10,
+    "gains": [
+      "rSetBottomPrice",
+      "rRelist"
+    ]
+  },
+  "ラクマ4980円半自動化プラン": {
+    "packages": [
+      "r_semi"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 4980,
+    "newPrice": 4980,
+    "priceMatch": true,
+    "flagCount": 6
+  },
+  "メルカリ自動いいね+自動取引プラン+ラクマ4980円半自動化プラン+ヤフフリ4480円半自動化プラン": {
+    "packages": [
+      "r_semi",
+      "yf_semi"
+    ],
+    "features": [
+      "mAutoComment",
+      "mAutoTransaction"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 14460,
+    "newPrice": 14460,
+    "priceMatch": true,
+    "flagCount": 13,
+    "lostFlags": [
+      "rBackup"
+    ]
+  },
+  "ラクマ4980円半自動化プラン+ヤフフリ4480円半自動化プラン": {
+    "packages": [
+      "r_semi",
+      "yf_semi"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 8500,
+    "newPrice": 8500,
+    "priceMatch": true,
+    "flagCount": 11,
+    "lostFlags": [
+      "rBackup"
+    ]
+  },
+  "ラクマ基本プラン": {
+    "packages": [
+      "r_basic"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 2980,
+    "newPrice": 2980,
+    "priceMatch": true,
+    "flagCount": 3
+  },
+  "Shops基本プラン": {
+    "packages": [
+      "ms_basic"
+    ],
+    "features": [],
+    "multiChannelSites": [],
+    "legacyPrice": 2980,
+    "newPrice": 2980,
+    "priceMatch": true,
+    "flagCount": 6
+  },
+  "ラクマ値段変更プラン": {
+    "packages": [],
+    "features": [
+      "rChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 1980,
+    "newPrice": 1980,
+    "priceMatch": true,
+    "flagCount": 1
+  },
+  "ヤフフリ値段変更プラン": {
+    "packages": [],
+    "features": [
+      "yfChangePrice"
+    ],
+    "multiChannelSites": [],
+    "legacyPrice": 1980,
+    "newPrice": 1980,
+    "priceMatch": true,
+    "flagCount": 1
+  }
+}
