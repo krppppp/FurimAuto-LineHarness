@@ -482,7 +482,18 @@ async function handleEvent(
 
     // Furimanですクーポン（AIチャットモード中でも通す）
     if ((incomingText.includes('furimanです') || incomingText.includes('Furimanです')) && env?.GAS_DEPLOY_ID && env?.STRIPE_SECRET_KEY) {
-      await actionFurimanCoupon(loggingClient, userId, event.replyToken, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
+      try {
+        await actionFurimanCoupon(loggingClient, userId, event.replyToken, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
+      } catch (err) {
+        // GAS/Stripeの一時障害で無言のまま終わらせない（2026-08-02 すがやさんの事例）。
+        // replyTokenは消費済みの可能性があるためpushで通知する
+        console.error('[webhook] actionFurimanCoupon failed:', userId, err);
+        try {
+          await loggingClient.pushMessage(userId, [{ type: 'text', text: '申し訳ございません。クーポン処理中に一時的なエラーが発生しました。お手数ですが、少し時間をおいてもう一度「Furimanです」と送信してください🙇' } as never]);
+        } catch (pushErr) {
+          console.error('[webhook] actionFurimanCoupon fallback push failed:', pushErr);
+        }
+      }
       return;
     }
 
