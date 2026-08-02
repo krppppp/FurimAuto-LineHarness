@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { evaluateCondition, isSupportedConditionType, SUPPORTED_CONDITION_TYPES, processStepDeliveries, expandVariables } from './step-delivery.js';
+import { evaluateCondition, isSupportedConditionType, SUPPORTED_CONDITION_TYPES, processStepDeliveries, expandVariables, buildMessage } from './step-delivery.js';
 import type { LineClient } from '@line-crm/line-sdk';
 
 /**
@@ -432,5 +432,37 @@ describe('expandVariables comma cleanup scope', () => {
       expect(out).toBe('{"contents":[{"type":"text","text":"hello"}]}');
       expect(() => JSON.parse(out)).not.toThrow();
     });
+  });
+});
+
+describe('buildMessage flex unwrap', () => {
+  it('bubble単体のcontentはそのままcontentsになる', () => {
+    const bubble = { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'こんにちは' }] } };
+    const msg = buildMessage('flex', JSON.stringify(bubble)) as { type: string; altText: string; contents: { type: string } };
+    expect(msg.type).toBe('flex');
+    expect(msg.contents.type).toBe('bubble');
+    expect(msg.altText).toBe('こんにちは');
+  });
+
+  it('完全なメッセージ形式({"type":"flex",...})は展開してaltTextを引き継ぐ', () => {
+    const full = {
+      type: 'flex',
+      altText: '▼ キーコードを発行して全機能を使おう ▼',
+      contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'まずはここから' }] } },
+    };
+    const msg = buildMessage('flex', JSON.stringify(full)) as { type: string; altText: string; contents: { type: string; contents?: unknown } };
+    expect(msg.contents.type).toBe('bubble');
+    expect((msg.contents as { type?: string }).type).not.toBe('flex');
+    expect(msg.altText).toBe('▼ キーコードを発行して全機能を使おう ▼');
+  });
+
+  it('完全なメッセージ形式でaltTextが無い場合はテキストから抽出する', () => {
+    const full = {
+      type: 'flex',
+      contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: '抽出されるテキスト' }] } },
+    };
+    const msg = buildMessage('flex', JSON.stringify(full)) as { altText: string; contents: { type: string } };
+    expect(msg.contents.type).toBe('bubble');
+    expect(msg.altText).toBe('抽出されるテキスト');
   });
 });

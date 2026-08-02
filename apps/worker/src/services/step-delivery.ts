@@ -117,7 +117,7 @@ export async function processStepDeliveries(
         await sleep(addJitter(50, 200));
       }
       const sent = await processSingleDelivery(db, lineClient, fs, workerUrl);
-      if (sent) sendCount++;
+      sendCount += sent;
     } catch (err) {
       console.error(`Error processing friend_scenario ${fs.id}:`, err);
       // Continue with next one
@@ -138,15 +138,15 @@ async function processSingleDelivery(
     started_at: string;
   },
   workerUrl?: string,
-): Promise<boolean> {
+): Promise<number> {
   // Optimistic lock: claim this delivery (prevents duplicate sends from parallel workers)
   const claimed = await claimFriendScenarioForDelivery(db, fs.id, fs.current_step_order);
-  if (!claimed) return false;
+  if (!claimed) return 0;
 
   const friend = await getFriendById(db, fs.friend_id);
   if (!friend || !friend.is_following) {
     await completeFriendScenario(db, fs.id);
-    return false;
+    return 0;
   }
 
   // Fetch scenario row for delivery_mode (needed by computeNextDeliveryAt below)
@@ -156,14 +156,14 @@ async function processSingleDelivery(
     .first<{ delivery_mode: DeliveryMode }>();
   if (!scenarioRow) {
     await completeFriendScenario(db, fs.id);
-    return false;
+    return 0;
   }
 
   // Get all steps for this scenario
   const steps = await getScenarioSteps(db, fs.scenario_id);
   if (steps.length === 0) {
     await completeFriendScenario(db, fs.id);
-    return false;
+    return 0;
   }
 
   // computeNextDeliveryAt は「JST clock-time を UTC として表現する Date」前提
@@ -185,7 +185,7 @@ async function processSingleDelivery(
 
   if (!currentStep) {
     await completeFriendScenario(db, fs.id);
-    return false;
+    return 0;
   }
 
   // Check step condition before sending
@@ -201,7 +201,7 @@ async function processSingleDelivery(
           // Passing currentStep.step_order here (pre-fix) delivered the
           // sequentially-next step and silently ignored next_step_on_false.
           await advanceFriendScenario(db, fs.id, jumpStep.step_order - 1, jitteredDate.toISOString().slice(0, -1) + '+09:00');
-          return false;
+          return 0;
         }
       }
       const nextIndex = steps.indexOf(currentStep) + 1;
@@ -212,33 +212,56 @@ async function processSingleDelivery(
       } else {
         await completeFriendScenario(db, fs.id);
       }
-      return false;
+      return 0;
     }
   }
 
-  // Resolve template_id → templates table (参照型). template_id 未設定なら step 値そのまま。
-  const resolved = await resolveStepContent(db, currentStep);
+  // 同日連続ステップ (delay=0・無条件) は1回のpushにまとめて送る (LINE上限5通/push・2026-08-01改修)。
+  // 5分cronごとに1通ずつだと「画像だけ届いて本文は5分後」の分断体験になるため。
+  // 条件付きステップは従来通り単独tickで評価するためバンドルに含めない。
+  const bundleSteps = [currentStep];
+  {
+    let cursor = steps.indexOf(currentStep);
+    while (
+      bundleSteps.length < 5 &&
+      cursor + 1 < steps.length &&
+      (steps[cursor + 1].delay_minutes ?? 0) === 0 &&
+      !steps[cursor + 1].condition_type
+    ) {
+      cursor++;
+      bundleSteps.push(steps[cursor]);
+    }
+  }
 
   // Expand template variables ({{name}}, {{uid}}, {{auth_url:CHANNEL_ID}}, {{metadata.KEY}}, etc.)
   const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
   const friendWithMeta = { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1];
-  const expandedContent = expandVariables(resolved.messageContent, friendWithMeta, workerUrl, resolved.messageType);
-  // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
   // リンクの所有アカウントは実際に配信するアカウント (= friend の account) に合わせる
   const friendAccountId = (friend as unknown as Record<string, string | null>).line_account_id;
-  let trackedType: string = resolved.messageType;
-  let trackedContent = expandedContent;
-  if (workerUrl) {
-    const { autoTrackContent, appendFriendToTrackedLinks } = await import('./auto-track.js');
-    const tracked = await autoTrackContent(db, resolved.messageType, expandedContent, workerUrl, {
-      lineAccountId: friendAccountId ?? null,
-    });
-    trackedType = tracked.messageType;
-    // Per-friend push → bake f=<friendId> into /t links so clicks attribute
-    // without the LIFF identification hop (no consent screen on first tap).
-    trackedContent = await appendFriendToTrackedLinks(db, tracked.content, workerUrl, friend.id);
+
+  const builtMessages: Message[] = [];
+  const logRows: { stepId: string; templateIdAtSend: string | null; message: Message }[] = [];
+  for (const step of bundleSteps) {
+    // Resolve template_id → templates table (参照型). template_id 未設定なら step 値そのまま。
+    const resolved = await resolveStepContent(db, step);
+    const expandedContent = expandVariables(resolved.messageContent, friendWithMeta, workerUrl, resolved.messageType);
+    // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
+    let trackedType: string = resolved.messageType;
+    let trackedContent = expandedContent;
+    if (workerUrl) {
+      const { autoTrackContent, appendFriendToTrackedLinks } = await import('./auto-track.js');
+      const tracked = await autoTrackContent(db, resolved.messageType, expandedContent, workerUrl, {
+        lineAccountId: friendAccountId ?? null,
+      });
+      trackedType = tracked.messageType;
+      // Per-friend push → bake f=<friendId> into /t links so clicks attribute
+      // without the LIFF identification hop (no consent screen on first tap).
+      trackedContent = await appendFriendToTrackedLinks(db, tracked.content, workerUrl, friend.id);
+    }
+    builtMessages.push(buildMessage(trackedType, trackedContent));
+    logRows.push({ stepId: step.id, templateIdAtSend: resolved.templateIdAtSend, message: builtMessages[builtMessages.length - 1] });
   }
-  const message = buildMessage(trackedType, trackedContent);
+
   // Resolve the correct LINE client for this friend's account
   let deliveryClient = lineClient;
   if (friendAccountId) {
@@ -249,28 +272,30 @@ async function processSingleDelivery(
       deliveryClient = new LC(account.channel_access_token);
     }
   }
-  await deliveryClient.pushMessage(friend.line_user_id, [message]);
+  await deliveryClient.pushMessage(friend.line_user_id, builtMessages);
 
   // Log what we actually pushed: variables expanded, URLs auto-tracked, AND
   // any cleanEmptyNodes() mutation or parse-failure text fallback applied by
   // buildMessage(). Use scenario_step_id to recover the original template.
-  const logId = crypto.randomUUID();
-  const logPayload = messageToLogPayload(message);
-  await db
-    .prepare(
-      `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, template_id_at_send, created_at)
-       VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, 'scenario', ?, ?)`,
-    )
-    .bind(logId, friend.id, logPayload.messageType, logPayload.content, currentStep.id, resolved.templateIdAtSend, jstNow())
-    .run();
+  for (const row of logRows) {
+    const logPayload = messageToLogPayload(row.message);
+    await db
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, template_id_at_send, created_at)
+         VALUES (?, ?, 'outgoing', ?, ?, NULL, ?, 'scenario', ?, ?)`,
+      )
+      .bind(crypto.randomUUID(), friend.id, logPayload.messageType, logPayload.content, row.stepId, row.templateIdAtSend, jstNow())
+      .run();
+  }
 
-  // Determine next step (find the step after currentStep in the sorted list)
-  const currentIndex = steps.indexOf(currentStep);
-  const nextStep = currentIndex + 1 < steps.length ? steps[currentIndex + 1] : null;
+  // Determine next step (find the step after the last bundled step in the sorted list)
+  const lastStep = bundleSteps[bundleSteps.length - 1];
+  const lastIndex = steps.indexOf(lastStep);
+  const nextStep = lastIndex + 1 < steps.length ? steps[lastIndex + 1] : null;
 
   if (nextStep) {
     const jitteredDate = jitterDeliveryTime(nextDeliveryFor(nextStep));
-    await advanceFriendScenario(db, fs.id, currentStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
+    await advanceFriendScenario(db, fs.id, lastStep.step_order, jitteredDate.toISOString().slice(0, -1) + '+09:00');
   } else {
     // This was the last step
     await completeFriendScenario(db, fs.id);
@@ -278,14 +303,15 @@ async function processSingleDelivery(
 
   // 到達タグ付与 (advance / complete の後 = 再送が起きてもタグ付与は影響しない順序)
   // 失敗してもログに残すだけで配信フローは止めない。
-  if (currentStep.on_reach_tag_id) {
+  for (const step of bundleSteps) {
+    if (!step.on_reach_tag_id) continue;
     try {
-      await addTagToFriend(db, friend.id, currentStep.on_reach_tag_id);
+      await addTagToFriend(db, friend.id, step.on_reach_tag_id);
     } catch (err) {
-      console.error(`[scenario] tag attach failed step=${currentStep.id}:`, err);
+      console.error(`[scenario] tag attach failed step=${step.id}:`, err);
     }
   }
-  return true;
+  return builtMessages.length;
 }
 
 /** Supported scenario step condition_type values evaluated at delivery time. */
@@ -477,11 +503,18 @@ export function buildMessage(messageType: string, messageContent: string, altTex
 
   if (messageType === 'flex') {
     try {
-      const contents = JSON.parse(messageContent);
+      let contents = JSON.parse(messageContent);
+      let alt = altText;
+      // 完全なメッセージ形式({"type":"flex","altText","contents"})で保存されたデータは
+      // そのまま contents に入れると二重ラップになり LINE API に拒否されるため展開する
+      if (contents && contents.type === 'flex' && contents.contents) {
+        alt = alt || (typeof contents.altText === 'string' ? contents.altText : undefined);
+        contents = contents.contents;
+      }
       // Remove empty text nodes (from {{#if_ref}} conditional blocks)
       cleanEmptyNodes(contents);
       // Extract first text element for altText (shown in notifications)
-      return { type: 'flex', altText: altText || extractFlexAltText(contents), contents };
+      return { type: 'flex', altText: alt || extractFlexAltText(contents), contents };
     } catch {
       return { type: 'text', text: messageContent };
     }
