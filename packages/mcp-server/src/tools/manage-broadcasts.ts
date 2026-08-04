@@ -14,15 +14,34 @@ export function registerManageBroadcasts(server: McpServer): void {
       title: z.string().optional().describe("Broadcast title (for create_draft, update)"),
       messageType: z.enum(["text", "image", "flex"]).optional().describe("Message type (for create_draft, update)"),
       messageContent: z.string().optional().describe("Message content (for create_draft, update)"),
+      messages: z
+        .string()
+        .optional()
+        .describe(
+          'Multi-message broadcast: JSON array of up to 5 message objects [{type:"text"|"image"|"flex", content:"...", altText?:"..."}] sent in one push (for create_draft, update). When set, messageType/messageContent default to the first item. Pass null (JSON) on update to clear.',
+        ),
       targetType: z.enum(["all", "tag"]).optional().describe("Target type (for create_draft, update)"),
       targetTagId: z.string().nullable().optional().describe("Target tag ID (for create_draft, update)"),
       scheduledAt: z.string().nullable().optional().describe("ISO 8601 datetime to schedule (for create_draft, update)"),
       segmentConditions: z.string().optional().describe("JSON string of segment conditions: {operator: 'AND'|'OR', rules: [{type, value}]} (for send_to_segment)"),
       accountId: z.string().optional().describe("LINE account ID (uses default if omitted)"),
     },
-    async ({ action, broadcastId, title, messageType, messageContent, targetType, targetTagId, scheduledAt, segmentConditions, accountId }) => {
+    async ({ action, broadcastId, title, messageType, messageContent, messages, targetType, targetTagId, scheduledAt, segmentConditions, accountId }) => {
       try {
         const client = getClient();
+
+        // messages (JSON 文字列) をパース。null は明示クリア、配列は複数メッセージ配信。
+        let parsedMessages: Array<{ type: string; content: string; altText?: string }> | null | undefined;
+        if (messages !== undefined) {
+          const j = JSON.parse(messages);
+          if (j === null) {
+            parsedMessages = null;
+          } else if (Array.isArray(j) && j.length >= 1 && j.length <= 5) {
+            parsedMessages = j;
+          } else {
+            throw new Error("messages must be a JSON array of 1 to 5 objects, or null to clear");
+          }
+        }
 
         if (action === "list") {
           const broadcasts = await client.broadcasts.list(accountId ? { accountId } : undefined);
@@ -41,10 +60,14 @@ export function registerManageBroadcasts(server: McpServer): void {
         }
 
         if (action === "create_draft") {
-          if (!title || !messageType || !messageContent) {
-            throw new Error("title, messageType, messageContent are required for create_draft");
+          // 複数メッセージ指定時は messageType/messageContent を1件目から補完する。
+          const firstType = messageType ?? (parsedMessages && parsedMessages[0] ? (parsedMessages[0].type as "text" | "image" | "flex") : undefined);
+          const firstContent = messageContent ?? (parsedMessages && parsedMessages[0] ? parsedMessages[0].content : undefined);
+          if (!title || !firstType || !firstContent) {
+            throw new Error("title, messageType, messageContent (or a non-empty messages array) are required for create_draft");
           }
-          const input: Record<string, unknown> = { title, messageType, messageContent, targetType: targetType ?? "all" };
+          const input: Record<string, unknown> = { title, messageType: firstType, messageContent: firstContent, targetType: targetType ?? "all" };
+          if (parsedMessages) input.messages = parsedMessages;
           if (targetTagId) input.targetTagId = targetTagId;
           if (scheduledAt) input.scheduledAt = scheduledAt;
           if (accountId) input.lineAccountId = accountId;
@@ -88,6 +111,7 @@ export function registerManageBroadcasts(server: McpServer): void {
           if (title !== undefined) input.title = title;
           if (messageType !== undefined) input.messageType = messageType;
           if (messageContent !== undefined) input.messageContent = messageContent;
+          if (parsedMessages !== undefined) input.messages = parsedMessages;
           if (targetType !== undefined) input.targetType = targetType;
           if (targetTagId !== undefined) input.targetTagId = targetTagId;
           if (scheduledAt !== undefined) input.scheduledAt = scheduledAt;

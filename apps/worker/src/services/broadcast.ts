@@ -82,13 +82,23 @@ export async function processBroadcastSend(
   }
   const altText = (broadcast as unknown as Record<string, unknown>).alt_text as string | undefined;
   const message = buildMessage(finalType, finalContent, altText || undefined);
+  // 複数メッセージ配信: messages 列があれば各要素を解決して配列送信 (1発火最大5通)。
+  // 無ければ従来どおり単一メッセージ [message] で送る (挙動不変)。
+  const multiItems = parseBroadcastMessages(broadcast);
+  const messages: Message[] = multiItems
+    ? await resolveBroadcastMessages(db, multiItems, broadcast.track_links !== 0, broadcastAccountId, workerUrl)
+    : [message];
+  // messages_log 記録用 item リスト (multi なら各メッセージ、single なら1件)。
+  const logItems: Array<{ type: string; content: string }> = multiItems
+    ? multiItems.map((m) => ({ type: m.type, content: m.content }))
+    : [{ type: broadcast.message_type, content: broadcast.message_content }];
   let totalCount = 0;
   let successCount = 0;
 
   try {
     if (broadcast.target_type === 'all') {
       // Use LINE broadcast API (sends to all followers)
-      const { requestId } = await lineClient.broadcast([message]);
+      const { requestId } = await lineClient.broadcast(messages);
       await updateBroadcastLineRequestId(db, broadcast.id, requestId, null);
       // We don't have exact count for broadcast API, set as 0 (unknown)
       totalCount = 0;
@@ -117,25 +127,32 @@ export async function processBroadcastSend(
           await sleep(delay);
         }
 
-        // Stealth: add slight variation to text messages
-        let batchMessage = message;
-        if (message.type === 'text' && totalBatches > 1) {
-          batchMessage = { ...message, text: addMessageVariation(message.text, batchIndex) };
+        // Stealth: add slight variation to text messages (配列内の text 要素ごと)
+        let batchMessages = messages;
+        if (totalBatches > 1) {
+          batchMessages = messages.map((m) =>
+            m.type === 'text'
+              ? { ...m, text: addMessageVariation((m as { text: string }).text, batchIndex) }
+              : m,
+          );
         }
 
         try {
-          await lineClient.multicast(lineUserIds, [batchMessage], [unit]);
+          await lineClient.multicast(lineUserIds, batchMessages, [unit]);
           successCount += batch.length;
 
           // Log only successfully sent messages (batch insert for performance)
           // line_account_id は broadcast 設定時のアカウントを記録 (送信時点の固定値)。
           // friends.line_account_id は webhook で書き換わる mutable なので使わない。
+          // multi の場合は 1 friend につき各メッセージを 1 行ずつ記録する。
           const broadcastAccount = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
-          const logStmts = batch.map(friend =>
-            db.prepare(
-              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
-               VALUES (?, ?, 'outgoing', ?, ?, ?, NULL, 'broadcast', ?, ?)`,
-            ).bind(crypto.randomUUID(), friend.id, broadcast.message_type, broadcast.message_content, broadcastId, broadcastAccount, now),
+          const logStmts = batch.flatMap(friend =>
+            logItems.map(it =>
+              db.prepare(
+                `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
+                 VALUES (?, ?, 'outgoing', ?, ?, ?, NULL, 'broadcast', ?, ?)`,
+              ).bind(crypto.randomUUID(), friend.id, it.type, it.content, broadcastId, broadcastAccount, now),
+            ),
           );
           await db.batch(logStmts);
         } catch (err) {
@@ -301,6 +318,18 @@ async function processQueuedBroadcastBatches(
   const altText = raw.alt_text as string | undefined;
   const message = buildMessage(finalType, finalContent, altText || undefined);
 
+  // 複数メッセージ (messages 列) 対応。queue 経路は tag/segment のチャンク送信用。
+  // auto-track の persist-back 最適化は single のみ — multi は毎 tick 再解決する
+  // (text+URL を 500人超の tag に分割送信する場合のみ tick 跨ぎで tracked link が
+  // 二重生成され得るが、multi は現状 target='all' でしか作成されずこの経路には来ない)。
+  const queuedMultiItems = parseBroadcastMessages(broadcast);
+  const queuedMessages: Message[] = queuedMultiItems
+    ? await resolveBroadcastMessages(db, queuedMultiItems, broadcast.track_links !== 0, queuedAccountId, workerUrl)
+    : [message];
+  const queuedLogItems: Array<{ type: string; content: string }> = queuedMultiItems
+    ? queuedMultiItems.map((m) => ({ type: m.type, content: m.content }))
+    : [{ type: broadcast.message_type, content: broadcast.message_content }];
+
   // multi-account-dedup: delegate to processMultiAccountDedupBroadcast.
   // dedup ループは内部で per-account に {{liff_id}} 置換 + buildMessage する。
   // auto-track で計算された finalType / finalContent を反映した broadcast を
@@ -349,7 +378,7 @@ async function processQueuedBroadcastBatches(
     friends = tagFriends.filter(f => f.is_following).map(f => ({ id: f.id, line_user_id: f.line_user_id }));
   } else {
     // target_type='all' でキューに入ることはないが、念のため
-    const { requestId } = await lineClient.broadcast([message]);
+    const { requestId } = await lineClient.broadcast(queuedMessages);
     await updateBroadcastLineRequestId(db, broadcast.id, requestId, null);
     await createBroadcastInsight(db, broadcast.id);
     await updateBroadcastStatus(db, broadcast.id, 'sent', { totalCount: 0, successCount: 0 });
@@ -379,14 +408,18 @@ async function processQueuedBroadcastBatches(
       await sleep(delay);
     }
 
-    // テキストメッセージのバリエーション
-    let batchMessage = message;
-    if (message.type === 'text' && totalBatches > 1) {
-      batchMessage = { ...message, text: addMessageVariation((message as { text: string }).text, batchIndex) };
+    // テキストメッセージのバリエーション (配列内の text 要素ごと)
+    let batchMessages = queuedMessages;
+    if (totalBatches > 1) {
+      batchMessages = queuedMessages.map((m) =>
+        m.type === 'text'
+          ? { ...m, text: addMessageVariation((m as { text: string }).text, batchIndex) }
+          : m,
+      );
     }
 
     try {
-      await lineClient.multicast(lineUserIds, [batchMessage], [unit]);
+      await lineClient.multicast(lineUserIds, batchMessages, [unit]);
     } catch (err) {
       console.error(`Queued broadcast batch ${batchIndex} send failed:`, err);
       // 送信失敗: ロック解除 + offsetを保存して次のCronで再開
@@ -399,11 +432,13 @@ async function processQueuedBroadcastBatches(
     // (friends.line_account_id ではなく送信元アカウントを固定で記録)。
     const queuedBroadcastAccount = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
     try {
-      const stmts = batch.map(friend =>
-        db.prepare(
-          `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
-           VALUES (?, ?, 'outgoing', ?, ?, ?, NULL, 'broadcast', ?, ?)`,
-        ).bind(crypto.randomUUID(), friend.id, broadcast.message_type, broadcast.message_content, broadcast.id, queuedBroadcastAccount, now),
+      const stmts = batch.flatMap(friend =>
+        queuedLogItems.map(it =>
+          db.prepare(
+            `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
+             VALUES (?, ?, 'outgoing', ?, ?, ?, NULL, 'broadcast', ?, ?)`,
+          ).bind(crypto.randomUUID(), friend.id, it.type, it.content, broadcast.id, queuedBroadcastAccount, now),
+        ),
       );
       await db.batch(stmts);
     } catch (logErr) {
@@ -421,6 +456,65 @@ async function processQueuedBroadcastBatches(
   await updateBroadcastLineRequestId(db, broadcast.id, null, unit);
   await createBroadcastInsight(db, broadcast.id);
   await updateBroadcastStatus(db, broadcast.id, 'sent');
+}
+
+export interface BroadcastMessageItem {
+  type: string;
+  content: string;
+  altText?: string;
+}
+
+// broadcast.messages (JSON) をパースして最大5件の item 配列を返す。未設定/空/不正なら null
+// (= 従来の単一メッセージ経路にフォールバック)。
+export function parseBroadcastMessages(broadcast: Broadcast): BroadcastMessageItem[] | null {
+  const raw = (broadcast as unknown as Record<string, unknown>).messages as string | null | undefined;
+  if (!raw) return null;
+  try {
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr) || arr.length === 0) return null;
+    return arr.slice(0, 5).map((m) => {
+      const o = m as Record<string, unknown>;
+      return {
+        type: String(o.type ?? 'text'),
+        content: String(o.content ?? ''),
+        altText: o.altText != null ? String(o.altText) : undefined,
+      };
+    });
+  } catch {
+    return null;
+  }
+}
+
+// item[] を送信可能な Message[] に解決する。単一メッセージ経路の finalType/finalContent 計算
+// (auto-track による URL短縮 + {{liff_id}} 置換) を各 item ごとに回すだけ。liff は1回だけ解決。
+async function resolveBroadcastMessages(
+  db: D1Database,
+  items: BroadcastMessageItem[],
+  trackLinks: boolean,
+  accountId: string | null,
+  workerUrl?: string,
+): Promise<Message[]> {
+  let liffId: string | null = null;
+  if (accountId) {
+    const { getLineAccountById } = await import('@line-crm/db');
+    const acct = await getLineAccountById(db, accountId);
+    liffId = (acct as unknown as { liff_id?: string | null } | null)?.liff_id ?? null;
+  }
+  const { renderMessageContent } = await import('./render-message.js');
+  const out: Message[] = [];
+  for (const it of items) {
+    let type = it.type;
+    let content = it.content;
+    if (workerUrl && trackLinks) {
+      const { autoTrackContent } = await import('./auto-track.js');
+      const tracked = await autoTrackContent(db, type, content, workerUrl, { lineAccountId: accountId });
+      type = tracked.messageType;
+      content = tracked.content;
+    }
+    if (accountId) content = renderMessageContent(content, liffId);
+    out.push(buildMessage(type, content, it.altText));
+  }
+  return out;
 }
 
 export function buildMessage(messageType: string, messageContent: string, altText?: string): Message {

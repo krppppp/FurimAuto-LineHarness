@@ -238,24 +238,49 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
         <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>
       )}
 
+      {/* Send Progress — プレビューより上に配置してスクロール不要にする */}
+      {broadcast.status === 'sending' && (
+        <div className="mb-4">
+          <ProgressBar totalCount={broadcast.totalCount} successCount={broadcast.successCount} />
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
         {/* Left: Preview */}
         <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">メッセージプレビュー</h3>
-          {broadcast.messageType === 'flex' ? (
-            <FlexPreviewComponent content={broadcast.messageContent} maxWidth={300} />
-          ) : broadcast.messageType === 'image' ? (
-            (() => {
-              try {
-                const img = JSON.parse(broadcast.messageContent)
-                return <img src={img.originalContentUrl} alt="" className="max-w-[300px] rounded-lg" />
-              } catch { return <p className="text-gray-400 text-sm">画像プレビュー不可</p> }
-            })()
-          ) : (
-            <div className="bg-green-500 text-white rounded-2xl rounded-tl-sm px-4 py-3 max-w-[300px] text-sm whitespace-pre-wrap">
-              {broadcast.messageContent}
+          <h3 className="text-sm font-semibold text-gray-700 mb-3">
+            メッセージプレビュー
+            {broadcast.messages && broadcast.messages.length > 1 && (
+              <span className="ml-2 text-xs font-normal text-gray-500">
+                （複数メッセージ・{broadcast.messages.length}通を1回で送信）
+              </span>
+            )}
+          </h3>
+          {/* messages 配列があれば各メッセージを積み上げ表示。無ければ従来の単一プレビュー。 */}
+          {(broadcast.messages && broadcast.messages.length > 0
+            ? broadcast.messages
+            : [{ type: broadcast.messageType, content: broadcast.messageContent }]
+          ).map((m, i, arr) => (
+            <div key={i} className={i < arr.length - 1 ? 'mb-3 pb-3 border-b border-gray-100' : ''}>
+              {arr.length > 1 && (
+                <p className="text-xs text-gray-400 mb-1">{i + 1}通目 / {m.type}</p>
+              )}
+              {m.type === 'flex' ? (
+                <FlexPreviewComponent content={m.content} maxWidth={300} />
+              ) : m.type === 'image' ? (
+                (() => {
+                  try {
+                    const img = JSON.parse(m.content)
+                    return <img src={img.originalContentUrl} alt="" className="max-w-[300px] rounded-lg" />
+                  } catch { return <p className="text-gray-400 text-sm">画像プレビュー不可</p> }
+                })()
+              ) : (
+                <div className="bg-green-500 text-white rounded-2xl rounded-tl-sm px-4 py-3 max-w-[300px] text-sm whitespace-pre-wrap">
+                  {m.content}
+                </div>
+              )}
             </div>
-          )}
+          ))}
         </div>
 
         {/* Right: Settings */}
@@ -358,13 +383,6 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
       {broadcast.status === 'draft' && accountId && (
         <div className="mb-4">
           <TestSendSection broadcastId={id} accountId={accountId} disabled={false} />
-        </div>
-      )}
-
-      {/* Send Progress */}
-      {broadcast.status === 'sending' && (
-        <div className="mb-4">
-          <ProgressBar totalCount={broadcast.totalCount} successCount={broadcast.successCount} />
         </div>
       )}
 

@@ -25,6 +25,8 @@ import { AutomationActionRow, MessageRow,
   resolveTemplateMessages,
   jstNow,
   getFriendScore,
+  hasProcessedStripeAction,
+  markStripeActionProcessed,
 } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
@@ -36,6 +38,10 @@ export interface EventPayload {
   conversionEventName?: string;
   conversionValue?: number;
   replyToken?: string;
+  // 冪等キー(通常はstripe event id)。指定時、automationの各アクションを
+  // (idempotencyKey, automationId:stepIndex) 単位で厳密1回だけ実行する。
+  // cron再処理で非冪等アクション(GAS append/加算・メッセージ送信)が二重にならない。
+  idempotencyKey?: string;
 }
 
 export interface ActionEnv {
@@ -43,6 +49,8 @@ export interface ActionEnv {
   gasDeployId?: string;
   stripeSecretKey?: string;
   lineAccountId?: string | null;
+  richMenuMemberHome?: string;
+  richMenuDefaultHome?: string;
 }
 
 /**
@@ -61,7 +69,7 @@ export async function fireEvent(
   lineAccessToken?: string,
   lineAccountId?: string | null,
   env?: ActionEnv,
-): Promise<void> {
+): Promise<boolean> {
   // Phase 1: fire webhooks, apply scoring rules, and ad conversion postback concurrently.
   const phase1: Promise<unknown>[] = [
     fireOutgoingWebhooks(db, eventType, payload),
@@ -86,11 +94,14 @@ export async function fireEvent(
     : payload;
 
   // Phase 2: evaluate automations and create notifications concurrently.
+  // automationsの全アクション成功可否を返す（呼び出し元が耐久再処理の要否判定に使う）。
+  // 既存の呼び出し元は戻り値を無視するため挙動は不変。
   const actionEnv: ActionEnv = { lineAccessToken, ...env };
-  await Promise.allSettled([
+  const [autoResult] = await Promise.allSettled([
     processAutomations(db, eventType, enrichedPayload, lineAccessToken, lineAccountId, actionEnv),
     processNotifications(db, eventType, enrichedPayload, lineAccountId),
   ]);
+  return autoResult.status === 'fulfilled' ? autoResult.value : false;
 }
 
 /** 送信Webhookへの通知 */
@@ -160,7 +171,9 @@ async function processAutomations(
   lineAccessToken?: string,
   lineAccountId?: string | null,
   env?: ActionEnv,
-): Promise<void> {
+): Promise<boolean> {
+  // 全マッチ automation の全アクションが成功したか。冪等キー指定時、耐久再処理の要否判定に使う。
+  let allAutomationsSuccess = true;
   try {
     const allAutomations = await getActiveAutomationsByEvent(db, eventType);
     const automations = allAutomations.filter(
@@ -168,6 +181,8 @@ async function processAutomations(
     );
 
     const actionEnv: ActionEnv = { lineAccessToken, ...(env ?? {}), lineAccountId };
+    // 冪等キー(stripe event id等)。指定時、各アクションを厳密1回だけ実行する。
+    const idemKey = payload.idempotencyKey;
 
     for (const automation of automations) {
       const conditions = JSON.parse(automation.conditions) as Record<string, unknown>;
@@ -192,7 +207,8 @@ async function processAutomations(
 
       const results: Array<{ action: string; label?: string; success: boolean; error?: string }> = [];
 
-      for (const action of actions) {
+      for (let i = 0; i < actions.length; i++) {
+        const action = actions[i];
         // メッセージ抑制: 発火元がeventData.suppressMessages=trueを立てた場合、
         // 配信系アクションだけスキップする（例: プラン変更のinvoiceで継続課金メッセージを出さない）
         if (action.type === 'send_messages' && payload.eventData?.suppressMessages === true) {
@@ -207,9 +223,19 @@ async function processAutomations(
           }
         }
 
+        // 冪等: このアクションが (idemKey, automationId:stepIndex) で既に成功済みならスキップ。
+        // 初回waitUntil途中死→cron再処理でも、済みアクション(GAS append/加算・送信)を再実行しない。
+        const actionKey = `${automation.id}:${i}`;
+        if (idemKey && await hasProcessedStripeAction(db, idemKey, actionKey)) {
+          results.push({ action: action.type, label: (action.label ?? '') + ' (already-done)', success: true });
+          continue;
+        }
+
         try {
           await executeAction(db, action, payload, actionEnv);
           results.push({ action: action.type, label: action.label, success: true });
+          // 成功したアクションのみ記録（失敗は未記録→次の再処理で再実行される）
+          if (idemKey) await markStripeActionProcessed(db, idemKey, actionKey);
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           results.push({ action: action.type, label: action.label, success: false, error: errorMsg });
@@ -219,6 +245,7 @@ async function processAutomations(
 
       const allSuccess = results.every((r) => r.success);
       const anySuccess = results.some((r) => r.success);
+      if (!allSuccess) allAutomationsSuccess = false;
 
       await createAutomationLog(db, {
         automationId: automation.id,
@@ -230,7 +257,9 @@ async function processAutomations(
     }
   } catch (err) {
     console.error('processAutomations error:', err);
+    allAutomationsSuccess = false;
   }
+  return allAutomationsSuccess;
 }
 
 /** 条件マッチング */
@@ -454,8 +483,13 @@ async function executeAction(
         .bind(friendId)
         .first<{ line_user_id: string }>();
       if (!friend) break;
+      // p.richMenuId が直接指定されていればそれを、なければ p.menu で env から解決
+      let richMenuId: string | undefined = p.richMenuId;
+      if (!richMenuId && p.menu === 'member') richMenuId = env.richMenuMemberHome;
+      if (!richMenuId && p.menu === 'default') richMenuId = env.richMenuDefaultHome;
+      if (!richMenuId) break;
       const lineClient = new LineClient(lineAccessToken);
-      await lineClient.linkRichMenuToUser(friend.line_user_id, p.richMenuId);
+      await lineClient.linkRichMenuToUser(friend.line_user_id, richMenuId);
       break;
     }
 

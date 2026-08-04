@@ -22,6 +22,9 @@ export interface Broadcast {
   dedup_progress: string | null;
   batch_lock_at: string | null;
   track_links: number;
+  // 複数メッセージ配信用。JSON 配列 [{type,content,altText?}] (最大5)。
+  // NULL の場合は message_type/message_content の単一メッセージ経路 (従来挙動)。
+  messages: string | null;
 }
 
 export async function getBroadcasts(db: D1Database, accountId?: string): Promise<Broadcast[]> {
@@ -132,6 +135,7 @@ export type UpdateBroadcastInput = Partial<
     | 'status'
     | 'scheduled_at'
     | 'track_links'
+    | 'messages'
   >
 >;
 
@@ -174,6 +178,10 @@ export async function updateBroadcast(
   if (updates.track_links !== undefined) {
     fields.push('track_links = ?');
     values.push(updates.track_links ? 1 : 0);
+  }
+  if (updates.messages !== undefined) {
+    fields.push('messages = ?');
+    values.push(updates.messages);
   }
 
   if (fields.length > 0) {

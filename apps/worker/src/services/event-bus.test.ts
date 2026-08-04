@@ -36,10 +36,15 @@ function fakeDb(opts: {
   } as unknown as D1Database;
 }
 
+// 冪等記録のインメモリ状態（hasProcessedStripeAction/markStripeActionProcessedをモック）
+const idem = vi.hoisted(() => ({ done: new Set<string>() }));
+
 vi.mock('@line-crm/db', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@line-crm/db');
   return {
     ...actual,
+    hasProcessedStripeAction: vi.fn(async (_db: unknown, ek: string, ak: string) => idem.done.has(`${ek}::${ak}`)),
+    markStripeActionProcessed: vi.fn(async (_db: unknown, ek: string, ak: string) => { idem.done.add(`${ek}::${ak}`); }),
     getActiveOutgoingWebhooksByEvent: vi.fn().mockResolvedValue([]),
     applyScoring: vi.fn().mockResolvedValue(undefined),
     getActiveAutomationsByEvent: vi.fn(),
@@ -347,5 +352,53 @@ describe('fireEvent — call_gas_post capture', () => {
     expect(pushCalls[0][1]).toEqual([
       { type: 'text', text: 'あなたのキーコード: pb_test123' },
     ]);
+  });
+});
+
+describe('fireEvent — 冪等 (idempotencyKey / stripe再処理)', () => {
+  beforeEach(() => { idem.done.clear(); });
+  afterEach(() => { vi.clearAllMocks(); idem.done.clear(); });
+
+  async function setupSingleAddTag() {
+    const db = await import('@line-crm/db');
+    (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      { id: 'auto-idem', line_account_id: null, conditions: '{}', actions: JSON.stringify([{ type: 'add_tag', params: { tagId: 't1' } }]) },
+    ]);
+    return db;
+  }
+
+  it('同じidempotencyKeyでは成功済みアクションを再実行しない (exactly-once)', async () => {
+    const db = await setupSingleAddTag();
+    const addTag = db.addTagToFriend as unknown as { mock: { calls: unknown[][] } };
+    const dbFake = fakeDb({ friend: { line_user_id: 'U' }, capturedInserts: [] });
+    const ok1 = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'f1', idempotencyKey: 'evt_1', eventData: {} });
+    const ok2 = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'f1', idempotencyKey: 'evt_1', eventData: {} });
+    expect(ok1).toBe(true);
+    expect(ok2).toBe(true);
+    expect(addTag.mock.calls).toHaveLength(1); // 2回目はスキップ＝二重実行しない
+  });
+
+  it('idempotencyKey無しなら毎回実行する (後方互換・非stripe経路は挙動不変)', async () => {
+    const db = await setupSingleAddTag();
+    const addTag = db.addTagToFriend as unknown as { mock: { calls: unknown[][] } };
+    const dbFake = fakeDb({ friend: { line_user_id: 'U' }, capturedInserts: [] });
+    await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'f1', eventData: {} });
+    await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'f1', eventData: {} });
+    expect(addTag.mock.calls).toHaveLength(2);
+  });
+
+  it('途中失敗したアクションは再処理で再実行される (取りこぼし補完・堤腰さん事象の再現)', async () => {
+    const db = await setupSingleAddTag();
+    const addTag = db.addTagToFriend as unknown as {
+      mockRejectedValueOnce: (e: unknown) => void;
+      mock: { calls: unknown[][] };
+    };
+    addTag.mockRejectedValueOnce(new Error('GAS timeout (初回waitUntil途中死を模擬)'));
+    const dbFake = fakeDb({ friend: { line_user_id: 'U' }, capturedInserts: [] });
+    const ok1 = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'f1', idempotencyKey: 'evt_2', eventData: {} });
+    const ok2 = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'f1', idempotencyKey: 'evt_2', eventData: {} });
+    expect(ok1).toBe(false); // 初回失敗→未完(=stripe_eventはcompletedにならずcron再処理される)
+    expect(ok2).toBe(true);  // 再処理で成功
+    expect((addTag as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(2); // 失敗分だけ再実行
   });
 });

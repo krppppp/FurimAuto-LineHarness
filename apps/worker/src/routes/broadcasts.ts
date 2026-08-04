@@ -58,6 +58,14 @@ function serializeBroadcast(row: DbBroadcast) {
     failedAccountIds: parseJsonArray(r.failed_account_ids),
     // 046 以前の行/未マイグレーション環境では undefined → 従来挙動 (ON) 扱い
     trackLinks: row.track_links === undefined ? true : row.track_links !== 0,
+    // 複数メッセージ配信: [{type,content,altText?}] or null (単一メッセージ)。
+    messages: (() => {
+      try {
+        return r.messages ? (JSON.parse(r.messages as string) as unknown[]) : null;
+      } catch {
+        return null;
+      }
+    })(),
     createdAt: row.created_at,
   };
 }
@@ -273,6 +281,7 @@ broadcasts.post('/api/broadcasts', async (c) => {
       accountIds?: string[];
       dedupPriority?: string[];
       trackLinks?: boolean;
+      messages?: Array<{ type: string; content: string; altText?: string }>;
     }>();
 
     if (!body.title || !body.messageType || !body.messageContent || !body.targetType) {
@@ -287,6 +296,22 @@ broadcasts.post('/api/broadcasts', async (c) => {
         { success: false, error: 'targetTagId is required when targetType is "tag"' },
         400,
       );
+    }
+
+    // 複数メッセージ配信のバリデーション (指定時のみ)。最大5件・各 type/content 必須。
+    if (body.messages !== undefined) {
+      if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 5) {
+        return c.json({ success: false, error: 'messages must be an array of 1 to 5 items' }, 400);
+      }
+      for (const m of body.messages) {
+        if (!m || typeof m.content !== 'string' || m.content.length === 0
+          || !['text', 'image', 'flex'].includes(m.type)) {
+          return c.json(
+            { success: false, error: 'each message needs a non-empty content and type of text|image|flex' },
+            400,
+          );
+        }
+      }
     }
 
     if (body.targetType === 'multi-account-dedup') {
@@ -318,6 +343,7 @@ broadcasts.post('/api/broadcasts', async (c) => {
     const binds: unknown[] = [];
     if (body.lineAccountId) { updates.push('line_account_id = ?'); binds.push(body.lineAccountId); }
     if (body.altText) { updates.push('alt_text = ?'); binds.push(body.altText); }
+    if (body.messages !== undefined) { updates.push('messages = ?'); binds.push(JSON.stringify(body.messages.slice(0, 5))); }
     if (updates.length > 0) {
       binds.push(broadcast.id);
       await c.env.DB.prepare(`UPDATE broadcasts SET ${updates.join(', ')} WHERE id = ?`)
@@ -353,7 +379,24 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       targetTagId?: string | null;
       scheduledAt?: string | null;
       trackLinks?: boolean;
+      messages?: Array<{ type: string; content: string; altText?: string }> | null;
     }>();
+
+    // 複数メッセージ配信の更新バリデーション (指定時のみ; null は解除)。
+    if (body.messages !== undefined && body.messages !== null) {
+      if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 5) {
+        return c.json({ success: false, error: 'messages must be an array of 1 to 5 items' }, 400);
+      }
+      for (const m of body.messages) {
+        if (!m || typeof m.content !== 'string' || m.content.length === 0
+          || !['text', 'image', 'flex'].includes(m.type)) {
+          return c.json(
+            { success: false, error: 'each message needs a non-empty content and type of text|image|flex' },
+            400,
+          );
+        }
+      }
+    }
 
     // Keep status in sync with scheduledAt changes
     let statusUpdate: 'draft' | 'scheduled' | undefined;
@@ -370,6 +413,9 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       scheduled_at: body.scheduledAt,
       ...(body.trackLinks !== undefined ? { track_links: body.trackLinks ? 1 : 0 } : {}),
       ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
+      ...(body.messages !== undefined
+        ? { messages: body.messages === null ? null : JSON.stringify(body.messages.slice(0, 5)) }
+        : {}),
     });
 
     // 失敗 partial dedup broadcast を draft に戻して編集 → 再送するケースで、

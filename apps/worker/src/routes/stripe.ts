@@ -3,46 +3,14 @@ import {
   getStripeEvents,
   getStripeEventByStripeId,
   createStripeEvent,
+  markStripeEventCompleted,
+  markStripeEventFailed,
   getFriendByLineUserId,
-  jstNow,
 } from '@line-crm/db';
-import { LineClient } from '@line-crm/line-sdk';
-import { gasGet, gasPost } from '../furim/gas-client.js';
-import { fireEvent } from '../services/event-bus.js';
-import { logOutgoing } from '../utils/message-log.js';
+import { processStripeEvent, type StripeWebhookBody } from '../services/stripe-processor.js';
 import type { Env } from '../index.js';
 
 const stripe = new Hono<Env>();
-
-interface StripeWebhookBody {
-  id: string;
-  type: string;
-  data: {
-    object: {
-      id: string;
-      // subscription / payment_intent 共通
-      amount?: number;
-      currency?: string;
-      metadata?: Record<string, string>;
-      customer?: string;
-      status?: string;
-      // invoice 固有
-      subscription?: string;
-      billing_reason?: string;
-      amount_paid?: number;
-      customer_email?: string;
-      tax?: number;
-      total_excluding_tax?: number;
-      subtotal?: number;
-      total_discount_amounts?: Array<{ amount: number }>;
-      attempt_count?: number;
-      lines?: { data?: Array<{ price?: { unit_amount?: number; nickname?: string }; period?: { start?: number; end?: number } }> };
-      // subscription 固有
-      plan?: { amount?: number; nickname?: string };
-      items?: { data?: Array<{ price?: { unit_amount?: number } }> };
-    };
-  };
-}
 
 // ========== Stripeイベント一覧 ==========
 
@@ -124,9 +92,9 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
       return c.json({ success: true, data: { message: 'Already processed' } });
     }
 
-    const obj = body.data.object;
     const db = c.env.DB;
     const env = c.env;
+    const obj = body.data.object;
 
     // Stripeメタデータの lineUserId（LINE U...ID）から内部友達IDを引く
     const lineUserId = obj.metadata?.lineUserId ?? null;
@@ -136,7 +104,10 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
       friendId = friend?.id ?? null;
     }
 
-    // イベントを記録
+    // イベントを記録（payload保存・status=pending）。処理は waitUntil + cron sweep の二段構え:
+    // waitUntil はレスポンス後約30秒で打ち切られるため、GAS遅延等で本処理が途中死した場合は
+    // pending のまま残り、5分cronの sweepPendingStripeEvents が再処理する（2026-07-20 継続課金事故対策）。
+    // 冪等性レコードを先に挿入するので、処理中に Stripe の再送が来ても Already processed で弾かれる。
     const event = await createStripeEvent(db, {
       stripeEventId: body.id,
       eventType: body.type,
@@ -144,330 +115,21 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
       amount: obj.amount,
       currency: obj.currency,
       metadata: JSON.stringify(obj.metadata ?? {}),
+      payload: JSON.stringify(body),
+      status: 'pending',
     });
 
-    // Stripe は約20秒で応答が無いと配信失敗（タイムアウト）扱いにして再送する。
-    // 本処理は GAS 連携等で20秒を超え得るため、先に 200 を返して waitUntil で
-    // 非同期実行する。冪等性レコード（createStripeEvent）は挿入済みなので、
-    // 処理中に再送が来ても Already processed で弾かれ二重処理はない（従来と同じ）。
-    const processEvent = async () => {
-
-    const actionEnv = { lineAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN, gasDeployId: env.GAS_DEPLOY_ID, stripeSecretKey: env.STRIPE_SECRET_KEY };
-
-    // ──────────────────────────────────────────
-    // invoice.payment_succeeded
-    // ──────────────────────────────────────────
-    if (body.type === 'invoice.payment_succeeded') {
-      const stripeCustomerId = obj.customer ?? '';
-      const billingReason = obj.billing_reason ?? '';
-      const isNewSubscription = billingReason === 'subscription_create';
-
-      // LINE ID を解決（メタデータになければGASシートで照合）
-      let resolvedLineUserId = lineUserId;
-      if (!resolvedLineUserId && stripeCustomerId && env.GAS_DEPLOY_ID) {
-        try {
-          const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
-          resolvedLineUserId = gasData?.customer_line_id ?? null;
-        } catch (e) {
-          console.error('[stripe/invoice] getLINEIDwithStripeID failed:', e);
-        }
-      }
-
-      // Stripe APIでサブスクリプション詳細を取得
-      // Stripe API 2025-03(basil)以降、invoice.subscriptionはparent.subscription_details配下に移動。
-      // エンドポイントのapi_version固定値により新旧どちらの形でも届きうるため両対応する
-      const subscriptionId =
-        obj.subscription ??
-        (obj as { parent?: { subscription_details?: { subscription?: string } } }).parent?.subscription_details?.subscription ??
-        '';
-      let planName = '';
-      let subscriptionPrice = 0;
-      let subscriptionStartDateTime = '';
-      let subscriptionEndDateTime = '';
-      let subMetadata: Record<string, string> = {};
-      if (subscriptionId && env.STRIPE_SECRET_KEY) {
-        try {
-          const subRes = await fetch(`https://api.stripe.com/v1/subscriptions/${subscriptionId}`, { headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` } });
-          if (subRes.ok) {
-            const sub = await subRes.json() as { plan?: { nickname?: string; amount?: number }; items?: { data?: Array<{ price?: { unit_amount?: number }; quantity?: number }> }; current_period_start?: number; current_period_end?: number; metadata?: Record<string, string> };
-            planName = sub.plan?.nickname ?? '';
-            // サブスク価格＝継続課金の月額総額。plan-builder(複数item)では plan.amount が取れないため
-            // 全item の unit_amount×quantity を合計する。これは差額invoice(アップグレード)でも常に
-            // 「新プランの月額総額」を返す（invoice合計=差額 とは別物）。単一itemのlegacyでも sum=plan.amount。
-            const itemsTotal = (sub.items?.data ?? []).reduce((t, it) => t + (it.price?.unit_amount ?? 0) * (it.quantity ?? 1), 0);
-            subscriptionPrice = itemsTotal || (sub.plan?.amount ?? 0);
-            subMetadata = sub.metadata ?? {};
-            const jstOffset = (9 * 60 + 15) * 60000;
-            if (sub.current_period_start) subscriptionStartDateTime = new Date(sub.current_period_start * 1000 + jstOffset).toISOString().replace('T', ' ').slice(0, 19);
-            if (sub.current_period_end) subscriptionEndDateTime = new Date(sub.current_period_end * 1000 + jstOffset).toISOString().replace('T', ' ').slice(0, 19);
-          }
-        } catch (e) { console.error('[stripe/invoice] subscriptions.retrieve failed:', e); }
-      }
-
-      // subscription metadataのlineUserIdをフォールバックに使う
-      // （invoice metadataには載らず、CheckoutがStripe顧客を新規作成した場合はシート照合も効かないため）
-      if (!resolvedLineUserId && subMetadata.lineUserId) resolvedLineUserId = subMetadata.lineUserId;
-
-      // plan-builder（機能単位サブスク）: metadataの機能セットを顧客行フラグへ同期。
-      // 初回・毎月更新の両方で発火し、premiumは支払いごとにチケット200枚付与。
-      // ラベルは「プラン」を含む "PBプラン:" 接頭必須（getKeyCodeSetの期限切れ文言・
-      // setExtendTrialByKeywordの有料者判定・sendStepMessagesの配信除外の3判定が
-      // planName.includes("プラン") を見るため）。
-      const isPlanBuilder = subMetadata.source === 'plan-builder';
-      if (isPlanBuilder && env.GAS_DEPLOY_ID) {
-        try {
-          const pbPackages = subMetadata.packages ?? '';
-          const pbLabel = 'PBプラン:' + [pbPackages, subMetadata.features].filter(Boolean).join('+');
-          const result = await gasPost(env.GAS_DEPLOY_ID, {
-            method: 'syncFeaturesFromSubscription',
-            lineUserId: subMetadata.lineUserId ?? resolvedLineUserId ?? '',
-            stripeCustomerID: stripeCustomerId,
-            packages: pbPackages,
-            features: subMetadata.features ?? '',
-            multiChannelSites: subMetadata.multiChannelSites ?? '',
-            subscriptionId,
-            planLabel: pbLabel,
-            grantPremiumTickets: pbPackages.split(',').includes('premium'),
-          });
-          console.log('[stripe/invoice] plan-builder sync:', JSON.stringify(result).slice(0, 200));
-          // PBサブスクはStripe側にplan.nicknameが無くplanNameが空になる。
-          // 空のままだと後続automationのsetSubscriptionDataがプラン名を空上書きするため、
-          // GASが合成した日本語ラベル（なければキーベースのラベル）で埋める
-          const syncRes = result as { planLabel?: string; keyCode?: string; keyCodeIssued?: boolean } | null;
-          if (!planName) planName = syncRes?.planLabel || pbLabel;
-
-          // キーコードが再発行された場合は新キーコードをユーザーへ通知する。
-          // - subscription_cycle: ダウングレード予約の切替日・移行顧客の初回更新（ラベル変化で再発行）
-          // - subscription_update: アップグレード即時実行の差額invoice。通常はplan-change.tsの
-          //   同期が先に発行して返信するが、この同期が競合で先勝ちした場合（2026-07-14 澁谷さん
-          //   事象の類型）はplan-change側がkeyCodeIssued=falseになり通知が漏れるため、ここで送る。
-          //   発行判定は冪等（ラベル一致なら再発行しない）ので二重通知にはならない
-          if (syncRes?.keyCodeIssued && syncRes.keyCode && (billingReason === 'subscription_cycle' || billingReason === 'subscription_update') && resolvedLineUserId && env.LINE_CHANNEL_ACCESS_TOKEN) {
-            try {
-              // キーコードは単独メッセージで送る（LINE はメッセージ単位でしかコピーできないため）
-              const kcText = `🔑 本日の更新でご予約のプラン変更が適用され、キーコードが新しくなりました。\n\n次のメッセージでお送りするキーコードをコピーして、拡張機能のキーコード欄に入力し直してご利用ください。`;
-              await new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN).pushMessage(resolvedLineUserId, [
-                { type: 'text', text: kcText } as never,
-                { type: 'text', text: syncRes.keyCode } as never,
-              ]);
-              const kcFriend = await getFriendByLineUserId(db, resolvedLineUserId);
-              if (kcFriend) {
-                await logOutgoing(db, kcFriend.id, 'text', kcText);
-                await logOutgoing(db, kcFriend.id, 'text', syncRes.keyCode);
-              }
-            } catch (e) {
-              console.error('[stripe/invoice] keycode notice failed:', e);
-            }
-          }
-        } catch (e) {
-          console.error('[stripe/invoice] syncFeaturesFromSubscription failed:', e);
-        }
-
-        if (isNewSubscription) {
-          // 併用割引(combo)の後付け: 初月は顧客クーポン（または合算クーポン）を効かせるため
-          // Checkoutでcomboを渡していない。2ヶ月目以降に効くcombo(forever)をここで適用する
-          if (subMetadata.pendingComboCoupon && subscriptionId && env.STRIPE_SECRET_KEY) {
-            try {
-              await fetch(`https://api.stripe.com/v1/subscriptions/${subscriptionId}`, {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({ coupon: subMetadata.pendingComboCoupon }).toString(),
-              });
-              console.log('[stripe/invoice] pending combo coupon applied:', subMetadata.pendingComboCoupon);
-            } catch (e) { console.error('[stripe/invoice] pending combo coupon failed:', e); }
-          }
-          // 合算初月クーポン（半額+併用割引）の後始末:
-          // クーポンオブジェクト削除（一覧を汚さない。適用済みの請求には影響しない）
-          if (subMetadata.mergedCouponId && env.STRIPE_SECRET_KEY) {
-            try {
-              await fetch(`https://api.stripe.com/v1/coupons/${subMetadata.mergedCouponId}`, {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
-              });
-            } catch (e) { console.error('[stripe/invoice] merged coupon delete failed:', e); }
-          }
-          // 顧客レベルクーポンの消し込み: 合算クーポンで初月の割引は提供済みのため、
-          // 顧客に残った once クーポンを外す（残すと将来のinvoiceで二重適用される）
-          if (subMetadata.consumedCustomerCoupon === '1' && stripeCustomerId && env.STRIPE_SECRET_KEY) {
-            try {
-              await fetch(`https://api.stripe.com/v1/customers/${stripeCustomerId}/discount`, {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
-              });
-              console.log('[stripe/invoice] customer coupon consumed (merged into first invoice)');
-            } catch (e) { console.error('[stripe/invoice] customer discount delete failed:', e); }
-          }
-        }
-      }
-
-      // プラン金額tier計算（19800超は最上位タグに丸める）
-      // サブスク継続課金の月額総額（上で算出した subscriptionPrice=全item合計）を最優先。
-      // アップグレードの差額invoiceでは invoice合計(total_excluding_tax/subtotal)=差額 になるため、
-      // サブスク価格・tier判定には継続課金総額を使う必要がある（差額を使うと過小評価）。
-      // 継続課金総額が取れない場合のみ従来フォールバック（PB=invoice税抜合計 / legacy=先頭item単価）。
-      const tiers = [3000, 5000, 8000, 10000, 15000, 19800];
-      const planAmount = subscriptionPrice
-        || (isPlanBuilder
-          ? (obj.total_excluding_tax ?? obj.subtotal ?? 0)
-          : (obj.lines?.data?.[0]?.price?.unit_amount ?? 0));
-      const planTier = tiers.find((t) => planAmount <= t) ?? 19800;
-
-      // 複数discountスタック対応: 併用割引+キャンペーンクーポン等の合算（[0]だけだと2枚目以降が漏れる）
-      const discountAmount = (obj.total_discount_amounts ?? []).reduce((t, d) => t + (d.amount ?? 0), 0);
-      const taxAmount = obj.tax ?? 0;
-      const actualPaidAmount = obj.amount_paid ?? 0;
-      const priceExclTax = actualPaidAmount - taxAmount;
-
-      // ambassador coupon: GASで紹介クーポン確認 → Stripeクーポン適用（code_managed相当・継続課金時のみ）
-      // アンバサダー紹介クーポン: 従来の顧客レベル適用は、サブスク側discount（併用割引）を
-      // 持つ顧客には一切効かない（サブスク側優先のため不発）。サブスクへのスタック追加に変更（2026-07-14）
-      let ambassadorCouponApplied = false;
-      if (!isNewSubscription && resolvedLineUserId && env.GAS_DEPLOY_ID && stripeCustomerId) {
-        try {
-          const couponData = await gasGet(env.GAS_DEPLOY_ID, { method: 'updateIntroductionCoupon', lineID: resolvedLineUserId }) as Record<string, string> | null;
-          const ambassadorCouponId = couponData?.ambassadorCouponID ?? null;
-          if (ambassadorCouponId && env.STRIPE_SECRET_KEY) {
-            if (subscriptionId) {
-              const { getSubDiscounts, stripeCall, STRIPE_STACK_VERSION } = await import('./plan-builder.js');
-              const existingDiscounts = await getSubDiscounts(env.STRIPE_SECRET_KEY, subscriptionId);
-              if (existingDiscounts.some((d) => d.couponId === ambassadorCouponId)) {
-                console.log('[stripe/invoice] ambassador coupon already stacked:', ambassadorCouponId);
-              } else {
-                const stackParams: Record<string, string> = {};
-                existingDiscounts.forEach((d, i) => {
-                  stackParams[`discounts[${i}][discount]`] = d.discountId;
-                });
-                stackParams[`discounts[${existingDiscounts.length}][coupon]`] = ambassadorCouponId;
-                await stripeCall(env.STRIPE_SECRET_KEY, `subscriptions/${subscriptionId}`, stackParams, 'POST', STRIPE_STACK_VERSION);
-                ambassadorCouponApplied = true;
-                console.log('[stripe/invoice] ambassador coupon stacked:', ambassadorCouponId, 'onto', subscriptionId);
-              }
-            } else {
-              // サブスクIDが取れない場合のフォールバック（従来動作: 顧客レベル適用）
-              await fetch(`https://api.stripe.com/v1/customers/${stripeCustomerId}`, {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({ coupon: ambassadorCouponId }).toString(),
-              });
-              ambassadorCouponApplied = true;
-            }
-          }
-        } catch (e) { console.error('[stripe/invoice] ambassador coupon failed:', e); }
-      }
-
-      const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
-      await fireEvent(db, 'stripe_invoice_paid', {
-        friendId: resolvedFriend?.id ?? friendId ?? undefined,
-        eventData: {
-          stripeCustomerId, lineUserId: resolvedLineUserId, billingReason, isNewSubscription,
-          // プラン変更(subscription_update)の差額invoiceでは継続課金メッセージを出さない
-          // （変更完了+新キーコードの案内はplan-change.tsが返信済み）
-          suppressMessages: billingReason === 'subscription_update',
-          // isLegacyPlan: 旧プラン一覧ベースのサブスク（automation側のsetKeyCode等はこちらだけ実行）
-          source: subMetadata.source ?? '', isLegacyPlan: !isPlanBuilder,
-          planName, planAmount, planTier,
-          subscriptionId, subscriptionStartDateTime, subscriptionEndDateTime,
-          actualPaidAmount, discountAmount, taxAmount, priceExclTax,
-          customerEmail: obj.customer_email ?? '',
-          invoiceId: obj.id,
-          ambassadorCouponApplied,
-        },
-      }, env.LINE_CHANNEL_ACCESS_TOKEN, null, actionEnv);
-
-      console.log(`[stripe/invoice] ${billingReason} customer=${stripeCustomerId} lineUserId=${resolvedLineUserId}`);
-    }
-
-    // ──────────────────────────────────────────
-    // invoice.payment_failed（初回のみLINE通知）
-    // ──────────────────────────────────────────
-    if (body.type === 'invoice.payment_failed') {
-      const attemptCount = obj.attempt_count ?? 0;
-      if (attemptCount !== 1) {
-        console.log(`[stripe/payment_failed] attempt_count=${attemptCount} のためスキップ`);
-      } else {
-        const stripeCustomerId = obj.customer ?? '';
-        let resolvedLineUserId = lineUserId;
-        if (!resolvedLineUserId && stripeCustomerId && env.GAS_DEPLOY_ID) {
-          try {
-            const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
-            resolvedLineUserId = gasData?.customer_line_id ?? null;
-          } catch (e) { console.error('[stripe/payment_failed] getLINEIDwithStripeID failed:', e); }
-        }
-        const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
-        await fireEvent(db, 'stripe_payment_failed', {
-          friendId: resolvedFriend?.id ?? friendId ?? undefined,
-          eventData: { stripeCustomerId, lineUserId: resolvedLineUserId },
-        }, env.LINE_CHANNEL_ACCESS_TOKEN, null, actionEnv);
-      }
-    }
-
-    // ──────────────────────────────────────────
-    // customer.subscription.deleted
-    // ──────────────────────────────────────────
-    if (body.type === 'customer.subscription.deleted') {
-      const stripeCustomerId = obj.customer ?? '';
-      let resolvedLineUserId = lineUserId;
-      if (!resolvedLineUserId && stripeCustomerId && env.GAS_DEPLOY_ID) {
-        try {
-          const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
-          resolvedLineUserId = gasData?.customer_line_id ?? null;
-        } catch (e) { console.error('[stripe/subscription.deleted] getLINEIDwithStripeID failed:', e); }
-      }
-      const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
-      await fireEvent(db, 'stripe_subscription_deleted', {
-        friendId: resolvedFriend?.id ?? friendId ?? undefined,
-        eventData: { stripeCustomerId, lineUserId: resolvedLineUserId, subscriptionId: obj.id },
-      }, env.LINE_CHANNEL_ACCESS_TOKEN, null, actionEnv);
-
-      // plan-builderサブスクの解約: 全フラグOFF（キーコード・端末判定文字列は残す）
-      // planLabelは渡さない: 直前のautomation(deleteSubscription)がプラン名に書いた
-      // 「キャンセル済み」を上書きしないため（getKeyCodeSetのキャンセル判定が見る）
-      if (obj.metadata?.source === 'plan-builder' && env.GAS_DEPLOY_ID) {
-        try {
-          await gasPost(env.GAS_DEPLOY_ID, {
-            method: 'syncFeaturesFromSubscription',
-            lineUserId: obj.metadata?.lineUserId ?? resolvedLineUserId ?? '',
-            stripeCustomerID: stripeCustomerId,
-            subscriptionId: obj.id,
-            clearAll: true,
-          });
-        } catch (e) {
-          console.error('[stripe/subscription.deleted] syncFeaturesFromSubscription failed:', e);
-        }
-      }
-    }
-
-    // ──────────────────────────────────────────
-    // payment_intent.succeeded（一回決済）
-    // ──────────────────────────────────────────
-    if (body.type === 'payment_intent.succeeded') {
-      if (obj.metadata?.purchaseType === 'ticket') {
-        const ticketLineUserId = obj.metadata?.lineUserId ?? lineUserId;
-        const quantity = parseInt(obj.metadata?.quantity ?? '0', 10);
-        if (ticketLineUserId && quantity > 0) {
-          const ticketFriend = await getFriendByLineUserId(db, ticketLineUserId);
-          await fireEvent(db, 'stripe_ticket_purchased', {
-            friendId: ticketFriend?.id ?? undefined,
-            eventData: { lineUserId: ticketLineUserId, quantity, paymentIntentId: obj.id, amount: obj.amount ?? 0, currency: obj.currency ?? 'jpy' },
-          }, env.LINE_CHANNEL_ACCESS_TOKEN, null, actionEnv);
-        }
-      } else if (friendId) {
-        const { applyScoring } = await import('@line-crm/db');
-        await applyScoring(db, friendId, 'purchase');
-        const productId = obj.metadata?.product_id;
-        if (productId) {
-          const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(`purchased_${productId}`).first<{ id: string }>();
-          if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friendId, tag.id, jstNow()).run();
-        }
-        await fireEvent(db, 'cv_fire', { friendId, eventData: { type: 'purchase', amount: obj.amount, stripeEventId: body.id } });
-      }
-    }
-
-    };
     c.executionCtx.waitUntil(
-      processEvent().catch((err) => {
-        console.error('[stripe/webhook] async processing error:', err);
-      }),
+      (async () => {
+        try {
+          await processStripeEvent(db, env, body);
+          await markStripeEventCompleted(db, event.id);
+        } catch (err) {
+          console.error('[stripe/webhook] async processing error:', err);
+          // pending のまま残して cron sweep に再処理させる
+          await markStripeEventFailed(db, event.id, String(err), true).catch(() => {});
+        }
+      })(),
     );
 
     return c.json({
