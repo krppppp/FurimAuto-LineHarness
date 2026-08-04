@@ -178,6 +178,41 @@ webhook.post('/webhook', async (c) => {
   return c.json({ status: 'ok' }, 200);
 });
 
+/**
+ * ユーザーのメッセージに応答するハンドラを安全に実行する。
+ *
+ * GAS(Apps Script)は負荷が高いと doGet が DEADLINE_EXCEEDED で落ち、gasGet/gasPost が throw する。
+ * ハンドラ内で握っていないとユーザーには「送ったのに一切返信が来ない」だけが残り、
+ * GAS側のエラーシートにも出ないため気づけない
+ * （2026-08-03 Keishi/なるやん さんの「キーコードリセット」が無言で消えた事例）。
+ *
+ * 失敗しても必ず何か返す。replyToken は消費済み/期限切れの可能性があるので push で送る。
+ * 戻り値は「この分岐で処理を終える」= true。後続の分岐へは流さない。
+ */
+async function runHandlerSafely(
+  label: string,
+  lineClient: { pushMessage: (to: string, messages: never[]) => Promise<unknown> },
+  userId: string,
+  retryHint: string,
+  fn: () => Promise<boolean | void>,
+): Promise<boolean> {
+  try {
+    const handled = await fn();
+    return handled !== false;
+  } catch (err) {
+    console.error(`[webhook] ${label} failed:`, userId, err);
+    try {
+      await lineClient.pushMessage(userId, [{
+        type: 'text',
+        text: `申し訳ございません。処理中に一時的なエラーが発生しました。\nお手数ですが、少し時間をおいて${retryHint}🙇`,
+      } as never]);
+    } catch (pushErr) {
+      console.error(`[webhook] ${label} fallback push failed:`, pushErr);
+    }
+    return true;
+  }
+}
+
 async function handleEvent(
   db: D1Database,
   lineClient: LineClient,
@@ -450,7 +485,10 @@ async function handleEvent(
 
     // 【ボタン】アクション
     if (incomingText.includes('【ボタン】') && env?.GAS_DEPLOY_ID) {
-      await handleButtonAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
+      // クロージャに渡すと env の絞り込みが外れるので、ここで確定させる
+      const gasDeployId = env.GAS_DEPLOY_ID;
+      await runHandlerSafely('handleButtonAction', loggingClient, userId, 'もう一度ボタンをタップしてください', () =>
+        handleButtonAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db));
       return;
     }
 
@@ -462,21 +500,27 @@ async function handleEvent(
 
     // FurimAutoアクション: GAS連携等の業務処理
     if (env?.GAS_DEPLOY_ID) {
-      const furimHandled = await handleFurimAction(loggingClient, userId, event.replyToken, incomingText, {
-        GAS_DEPLOY_ID: env.GAS_DEPLOY_ID,
+      const gasDeployId = env.GAS_DEPLOY_ID;
+      const furimHandled = await runHandlerSafely('handleFurimAction', loggingClient, userId, 'もう一度お試しください', () => handleFurimAction(loggingClient, userId, event.replyToken, incomingText, {
+        GAS_DEPLOY_ID: gasDeployId,
         FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL,
         STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
         PLAN_BUILDER_LIFF_URL: env.PLAN_BUILDER_LIFF_URL,
         WORKER_URL: env.WORKER_URL,
         WORKER_PUBLIC_URL: workerUrl,
         FURIM_AMBASSADOR_OFFER_ID: env.FURIM_AMBASSADOR_OFFER_ID,
-      }, db);
+      }, db));
       if (furimHandled) return;
     }
 
     // 【キーワード】アクション（"キーコードリセット"のみプレフィックスなしの単体文字列でも動く特別対応）
     if ((incomingText.includes('【キーワード】') || incomingText.includes('キーコードリセット')) && env?.GAS_DEPLOY_ID) {
-      await handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
+      const retryHint = incomingText.includes('キーコードリセット')
+        ? 'もう一度「キーコードリセット」と送信してください'
+        : 'もう一度お試しください';
+      const gasDeployId = env.GAS_DEPLOY_ID;
+      await runHandlerSafely('handleKeywordAction', loggingClient, userId, retryHint, () =>
+        handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db));
       return;
     }
 
