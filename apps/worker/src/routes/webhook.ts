@@ -543,7 +543,18 @@ async function handleEvent(
 
     // 解説見た/解説みたキーワード（AIチャットモード中でも通す）
     if ((incomingText.trim() === '解説見た' || incomingText.trim() === '解説みた') && env?.GAS_DEPLOY_ID) {
-      await actionExtendTrial(loggingClient, userId, event.replyToken, env.GAS_DEPLOY_ID, db);
+      try {
+        await actionExtendTrial(loggingClient, userId, event.replyToken, env.GAS_DEPLOY_ID, db);
+      } catch (err) {
+        // GASの応答遅延でreplyTokenが失効すると延長成功後でも無言死する
+        // (2026-08-05 すがやさんの事例)。pushで結果を届ける
+        console.error('[webhook] actionExtendTrial failed:', userId, err);
+        try {
+          await loggingClient.pushMessage(userId, [{ type: 'text', text: '申し訳ございません。処理に時間がかかっております。「解説見た」の特典が反映されているかこちらで確認いたしますので、少々お待ちください🙇' } as never]);
+        } catch (pushErr) {
+          console.error('[webhook] actionExtendTrial fallback push failed:', pushErr);
+        }
+      }
       return;
     }
 
