@@ -68,6 +68,7 @@ import { processPendingCouponNotifications } from './services/coupon-notificatio
 import { planBuilder } from './routes/plan-builder.js';
 import { messagesRoute } from './routes/messages.js';
 import { processKaisetsuDeliveries } from './services/kaisetsu-delivery.js';
+import { sweepPendingStripeEvents } from './services/stripe-processor.js';
 import { forms } from './routes/forms.js';
 import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
@@ -997,6 +998,9 @@ async function scheduled(
   );
   jobs.push(processQueuedBroadcasts(env.DB, defaultLineClient, env.WORKER_URL));
   jobs.push(checkAccountHealth(env.DB));
+  // pendingのまま滞留したstripe_eventsの再処理（052/054のdurable設計の消費側。
+  // 未配線のままpendingが永久放置される事故が2026-08-01〜05に8件発生した対策）
+  jobs.push(sweepPendingStripeEvents(env.DB, env));
 
   await Promise.allSettled(jobs);
 
