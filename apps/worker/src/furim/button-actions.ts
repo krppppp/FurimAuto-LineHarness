@@ -8,6 +8,8 @@ export type ButtonActionsEnv = {
   STRIPE_SECRET_KEY?: string;
 };
 
+const PLAN_BUILDER_LIFF_URL = 'https://liff.line.me/1661091589-81CpgAs1';
+
 const FEATURE_VIDEOS: Record<string, { url: string; manual: string }> = {
   '値段変更(ワンバイワン)': { url: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E5%80%A4%E6%AE%B5%E5%A4%89%E6%9B%B4.mov', manual: 'https://furimauto.com/howto/#ｍChangePrice' },
   'コメント投稿(ワンバイワン)': { url: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%82%B3%E3%83%A1%E3%83%B3%E3%83%88%E6%8A%95%E7%A8%BF.mov', manual: 'https://furimauto.com/howto/#ｍComment' },
@@ -116,6 +118,35 @@ export async function handleButtonAction(
         await switchSegmentTag(db, friend.id, 2);
         if (surveyResult === '紹介') await logOutgoing(db, friend.id, 'text', referralPushText);
       }
+    }
+    return true;
+  }
+
+  // 解約理由アンケート（月額解約フローのFlexから）: タグで記録し、理由に応じて再開提案を返す
+  if (text.includes('解約理由:')) {
+    const reason = text.split(':')[1] ?? '';
+    if (db && reason) {
+      const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
+      if (friend) {
+        const tagName = `解約理由:${reason}`;
+        let tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+        if (!tag) {
+          await db.prepare('INSERT OR IGNORE INTO tags (id, name) VALUES (?, ?)').bind(crypto.randomUUID(), tagName).run();
+          tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+        }
+        if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friend.id, tag.id).run();
+      }
+    }
+    const thanks = 'ご回答ありがとうございます🙇\n今後のサービス改善に活用させていただきます。';
+    if (reason === '物販休止' || reason === '他ツールへ乗り換え') {
+      await lineClient.replyMessage(replyToken, [
+        { type: 'text', text: `${thanks}\n\nまた物販を再開される際は、いつでもこのLINEからお待ちしております！` } as never,
+      ]);
+    } else {
+      await lineClient.replyMessage(replyToken, [
+        { type: 'text', text: thanks } as never,
+        { type: 'text', text: `💡【機能を絞って安く続ける選択肢も】\n\nFurimAutoは必要な機能だけを選べるビュッフェ式です🍽\nよく使う機能1つだけなら月980円(税抜)から再開できます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n${PLAN_BUILDER_LIFF_URL}` } as never,
+      ]);
     }
     return true;
   }

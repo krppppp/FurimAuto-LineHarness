@@ -10,6 +10,7 @@ import { execSync } from 'child_process';
 const isProd = process.argv.includes('--prod');
 const isRebase = process.argv.includes('--rebase');
 const friendAddOnly = process.argv.includes('--friend-add-only');
+const cancelOnly = process.argv.includes('--cancel-only');
 const DB_NAME = isProd ? 'line-crm-prod' : isRebase ? 'line-crm-rebase' : 'line-crm';
 const CWD = new URL('../apps/worker', import.meta.url).pathname;
 console.log(`[seed-automations] DB: ${DB_NAME} (${isProd ? 'PROD' : 'DEV'})\n`);
@@ -119,7 +120,27 @@ const SURVEY_FLEX = JSON.stringify({
 // ユーザー自身に押させることがエンゲージメントのきっかけになるため）。トライアル全機能化の訴求のみ反映
 const WELCOME_TEXT = '/／\n🗣 友達登録ありがとうございます！\n\\＼\n╭△━━━━━━━━━━━━━━━╮\nたった今から、\n全機能が使い放題の\n1週間無料試用期間が\n開始となります！🎉\n╰━━━━━━━━━━━━━━━━╯\n\nFurimAuto(フリマート)は\nメルカリを中心に、\nそのフリマサイト上で自動化を実現する\nChrome拡張機能型ツールです！💻\n\n---------------------------------------------------\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢\n\n👆どんな使い方をするのか、\n👆サクッと基本を知るには\n👆上の動画\n\n👇1週間の無料期間での\n👇ベストな使い方を知るには\n👇下の動画\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢';
 
+// 解約理由アンケート（1タップ回答→button-actions.tsの「解約理由:」ハンドラが受ける）
+const CANCEL_SURVEY_FLEX = JSON.stringify({
+  type: 'bubble',
+  size: 'mega',
+  body: { type: 'box', layout: 'vertical', contents: [
+    { type: 'text', text: '最後に1つだけ教えてください🙇', weight: 'bold', size: 'lg', wrap: true },
+    { type: 'text', text: '今回解約された1番の理由はどれですか？\n（1タップで完了します）', size: 'md', wrap: true, margin: 'md' },
+  ]},
+  footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: [
+    { type: 'button', style: 'primary', height: 'sm', action: { type: 'message', label: '料金が高かった', text: '【ボタン】解約理由:料金が高い' } },
+    { type: 'button', style: 'primary', height: 'sm', action: { type: 'message', label: '使いこなせなかった', text: '【ボタン】解約理由:使いこなせなかった' } },
+    { type: 'button', style: 'primary', height: 'sm', action: { type: 'message', label: '思うような成果が出なかった', text: '【ボタン】解約理由:成果が出なかった' } },
+    { type: 'button', style: 'primary', height: 'sm', action: { type: 'message', label: '物販をやめた・お休みする', text: '【ボタン】解約理由:物販休止' } },
+    { type: 'button', style: 'primary', height: 'sm', action: { type: 'message', label: '他のツールに乗り換えた', text: '【ボタン】解約理由:他ツールへ乗り換え' } },
+    { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: 'その他', text: '【ボタン】解約理由:その他' } },
+  ]},
+});
+
 // ── 1. friend_add 既存オートメーション ─────────────────────────────────────────────
+
+if (!cancelOnly) {
 
 console.log('[1] friend_add: ウェルカム/リフォローアクション追加');
 
@@ -247,6 +268,8 @@ insertAction({ automationId: invoiceRenewId, stepOrder: 7, actionType: 'send_mes
   COUPON_TEXT,
 ]}});
 
+} // !cancelOnly
+
 // ── 5. stripe_subscription_deleted ──────────────────────────────────────────────────
 
 console.log('\n[5] 月額解約フロー (stripe_subscription_deleted)');
@@ -261,11 +284,14 @@ cancelRemoveTags.forEach((tagName, i) => {
   insertAction({ automationId: subDeletedId, stepOrder: 3 + i, actionType: 'remove_tag_by_name', label: `${tagName}タグ削除`, params: { tagName } });
 });
 
-insertAction({ automationId: subDeletedId, stepOrder: 3 + cancelRemoveTags.length, actionType: 'send_messages', label: '解約通知メッセージ', params: { messages: [
+insertAction({ automationId: subDeletedId, stepOrder: 3 + cancelRemoveTags.length, actionType: 'send_messages', label: '解約通知メッセージ+理由アンケート', params: { messages: [
   { messageType: 'text', content: '【自動送信】\nご登録いただいておりました月額プランを解消しました。\n現時点でキーコードは使用不可となります。\n\nFurimAutoでは日々開発を進め今後も機能面はもちろん、利用可能になるプラットフォームを広げていきますので、またの機会がございましたら再度と月額プラン登録の手順を踏んでください。\n\nまたのご利用をお待ちしております！' },
+  { messageType: 'flex', altText: '【1タップ】解約理由アンケート', content: CANCEL_SURVEY_FLEX },
 ]}});
 
 // ── 6. stripe_payment_failed ──────────────────────────────────────────────────────────
+
+if (!cancelOnly) {
 
 console.log('\n[6] 支払い失敗フロー (stripe_payment_failed)');
 const payFailedId = getOrCreateAutomation({ name: '支払い失敗フロー', description: '初回支払い失敗時: LINEで支払い方法確認を依頼', eventType: 'stripe_payment_failed', priority: 0 });
@@ -281,5 +307,7 @@ insertAction({ automationId: ticketId, stepOrder: 0, actionType: 'call_gas_post'
 insertAction({ automationId: ticketId, stepOrder: 1, actionType: 'send_messages', label: 'チケット購入完了メッセージ', params: { messages: [
   { messageType: 'text', content: '🎉【チケット購入完了】🎉\n\nコピー出品チケット {{eventData.quantity}}枚の購入が完了しました！\n\nキーコードの入力ボタンを押して、チケット枚数を取得してください。\nFurimAutoのコピー出品機能でご利用いただけます。\n\n引き続きFurimAutoをよろしくお願いします。' },
 ]}});
+
+} // !cancelOnly
 
 console.log(`\n✅ 完了: ${_actionCounter}アクション登録`);
