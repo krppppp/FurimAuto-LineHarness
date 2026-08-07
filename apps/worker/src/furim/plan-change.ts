@@ -273,7 +273,7 @@ export async function handlePlanChangeMessage(
       await lineClient.replyMessage(replyToken, [
         {
           type: 'text',
-          text: 'プラン変更内容の確認に失敗しました。お手数ですが、リッチメニューの「プラン確認」からもう一度お手続きください。',
+          text: 'プラン変更内容の確認に失敗しました。お手数ですが、リッチメニューの「プラン診断」からもう一度お手続きください。',
         } as never,
       ]);
     } catch (e) {

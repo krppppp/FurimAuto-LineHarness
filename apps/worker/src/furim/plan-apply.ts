@@ -38,7 +38,7 @@ export async function handlePlanApplyMessage(
       await lineClient.replyMessage(replyToken, [
         {
           type: 'text',
-          text: '既にご契約中のプランがあります。プラン内容の変更をご希望の場合は、お手数ですがリッチメニューの「プラン確認」からもう一度お手続きください（差額のみのお支払いでプラン変更できます）。',
+          text: '既にご契約中のプランがあります。プラン内容の変更をご希望の場合は、お手数ですがリッチメニューの「プラン診断」からもう一度お手続きください（差額のみのお支払いでプラン変更できます）。',
         } as never,
       ]);
       return;
@@ -81,7 +81,7 @@ export async function handlePlanApplyMessage(
               },
               {
                 type: 'text',
-                text: '⚠️ このリンクは発行から1時間有効です。期限が切れた場合は、お手数ですがもう一度メニューの「プラン確認」からお申し込みください。',
+                text: '⚠️ このリンクは発行から1時間有効です。期限が切れた場合は、お手数ですがもう一度メニューの「プラン診断」からお申し込みください。',
                 size: 'xxs',
                 color: '#999999',
                 wrap: true,
@@ -97,7 +97,7 @@ export async function handlePlanApplyMessage(
       await lineClient.replyMessage(replyToken, [
         {
           type: 'text',
-          text: 'お申し込み内容の確認に失敗しました🙇\nお手数ですが、もう一度メニューの「プラン確認」からお試しください。',
+          text: 'お申し込み内容の確認に失敗しました🙇\nお手数ですが、もう一度メニューの「プラン診断」からお試しください。',
         } as never,
       ]);
     } catch (e) {

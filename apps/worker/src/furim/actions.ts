@@ -270,8 +270,10 @@ export async function handleFurimAction(
         // 廃止済み（LP・Youtubeで説明）。旧リッチメニュー画像からの送信に備えて案内だけ残す
         await lineClient.replyMessage(replyToken, [{ type: 'text', text: '開発の想いやコンセプトはホームページとYoutubeでご紹介しています！\n\nhttps://furimauto.com/lp0/' } as never]);
         return true;
+      case 'プラン診断':
       case 'プラン確認': {
-        // ガイドタブの「プラン確認」ボタン（旧: 開発者について）から
+        // ガイドタブの「プラン診断」ボタンから。
+        // 'プラン確認' はガイドタブv2（旧文言）を開いたままのユーザー向けの互換
         const liffUrl = resolvedEnv.PLAN_BUILDER_LIFF_URL || 'https://liff.line.me/1661091589-81CpgAs1';
         await lineClient.replyMessage(replyToken, [
           {
