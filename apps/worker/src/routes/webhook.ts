@@ -268,7 +268,14 @@ async function handleEvent(
     // タグ付与・リッチメニュー設定・ウェルカムメッセージ・リフォロー処理は friend_add Automation で管理
 
     // イベントバス発火: friend_add（replyToken を渡してオートメーション内で使用）
-    await fireEvent(db, 'friend_add', { friendId: friend.id, eventData: { displayName: friend.display_name, isNewUser }, replyToken: event.replyToken }, lineAccessToken, lineAccountId, {
+    // 新規フォロー時だけ広告CV（line_friend_add）を送る。再フォローで二重計上しないよう isNewUser で絞る。
+    // 広告クリックID(gclid等)が ref_tracking に無い友だちは ad-conversion 側で送信スキップされる。
+    await fireEvent(db, 'friend_add', {
+      friendId: friend.id,
+      eventData: { displayName: friend.display_name, isNewUser },
+      replyToken: event.replyToken,
+      ...(isNewUser ? { conversionEventName: 'line_friend_add' } : {}),
+    }, lineAccessToken, lineAccountId, {
       lineAccessToken,
       gasDeployId: env?.GAS_DEPLOY_ID,
       stripeSecretKey: env?.STRIPE_SECRET_KEY,

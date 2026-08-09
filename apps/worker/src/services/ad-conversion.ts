@@ -158,37 +158,84 @@ async function sendXConversion(
   }
 }
 
+// refresh_token から短命のアクセストークンを取得する。
+// 静的な oauth_token は約1時間で失効し、失効後は全CV送信が401で失敗するため、
+// refresh_token が設定されていれば送信のたびにここで取り直す。
+async function getGoogleAccessToken(config: AdPlatformConfig): Promise<string> {
+  if (config.refresh_token && config.client_id && config.client_secret) {
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: config.refresh_token,
+        client_id: config.client_id,
+        client_secret: config.client_secret,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Google OAuth token refresh failed: ${res.status} ${body}`);
+    }
+    const json = await res.json<{ access_token?: string }>();
+    if (!json.access_token) throw new Error('Google OAuth: access_token missing in response');
+    return json.access_token;
+  }
+  // フォールバック（旧方式・静的トークン）
+  if (config.oauth_token) return config.oauth_token;
+  throw new Error('Google config: refresh_token(+client_id/secret) も oauth_token も未設定');
+}
+
+// Date を Google Ads 要求形式 "yyyy-MM-dd HH:mm:ss+09:00"（JST実時刻）に整形する。
+// 旧実装は toISOString()（UTC）に "+09:00" を付けるだけで実時刻が9時間ずれていた。
+function toJstConversionDateTime(date: Date): string {
+  const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${jst.getUTCFullYear()}-${p(jst.getUTCMonth() + 1)}-${p(jst.getUTCDate())} `
+    + `${p(jst.getUTCHours())}:${p(jst.getUTCMinutes())}:${p(jst.getUTCSeconds())}+09:00`;
+}
+
 async function sendGoogleConversion(
   config: AdPlatformConfig,
   ref: RefTracking,
   eventName: string,
   eventValue?: number,
 ): Promise<void> {
-  const url = `https://googleads.googleapis.com/v17/customers/${config.customer_id}:uploadClickConversions`;
+  const accessToken = await getGoogleAccessToken(config);
+  const url = `https://googleads.googleapis.com/v21/customers/${config.customer_id}:uploadClickConversions`;
 
   const body = {
     conversions: [{
       gclid: ref.gclid,
       conversion_action: `customers/${config.customer_id}/conversionActions/${config.conversion_action_id}`,
-      conversion_date_time: new Date().toISOString().replace('Z', '+09:00'),
+      conversion_date_time: toJstConversionDateTime(new Date()),
       ...(eventValue && { conversion_value: eventValue, currency_code: 'JPY' }),
     }],
     partial_failure: true,
   };
 
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`,
+    'developer-token': config.developer_token || '',
+  };
+  // MCC経由のときは login-customer-id が必須
+  if (config.login_customer_id) headers['login-customer-id'] = config.login_customer_id;
+
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.oauth_token}`,
-      'developer-token': config.developer_token || '',
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
     const errorBody = await response.text();
     throw new Error(`Google Ads API error: ${response.status} ${errorBody}`);
+  }
+  // partial_failure=true のとき、HTTP 200でも partialFailureError に個別失敗が入る
+  const result = await response.json<{ partialFailureError?: { message?: string } }>();
+  if (result.partialFailureError?.message) {
+    throw new Error(`Google Ads partial failure: ${result.partialFailureError.message}`);
   }
 }
 

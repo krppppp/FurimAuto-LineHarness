@@ -21,8 +21,15 @@ export interface AdPlatformConfig {
   // Google
   customer_id?: string;
   conversion_action_id?: string;
-  oauth_token?: string;
   developer_token?: string;
+  // Google OAuth（アクセストークンは約1時間で失効するため、refresh_token から都度取得する）
+  client_id?: string;
+  client_secret?: string;
+  refresh_token?: string;
+  // MCC（マネージャーアカウント）経由でアクセスする場合の login-customer-id
+  login_customer_id?: string;
+  // 旧方式（静的アクセストークン）。refresh_token 未設定時のフォールバックとして残す
+  oauth_token?: string;
   // TikTok
   pixel_code?: string;
 }
