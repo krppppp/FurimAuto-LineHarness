@@ -212,6 +212,7 @@ async function sendGoogleConversion(
 
   const event: Record<string, unknown> = {
     destinationReferences: ['d1'],
+    eventSource: 'WEB', // 友だち追加はLP→LINEのWeb由来（Data Manager API必須フィールド）
     eventTimestamp: new Date().toISOString(), // RFC3339 Z-normalized
     adIdentifiers: { gclid: ref.gclid },
     // 友だち追加は自社サービス上の明示アクション。同意ありで送る
