@@ -186,56 +186,62 @@ async function getGoogleAccessToken(config: AdPlatformConfig): Promise<string> {
   throw new Error('Google config: refresh_token(+client_id/secret) も oauth_token も未設定');
 }
 
-// Date を Google Ads 要求形式 "yyyy-MM-dd HH:mm:ss+09:00"（JST実時刻）に整形する。
-// 旧実装は toISOString()（UTC）に "+09:00" を付けるだけで実時刻が9時間ずれていた。
-function toJstConversionDateTime(date: Date): string {
-  const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${jst.getUTCFullYear()}-${p(jst.getUTCMonth() + 1)}-${p(jst.getUTCDate())} `
-    + `${p(jst.getUTCHours())}:${p(jst.getUTCMinutes())}:${p(jst.getUTCSeconds())}+09:00`;
-}
-
+// Data Manager API へオフラインCVを送る（uploadClickConversions は新規統合不可のため移行）。
+// エンドポイント: POST https://datamanager.googleapis.com/v1/events:ingest
+// 必要スコープ: https://www.googleapis.com/auth/datamanager（refresh_token 再取得が前提）。
+// account指定は destinations 内（login=MCC / operating=顧客 / productDestinationId=CVアクションID）。
+// developer-token / login-customer-id ヘッダーは不要。
 async function sendGoogleConversion(
   config: AdPlatformConfig,
   ref: RefTracking,
-  eventName: string,
+  _eventName: string,
   eventValue?: number,
 ): Promise<void> {
   const accessToken = await getGoogleAccessToken(config);
-  const url = `https://googleads.googleapis.com/v21/customers/${config.customer_id}:uploadClickConversions`;
+  const url = 'https://datamanager.googleapis.com/v1/events:ingest';
 
-  const body = {
-    conversions: [{
-      gclid: ref.gclid,
-      conversion_action: `customers/${config.customer_id}/conversionActions/${config.conversion_action_id}`,
-      conversion_date_time: toJstConversionDateTime(new Date()),
-      ...(eventValue && { conversion_value: eventValue, currency_code: 'JPY' }),
-    }],
-    partial_failure: true,
+  const destination: Record<string, unknown> = {
+    reference: 'd1',
+    operatingAccount: { product: 'GOOGLE_ADS', accountId: config.customer_id },
+    productDestinationId: config.conversion_action_id,
   };
+  // MCC経由のときのみ loginAccount を付ける
+  if (config.login_customer_id) {
+    destination.loginAccount = { product: 'GOOGLE_ADS', accountId: config.login_customer_id };
+  }
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${accessToken}`,
-    'developer-token': config.developer_token || '',
+  const event: Record<string, unknown> = {
+    destinationReferences: ['d1'],
+    eventTimestamp: new Date().toISOString(), // RFC3339 Z-normalized
+    adIdentifiers: { gclid: ref.gclid },
+    // 友だち追加は自社サービス上の明示アクション。同意ありで送る
+    consent: { adUserData: 'CONSENT_GRANTED', adPersonalization: 'CONSENT_GRANTED' },
   };
-  // MCC経由のときは login-customer-id が必須
-  if (config.login_customer_id) headers['login-customer-id'] = config.login_customer_id;
+  if (eventValue) {
+    event.conversionValue = eventValue;
+    event.currency = 'JPY';
+  }
+
+  const body = { destinations: [destination], events: [event], validateOnly: false };
 
   const response = await fetch(url, {
     method: 'POST',
-    headers,
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${accessToken}`,
+    },
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
     const errorBody = await response.text();
-    throw new Error(`Google Ads API error: ${response.status} ${errorBody}`);
+    throw new Error(`Data Manager API error: ${response.status} ${errorBody}`);
   }
-  // partial_failure=true のとき、HTTP 200でも partialFailureError に個別失敗が入る
-  const result = await response.json<{ partialFailureError?: { message?: string } }>();
-  if (result.partialFailureError?.message) {
-    throw new Error(`Google Ads partial failure: ${result.partialFailureError.message}`);
+  // 200でも events[].errors に個別失敗が入る場合がある
+  const result = await response.json<{ events?: Array<{ errors?: unknown[] }> }>();
+  const failed = (result.events || []).find((e) => e.errors && e.errors.length > 0);
+  if (failed) {
+    throw new Error(`Data Manager API event error: ${JSON.stringify(failed.errors)}`);
   }
 }
 
