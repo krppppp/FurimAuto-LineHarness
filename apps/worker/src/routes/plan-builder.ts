@@ -752,7 +752,7 @@ ${liff ? `<div id="pb-loading" style="position:fixed;inset:0;z-index:9999;backgr
 </div>
 <style>@keyframes pbspin{to{transform:rotate(360deg)}}</style>` : ''}
 <div class="simulator">
-  ${liff ? '<div class="liff-logo"><img src="https://furimauto.com/lp0/images/furimauto_logo.png" alt="FurimAuto"></div>' : ''}
+  ${liff ? '<div class="liff-logo"><img src="https://furimauto.com/service/images/furimauto_logo.png" alt="FurimAuto"></div>' : ''}
   ${embed ? '' : '<h1 class="sim-title">📱 料金シミュレーション</h1>'}
   <p class="sim-lead">利用したいサイトを選んで、パッケージプランか<br class="sp-only">機能別ビュッフェ式を組み合わせられます</p>
   <p class="sim-tax-note">※ 価格はすべて税抜表示です</p>

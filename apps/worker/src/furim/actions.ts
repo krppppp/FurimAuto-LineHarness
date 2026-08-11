@@ -254,7 +254,7 @@ export async function handleFurimAction(
         ]);
         return true;
       case 'ホームページ':
-        await lineClient.replyMessage(replyToken, [{ type: 'text', text: 'https://furimauto.com/lp0/' } as never]);
+        await lineClient.replyMessage(replyToken, [{ type: 'text', text: 'https://furimauto.com/service/' } as never]);
         return true;
       case 'メルカリ物販Lab':
         await lineClient.replyMessage(replyToken, [{ type: 'text', text: 'https://furimauto.com' } as never]);
@@ -268,7 +268,7 @@ export async function handleFurimAction(
         return true;
       case '開発者について':
         // 廃止済み（LP・Youtubeで説明）。旧リッチメニュー画像からの送信に備えて案内だけ残す
-        await lineClient.replyMessage(replyToken, [{ type: 'text', text: '開発の想いやコンセプトはホームページとYoutubeでご紹介しています！\n\nhttps://furimauto.com/lp0/' } as never]);
+        await lineClient.replyMessage(replyToken, [{ type: 'text', text: '開発の想いやコンセプトはホームページとYoutubeでご紹介しています！\n\nhttps://furimauto.com/service/' } as never]);
         return true;
       case 'プラン診断':
       case 'プラン確認': {

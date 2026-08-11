@@ -178,7 +178,7 @@ FurimAutoです。
 ✨「初心者でも簡単に使えました！」
 
 ▼お客様の声はこちら
-https://furimauto.com/lp0/#scroll_voice
+https://furimauto.com/service/#scroll_voice
 
 残り3日です！今すぐアンケートに回答して
 キーコードをゲットし特典③④も受け取ってください🎁
@@ -291,7 +291,7 @@ FurimAutoです。
 ✨「こんなに簡単なのに効果抜群で驚きました！」
 
 ▼お客様の声
-https://furimauto.com/lp0/#scroll_voice
+https://furimauto.com/service/#scroll_voice
 
 残り3日！今すぐキーコードを発行してください🔑
 
@@ -397,7 +397,7 @@ FurimAutoです。
 https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`)] },
+https://furimauto.com/service/#scroll_plan`)] },
       { day: 7, messages: [img(I.bye), txt(`【本日が最後のメッセージです】
 
 FurimAutoです。
@@ -470,7 +470,7 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 ✅ 動画を見てキーワードを送ると試用期間延長＋特典⑫⑬！
 
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`)] },
+https://furimauto.com/service/#scroll_plan`)] },
       { day: 5, messages: [img(I.only1day), txt(`【明日で無料期間終了！動画を見て延長しよう】
 
 FurimAutoです。
@@ -486,7 +486,7 @@ FurimAutoです。
 https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`)] },
+https://furimauto.com/service/#scroll_plan`)] },
       { day: 7, messages: [img(I.bye), txt(`【本日が最後のメッセージです】
 
 FurimAutoです。
@@ -556,7 +556,7 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
 ✅ Meetなしで申し込みOK！
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`)] },
+https://furimauto.com/service/#scroll_plan`)] },
       { day: 5, messages: [img(I.only1day), txt(`【明日で無料期間終了！動画を見て延長しよう】
 
 FurimAutoです。
@@ -572,7 +572,7 @@ FurimAutoです。
 https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`)] },
+https://furimauto.com/service/#scroll_plan`)] },
     ],
   },
   {
@@ -586,7 +586,7 @@ FurimAutoです。
 無料期間が終了しました。
 
 「やっぱり続けたい！」という方はこちらから👇
-https://furimauto.com/lp0/#scroll_plan
+https://furimauto.com/service/#scroll_plan
 
 またいずれ、その時にお会いできることを楽しみにしております,,,!
 
@@ -745,7 +745,7 @@ FurimAutoです。
 ✨「発行からすぐに使い始め、月利が安定しました！」
 
 ▼お客様の声
-https://furimauto.com/lp0/#scroll_voice
+https://furimauto.com/service/#scroll_voice
 
 残り6日！今すぐキーコードを発行してください🔑`)] },
       { day: 12, messages: [img(I.only1day), txt(`【明日で無料期間終了です！】
@@ -887,7 +887,7 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
 ✅ Meetなしで申し込みOK！
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`)] },
+https://furimauto.com/service/#scroll_plan`)] },
       { day: 12, messages: [img(I.only1day), txt(`【明日で無料期間終了！動画を見て延長しよう】
 
 FurimAutoです。
@@ -966,7 +966,7 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
 ✅ Meetなしで申し込みOK！
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`)] },
+https://furimauto.com/service/#scroll_plan`)] },
       { day: 12, messages: [img(I.only1day), txt(`【明日で無料期間終了！動画を見て延長しよう】
 
 FurimAutoです。
@@ -988,7 +988,7 @@ FurimAutoです。
 無料期間が終了しました。
 
 「やっぱり続けたい！」という方はこちらから👇
-https://furimauto.com/lp0/#scroll_plan
+https://furimauto.com/service/#scroll_plan
 
 またいずれ、その時にお会いできることを楽しみにしております,,,!
 

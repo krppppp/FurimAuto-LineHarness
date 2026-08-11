@@ -169,7 +169,7 @@ FurimAutoです。
 ✨「初心者でも簡単に使えました！」
 
 ▼お客様の声はこちら
-https://furimauto.com/lp0/#scroll_voice
+https://furimauto.com/service/#scroll_voice
 
 残り3日です！今すぐアンケートに回答して
 キーコードをゲットし特典③④も受け取ってください🎁
@@ -316,7 +316,7 @@ FurimAutoです。
 ✨「こんなに簡単なのに効果抜群で驚きました！」
 
 ▼お客様の声
-https://furimauto.com/lp0/#scroll_voice
+https://furimauto.com/service/#scroll_voice
 
 残り3日！今すぐキーコードを発行してください🔑
 
@@ -459,7 +459,7 @@ FurimAutoです。
 https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`),
+https://furimauto.com/service/#scroll_plan`),
       ]},
       { day: 7, label: 'Seg3 Day7: 最終メッセージ', messages: [
         img(I.bye),
@@ -547,7 +547,7 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 ✅ 動画を見てキーワードを送ると試用期間延長＋特典⑫⑬！
 
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`),
+https://furimauto.com/service/#scroll_plan`),
       ]},
       { day: 5, label: 'Seg4 Day5: 明日終了・解説動画', messages: [
         img(I.only1day),
@@ -568,7 +568,7 @@ FurimAutoです。
 https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`),
+https://furimauto.com/service/#scroll_plan`),
       ]},
       { day: 7, label: 'Seg4 Day7: 最終メッセージ', messages: [
         img(I.bye),
@@ -650,7 +650,7 @@ FurimAutoです。
 ✨「これなしではもう無理です笑」
 
 ▼お客様の声
-https://furimauto.com/lp0/#scroll_voice
+https://furimauto.com/service/#scroll_voice
 
 残り4日！チケットをまだ使っていない方は今すぐ！`),
       ]},
@@ -669,7 +669,7 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
 Meetなしで申し込みOK！
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`),
+https://furimauto.com/service/#scroll_plan`),
       ]},
       { day: 5, label: 'Seg5 Day5: 残り2日', messages: [
         txt(`【無料で使えるのはあと2日です！】
@@ -788,7 +788,7 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 
 ✅ Meetなしで申し込みOK！
 ▼料金表
-https://furimauto.com/lp0/#scroll_plan`),
+https://furimauto.com/service/#scroll_plan`),
       ]},
       { day: 5, label: 'Seg6 Day5: 残り2日', messages: [
         txt(`【無料で使えるのはあと2日です！】
@@ -858,7 +858,7 @@ FurimAutoです。
 
 今なら試用期間延長の特典も！
 ▼今すぐ申し込む
-https://furimauto.com/lp0/#scroll_plan
+https://furimauto.com/service/#scroll_plan
 
 Meetなし・動画確認だけでご加入いただけます😊`),
       ]},
@@ -897,7 +897,7 @@ const KAISETSU_TEMPLATES = [
 ✅ 全機能無制限で使い放題
 
 ▼料金・プラン一覧はこちら
-https://furimauto.com/lp0/#scroll_plan
+https://furimauto.com/service/#scroll_plan
 
 気になる方は今すぐ↑をチェック！
 申し込みはMeetなしでできます😊`)],
@@ -917,7 +917,7 @@ https://www.youtube.com/watch?v=jhaCPxgE_Sk
 動画を見れば全ての疑問が解決します。
 
 ▼今すぐ申し込みはこちら
-https://furimauto.com/lp0/#scroll_plan`)],
+https://furimauto.com/service/#scroll_plan`)],
   },
   {
     name: 'kaisetsu: 1日 最後のチャンス',
@@ -928,7 +928,7 @@ FurimAutoです。
 今日が最後のチャンスです。
 
 ▼今すぐ有料プランに申し込む
-https://furimauto.com/lp0/#scroll_plan
+https://furimauto.com/service/#scroll_plan
 
 Meetなし・動画確認だけでそのままご加入いただけます。
 

@@ -167,14 +167,14 @@ export async function handleButtonAction(
         ]);
         break;
       case 'ビュッフェ式料金表(料金表)':
-        await lineClient.replyMessage(replyToken, [{ type: 'image', originalContentUrl: 'https://furimauto.com/lp0/images/plan_buffet_sp.png', previewImageUrl: 'https://furimauto.com/lp0/images/plan_buffet_sp.png' } as never]);
+        await lineClient.replyMessage(replyToken, [{ type: 'image', originalContentUrl: 'https://furimauto.com/service/images/plan_buffet_sp.png', previewImageUrl: 'https://furimauto.com/service/images/plan_buffet_sp.png' } as never]);
         break;
       case 'パッケージプラン(料金表)':
         await lineClient.replyMessage(replyToken, [
-          { type: 'image', originalContentUrl: 'https://furimauto.com/lp0/images/plan_package_sp1.png', previewImageUrl: 'https://furimauto.com/lp0/images/plan_package_sp1.png' } as never,
-          { type: 'image', originalContentUrl: 'https://furimauto.com/lp0/images/plan_package_sp2.png', previewImageUrl: 'https://furimauto.com/lp0/images/plan_package_sp2.png' } as never,
-          { type: 'image', originalContentUrl: 'https://furimauto.com/lp0/images/plan_package_sp3.png', previewImageUrl: 'https://furimauto.com/lp0/images/plan_package_sp3.png' } as never,
-          { type: 'image', originalContentUrl: 'https://furimauto.com/lp0/images/plan_package_sp4.png', previewImageUrl: 'https://furimauto.com/lp0/images/plan_package_sp4.png' } as never,
+          { type: 'image', originalContentUrl: 'https://furimauto.com/service/images/plan_package_sp1.png', previewImageUrl: 'https://furimauto.com/service/images/plan_package_sp1.png' } as never,
+          { type: 'image', originalContentUrl: 'https://furimauto.com/service/images/plan_package_sp2.png', previewImageUrl: 'https://furimauto.com/service/images/plan_package_sp2.png' } as never,
+          { type: 'image', originalContentUrl: 'https://furimauto.com/service/images/plan_package_sp3.png', previewImageUrl: 'https://furimauto.com/service/images/plan_package_sp3.png' } as never,
+          { type: 'image', originalContentUrl: 'https://furimauto.com/service/images/plan_package_sp4.png', previewImageUrl: 'https://furimauto.com/service/images/plan_package_sp4.png' } as never,
           carouselTemplate as never,
         ]);
         break;

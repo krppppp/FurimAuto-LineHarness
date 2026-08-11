@@ -229,7 +229,7 @@ FurimAutoです。
 ✨「初心者でも簡単に使えました！」
 
 ▼お客様の声はこちら
-https://furimauto.com/lp0/#scroll_voice
+https://furimauto.com/service/#scroll_voice
 
 残り3日です！今すぐアンケートに回答して
 キーコードをゲットし特典③④も受け取ってください🎁

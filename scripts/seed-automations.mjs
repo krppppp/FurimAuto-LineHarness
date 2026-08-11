@@ -85,7 +85,7 @@ const WELCOME_FLEX_VIDEO = JSON.stringify({
 
 const TOKUTEN_FLEX = JSON.stringify({
   type: 'bubble',
-  hero: { type: 'image', url: 'https://furimauto.com/lp0/images/special_offer.png', size: 'full', aspectRatio: '1:1', aspectMode: 'cover' },
+  hero: { type: 'image', url: 'https://furimauto.com/service/images/special_offer.png', size: 'full', aspectRatio: '1:1', aspectMode: 'cover' },
   body: { type: 'box', layout: 'vertical', spacing: 'md', contents: [
     { type: 'text', text: '🎁 無料期間中に15大特典をGETしよう！', weight: 'bold', size: 'lg', wrap: true, color: '#FF6B35' },
     { type: 'text', text: '友達登録から1週間の無料試用期間中に、段階的に15種類の特典をプレゼントします！', size: 'sm', color: '#555555', wrap: true, margin: 'sm' },

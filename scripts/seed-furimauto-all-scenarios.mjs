@@ -282,7 +282,7 @@ FurimAutoです。
 ✨「初心者でも簡単に使えました！」
 
 ▼お客様の声はこちら
-https://furimauto.com/lp0/#scroll_voice
+https://furimauto.com/service/#scroll_voice
 
 残り3日です。まずはキーコード発行から！
 
@@ -399,7 +399,7 @@ FurimAutoです。
 ✨「こんなに簡単なのに効果抜群で驚きました！」
 
 ▼お客様の声はこちら
-https://furimauto.com/lp0/#scroll_voice
+https://furimauto.com/service/#scroll_voice
 
 残り3日！今すぐキーコードを発行してください🔑
 
@@ -1067,7 +1067,7 @@ FurimAutoです。
 ✨「初心者でも簡単に使えました！」
 
 ▼お客様の声はこちら
-https://furimauto.com/lp0/#scroll_voice
+https://furimauto.com/service/#scroll_voice
 
 ご紹介者様も同様の効果を実感されていますよ😊
 
@@ -1203,7 +1203,7 @@ FurimAutoです。
 ✨「こんなに簡単なのに効果抜群で驚きました！」
 
 ▼お客様の声はこちら
-https://furimauto.com/lp0/#scroll_voice
+https://furimauto.com/service/#scroll_voice
 
 残り6日！今すぐキーコードを発行してください🔑
 
