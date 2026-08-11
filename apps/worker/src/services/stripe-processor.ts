@@ -310,10 +310,22 @@ export async function processStripeEvent(
     }
 
     const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
+
+    // 再処理時の継続課金メッセージ二重送信ガード（2026-08-11追加）。
+    // idempotencyKeyの「厳密1回」は、送信(executeAction)の成功を記録(markStripeActionProcessed)する前に
+    // waitUntilが打ち切られると成立しない。この窓に入ると再処理で同じ通知がもう一度飛ぶ。
+    // 実測: 2026-07-23 / 07-26 / 08-07(2件) / 08-11 の計5件、いずれも11〜15分間隔＝sweepの再処理間隔。
+    // 冪等キー導入(688201c, 2026-08-04)後も3件出ているため、配信系だけ時間窓ガードを併用する。
+    // suppressMessagesはsend_messagesアクションだけを飛ばすので、GAS台帳記録など未完了の処理は再実行される。
+    const invoiceNoticeAlreadySent = opts.isRetry === true
+      && await automationRanRecently(db, 'stripe_invoice_paid', resolvedFriend?.id ?? friendId, 60);
+    if (invoiceNoticeAlreadySent) {
+      console.log(`[stripe/invoice] 継続課金メッセージは送信済みのため抑制します (event=${body.id})`);
+    }
+
     // automationの各アクションは body.id を冪等キーに event-bus 側で厳密1回だけ実行される。
     // 途中で失敗したら allOk=false が返るので throw し、markStripeEventCompletedを回避 →
-    // cron(sweep)が再処理し、未実行アクション(継続課金メッセージ・GAS台帳記録等)だけ再送する。
-    // これで automationRanRecently の時間窓ヒューリスティックを廃し、二重実行/取りこぼしの両方を防ぐ。
+    // cron(sweep)が再処理し、未実行アクション(GAS台帳記録等)だけ再送する。
     const invoiceAutomationsOk = await fireEvent(db, 'stripe_invoice_paid', {
         friendId: resolvedFriend?.id ?? friendId ?? undefined,
         idempotencyKey: body.id,
@@ -321,7 +333,8 @@ export async function processStripeEvent(
           stripeCustomerId, lineUserId: resolvedLineUserId, billingReason, isNewSubscription,
           // プラン変更(subscription_update)の差額invoiceでは継続課金メッセージを出さない
           // （変更完了+新キーコードの案内はplan-change.tsが返信済み）
-          suppressMessages: billingReason === 'subscription_update',
+          // 再処理で既に送信済みの場合も同様に配信だけ抑制する
+          suppressMessages: billingReason === 'subscription_update' || invoiceNoticeAlreadySent,
           // isLegacyPlan: 旧プラン一覧ベースのサブスク（automation側のsetKeyCode等はこちらだけ実行）
           source: subMetadata.source ?? '', isLegacyPlan: !isPlanBuilder,
           planName, planAmount, planTier,

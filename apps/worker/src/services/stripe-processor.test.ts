@@ -209,6 +209,52 @@ describe('processStripeEvent — invoice_paid の冪等/再処理', () => {
     );
   });
 
+  test('再処理で継続課金メッセージが送信済みなら配信だけ抑制する', async () => {
+    // first() が行を返す = automationRanRecently が true（初回のfireEventがsuccessまで到達済み）
+    const { db } = makeDb({ id: 'log-1' });
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+    vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-paid' });
+
+    await processStripeEvent(db, env, {
+      id: 'evt_ip_dup',
+      type: 'invoice.payment_succeeded',
+      data: { object: { id: 'in_dup', customer: 'cus_dup', billing_reason: 'subscription_cycle' } },
+    }, { isRetry: true });
+
+    // 配信は抑制するが、fireEvent自体は呼ぶ（GAS台帳記録など未完了の処理は再実行させる）
+    expect(fireEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fireEvent).mock.calls[0][2].eventData).toMatchObject({ suppressMessages: true });
+  });
+
+  test('再処理でも未送信なら抑制しない', async () => {
+    // first() が null = automationRanRecently が false（初回がfireEventに到達せず死んだ）
+    const { db } = makeDb(null);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+    vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-paid' });
+
+    await processStripeEvent(db, env, {
+      id: 'evt_ip_nodup',
+      type: 'invoice.payment_succeeded',
+      data: { object: { id: 'in_nodup', customer: 'cus_nodup', billing_reason: 'subscription_cycle' } },
+    }, { isRetry: true });
+
+    expect(vi.mocked(fireEvent).mock.calls[0][2].eventData).toMatchObject({ suppressMessages: false });
+  });
+
+  test('初回実行は直近実績があっても抑制しない', async () => {
+    const { db } = makeDb({ id: 'log-1' });
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+    vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-paid' });
+
+    await processStripeEvent(db, env, {
+      id: 'evt_ip_first',
+      type: 'invoice.payment_succeeded',
+      data: { object: { id: 'in_first', customer: 'cus_first', billing_reason: 'subscription_cycle' } },
+    });
+
+    expect(vi.mocked(fireEvent).mock.calls[0][2].eventData).toMatchObject({ suppressMessages: false });
+  });
+
   test('automationが未完(false)ならthrowする → sweepがcompletedにせず再処理する', async () => {
     const { db } = makeDb({ id: 'log-1' });
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
