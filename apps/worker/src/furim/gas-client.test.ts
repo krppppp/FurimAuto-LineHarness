@@ -33,15 +33,15 @@ describe('gasGet のタイムアウトとリトライ', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  test('2回とも失敗したら例外を投げる（呼び出し元がユーザーへ通知できる）', async () => {
+  test('3回とも失敗したら例外を投げる（呼び出し元がキュー投入/エラー通知できる）', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('TimeoutError'));
     vi.stubGlobal('fetch', fetchMock);
 
     const p = gasGet('deploy-1', { method: 'resetKeyCode', lineUserId: 'U1' });
     const assertion = expect(p).rejects.toThrow(/TimeoutError/);
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(3000);
     await assertion;
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   test('5xxが続いた場合も最後のレスポンスでthrowする', async () => {
@@ -50,8 +50,8 @@ describe('gasGet のタイムアウトとリトライ', () => {
 
     const p = gasGet('deploy-1', { method: 'resetKeyCode', lineUserId: 'U1' });
     const assertion = expect(p).rejects.toThrow(/GAS GET 500/);
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(3000);
     await assertion;
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

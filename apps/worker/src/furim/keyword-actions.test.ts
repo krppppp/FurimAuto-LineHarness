@@ -127,6 +127,24 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
     expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
   });
 
+  it('GASが失敗したら再実行キューに積み、受付済みを返信する（無言にもエラー返しにもしない）', async () => {
+    gasGet.mockRejectedValueOnce(new Error('GAS fetch hang (8000ms)'));
+    const client = makeClient();
+    const stmt = { bind: vi.fn(), run: vi.fn().mockResolvedValue({}) };
+    stmt.bind.mockReturnValue(stmt);
+    const db = { prepare: vi.fn().mockReturnValue(stmt) };
+
+    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, db as never);
+
+    expect(result).toBe(true);
+    // gas_retry_jobs への INSERT が走る
+    expect(db.prepare.mock.calls[0][0]).toContain('INSERT INTO gas_retry_jobs');
+    expect(stmt.run).toHaveBeenCalled();
+    // ユーザーには受付済みメッセージ（エラー文言ではない）
+    const replied = client.replyMessage.mock.calls[0][1][0].text;
+    expect(replied).toContain('受け付けました');
+  });
+
   it('replyが失敗してもpushで完了通知を届ける（リセット自体は成功しているため）', async () => {
     gasGet.mockResolvedValueOnce({});
     const client = makeClient();

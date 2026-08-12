@@ -3,9 +3,10 @@ const GAS_BASE = 'https://script.google.com/macros/s';
 // 1回のGAS呼び出しの上限。webhookの処理は waitUntil で走り約30秒で打ち切られるため、
 // 応答の無いfetchを待ち続けると打ち切りに巻き込まれ、呼び出し元のcatch（＝ユーザーへの
 // エラー通知）にすら到達せず無言で終わる。
-// 実測: 2026-08-12 19:47 のキーコードリセットがGASの実行ログに残らないまま無反応だった
-// （19:54の再送は成功）。リトライ2回＋間隔2秒で最大22秒に収め、通知を送る余地を残す。
-const GAS_FETCH_TIMEOUT_MS = 10_000;
+// 7秒×3回＋間隔1秒×2＝最大約25秒（ハングガード込み）。30秒枠に後続処理の余地を残しつつ、
+// ハングは間欠的（張り直せば通ることが多い）なので試行回数を優先している。
+// 正常時のGAS実行は2〜4秒なので7秒で切っても健全な応答は落とさない。
+const GAS_FETCH_TIMEOUT_MS = 7_000;
 
 // GAS Web Appは散発的に5xx/タイムアウトを返す（2026-08-02/05に顧客対応フローの
 // 無言死が複数発生）。冪等な読み取り・記録系のみなので1回だけ短い間隔で再試行する。
@@ -17,7 +18,7 @@ const GAS_FETCH_TIMEOUT_MS = 10_000;
 // 下層のfetchが残っていてもこちらのawaitを確実に解いて例外へ進める。
 async function fetchGasWithRetry(input: string, init?: RequestInit): Promise<Response> {
   let res: Response | null = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     let hangTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       console.log(`[gas] fetch attempt=${attempt} start`);
@@ -30,15 +31,15 @@ async function fetchGasWithRetry(input: string, init?: RequestInit): Promise<Res
       console.log(`[gas] fetch attempt=${attempt} done status=${res.status}`);
       if (res.ok) return res;
     } catch (err) {
-      // タイムアウト・ハングもここに来る。2回目で諦めて呼び出し元へ投げ、
-      // runHandlerSafely にユーザーへのエラー通知を出させる
+      // タイムアウト・ハングもここに来る。3回目で諦めて呼び出し元へ投げる
+      // （キーコードリセットは再実行キューへ、その他は runHandlerSafely のエラー通知へ）
       console.warn(`[gas] fetch attempt=${attempt} failed: ${String(err)}`);
-      if (attempt === 1) throw err;
+      if (attempt === 2) throw err;
       res = null;
     } finally {
       clearTimeout(hangTimer);
     }
-    if (attempt === 0) await new Promise((r) => setTimeout(r, 2000));
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 1000));
   }
   return res!;
 }

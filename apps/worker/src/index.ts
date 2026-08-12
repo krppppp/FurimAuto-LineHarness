@@ -69,6 +69,7 @@ import { planBuilder } from './routes/plan-builder.js';
 import { messagesRoute } from './routes/messages.js';
 import { processKaisetsuDeliveries } from './services/kaisetsu-delivery.js';
 import { sweepPendingStripeEvents } from './services/stripe-processor.js';
+import { sweepGasRetryJobs } from './furim/gas-retry-queue.js';
 import { forms } from './routes/forms.js';
 import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
@@ -1001,6 +1002,10 @@ async function scheduled(
   // pendingのまま滞留したstripe_eventsの再処理（052/054のdurable設計の消費側。
   // 未配線のままpendingが永久放置される事故が2026-08-01〜05に8件発生した対策）
   jobs.push(sweepPendingStripeEvents(env.DB, env));
+  // GAS呼び出しの再実行キュー（migration 059）。キーコードリセット等がインラインで
+  // 完遂できなかった場合にここが完遂させ、完了をユーザーへpushする
+  // （2026-08-13 GASフェッチのハング対策。積み側は keyword-actions）
+  jobs.push(sweepGasRetryJobs(env.DB, defaultLineClient, env));
 
   await Promise.allSettled(jobs);
 

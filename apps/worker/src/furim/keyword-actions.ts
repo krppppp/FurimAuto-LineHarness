@@ -1,5 +1,6 @@
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
+import { enqueueGasRetryJob } from './gas-retry-queue.js';
 import { copyTicketFlexMessage } from './messages.js';
 import { getFriendByLineUserId, getFriendById, getAffiliateByCode, completeFriendActiveScenarios, getScenarioByName, enrollFriendInScenario } from '@line-crm/db';
 
@@ -63,7 +64,28 @@ export async function handleKeywordAction(
   if (rawText.includes('キーコードリセット')) {
     // 足跡ログ: 無言死の切り分け用（2026-08-13）。tailでどこまで進んだかを特定する
     console.log('[furim] キーコードリセット: GAS呼び出し開始', lineUserId);
-    await gasGet(env.GAS_DEPLOY_ID, { method: 'resetKeyCode', lineUserId });
+    try {
+      await gasGet(env.GAS_DEPLOY_ID, { method: 'resetKeyCode', lineUserId });
+    } catch (err) {
+      // インラインで完遂できなかったら再実行キューに積み、cronが必ず完遂させる。
+      // エラー文言で「もう一度送って」と手間を返すのではなく、受付済みを返して裏で完遂する
+      console.error('[furim] キーコードリセット: GAS失敗。再実行キューに積みます', lineUserId, err);
+      if (db) {
+        await enqueueGasRetryJob(db, {
+          lineUserId,
+          method: 'resetKeyCode',
+          notifyMessage: '紐づいた設定のリセットが完了しました。\n（処理が混み合っていたため、自動で再実行しました）',
+        });
+        const acceptedMessage = { type: 'text', text: 'リセットを受け付けました。\nただいま処理が混み合っているため、完了しましたらこのトークでお知らせします（数分以内）。' } as never;
+        try {
+          await lineClient.replyMessage(replyToken, [acceptedMessage]);
+        } catch {
+          await lineClient.pushMessage(lineUserId, [acceptedMessage]);
+        }
+        return true;
+      }
+      throw err;
+    }
     console.log('[furim] キーコードリセット: GAS完了・返信します', lineUserId);
     // GAS側のリセットは完了済みなので、返信は何があっても届けきる。
     // replyMessageが落ちると呼び出し元のcatchでエラー文言に化け、実際にはリセット済みなのに
