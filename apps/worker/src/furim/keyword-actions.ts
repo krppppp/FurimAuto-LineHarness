@@ -61,16 +61,21 @@ export async function handleKeywordAction(
 ): Promise<boolean> {
   // "キーコードリセット"のみ【キーワード】プレフィックスなしの単体文字列でも動く特別対応
   if (rawText.includes('キーコードリセット')) {
+    // 足跡ログ: 無言死の切り分け用（2026-08-13）。tailでどこまで進んだかを特定する
+    console.log('[furim] キーコードリセット: GAS呼び出し開始', lineUserId);
     await gasGet(env.GAS_DEPLOY_ID, { method: 'resetKeyCode', lineUserId });
+    console.log('[furim] キーコードリセット: GAS完了・返信します', lineUserId);
     // GAS側のリセットは完了済みなので、返信は何があっても届けきる。
     // replyMessageが落ちると呼び出し元のcatchでエラー文言に化け、実際にはリセット済みなのに
     // 「失敗した」と伝わってしまう（2026-08-12 小笠さん事象では reply・エラー通知とも届かず無反応だった）
     const doneMessage = { type: 'text', text: '紐づいた設定のリセットが完了しました。' } as never;
     try {
       await lineClient.replyMessage(replyToken, [doneMessage]);
+      console.log('[furim] キーコードリセット: 返信完了', lineUserId);
     } catch (err) {
       console.error('[furim] キーコードリセットのreply失敗。pushで再送します:', lineUserId, err);
       await lineClient.pushMessage(lineUserId, [doneMessage]);
+      console.log('[furim] キーコードリセット: push再送完了', lineUserId);
     }
     return true;
   }
