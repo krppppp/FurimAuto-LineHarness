@@ -31,6 +31,12 @@ bucket_name = "line-harness-images"
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 
+# Workers Logs。webhookの処理は waitUntil で走るため失敗しても外から追跡できず、
+# 「GASは成功しているのにLINEへ返信されない」の調査ができなかった（2026-08-12 小笠さん事象）。
+# 有効にするとダッシュボード/APIから過去のconsoleログとエラーを追える。
+[observability]
+enabled = true
+
 [vars]
 WORKER_NAME = "line-harness"
 ADMIN_PAGES_PROJECT = "line-harness-admin"

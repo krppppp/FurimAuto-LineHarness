@@ -127,6 +127,28 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
     expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
   });
 
+  it('replyが失敗してもpushで完了通知を届ける（リセット自体は成功しているため）', async () => {
+    gasGet.mockResolvedValueOnce({});
+    const client = makeClient();
+    client.replyMessage.mockRejectedValueOnce(new Error('Invalid reply token'));
+
+    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', '【キーワード】キーコードリセット', env);
+
+    expect(result).toBe(true);
+    // 例外を外へ投げない（呼び出し元がエラー文言に化けさせないため）
+    expect(client.pushMessage).toHaveBeenCalledWith('Uuser', [{ type: 'text', text: '紐づいた設定のリセットが完了しました。' }]);
+  });
+
+  it('replyが成功したときはpushしない（無駄な二重送信をしない）', async () => {
+    gasGet.mockResolvedValueOnce({});
+    const client = makeClient();
+
+    await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env);
+
+    expect(client.replyMessage).toHaveBeenCalledTimes(1);
+    expect(client.pushMessage).not.toHaveBeenCalled();
+  });
+
   it('無関係なメッセージには反応しない', async () => {
     const client = makeClient();
 
