@@ -72,6 +72,32 @@ beforeEach(() => {
 });
 
 describe('processStripeEvent — invoice.payment_failed 通知判定', () => {
+  test('新規Checkout中(subscription_create × attempt=0)は通知もautomationもしない（3DS途中経過）', async () => {
+    const { db } = makeDb(null);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+
+    await processStripeEvent(db, env, {
+      id: 'evt_pf_3ds',
+      type: 'invoice.payment_failed',
+      data: { object: { id: 'in_3ds', customer: 'cus_3ds', billing_reason: 'subscription_create', attempt_count: 0 } },
+    });
+
+    expect(fireEvent).not.toHaveBeenCalled();
+  });
+
+  test('継続課金の失敗(subscription_cycle × attempt=0相当)は従来どおり通知する', async () => {
+    const { db } = makeDb(null);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+
+    await processStripeEvent(db, env, {
+      id: 'evt_pf_cycle',
+      type: 'invoice.payment_failed',
+      data: { object: { id: 'in_cycle', customer: 'cus_cycle', billing_reason: 'subscription_cycle', attempt_count: 0 } },
+    });
+
+    expect(fireEvent).toHaveBeenCalledTimes(1);
+  });
+
   test('初回失敗(attempt=1)は通知する', async () => {
     const { db } = makeDb(null);
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);

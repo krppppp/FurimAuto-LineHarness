@@ -357,6 +357,19 @@ export async function processStripeEvent(
   // ──────────────────────────────────────────
   if (body.type === 'invoice.payment_failed') {
     const attemptCount = obj.attempt_count ?? 0;
+
+    // 新規申し込みのCheckout中に3Dセキュア認証が挟まると、認証完了前に
+    // billing_reason=subscription_create / attempt_count=0 の payment_failed が届き、
+    // 数秒後に payment_succeeded が続く（2026-08-13 mochi me事例: 失敗17:20:37→成功17:20:43）。
+    // ユーザーはまだ決済画面の途中なので「お支払いが確認できませんでした」を送ると
+    // 直後の登録完了メッセージと連投になり混乱させる。Checkoutの失敗はStripeの決済画面
+    // 自身が案内するため、初回invoiceの失敗は通知もautomation（タグ付け等）も行わない。
+    // 継続課金の失敗（subscription_cycle）は従来どおり通知する。
+    if ((obj.billing_reason ?? '') === 'subscription_create' && attemptCount === 0) {
+      console.log(`[stripe/payment_failed] 初回Checkout中(3DS等)の失敗のため通知しません (event=${body.id})`);
+      return;
+    }
+
     const stripeCustomerId = obj.customer ?? '';
     let resolvedLineUserId = lineUserId;
     if (!resolvedLineUserId && stripeCustomerId && env.GAS_DEPLOY_ID) {
