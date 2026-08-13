@@ -109,8 +109,7 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
     const messages = client.replyMessage.mock.calls[0][1];
     expect(messages).toHaveLength(2);
     expect(messages[0].text).toContain('リセットされたもの');
-    expect(messages[0].text).toContain('次にやること');
-    expect(messages[0].text).toContain('入力し直すまで自動化はご利用いただけません');
+    expect(messages[0].text).toContain('お手数ですが次の対応をお願いいたします');
     // キーコードはコピーしやすいよう単体メッセージ
     expect(messages[1].text).toBe('pb_test123');
   });
