@@ -27,6 +27,7 @@ import { AutomationActionRow, MessageRow,
   getFriendScore,
   hasProcessedStripeAction,
   markStripeActionProcessed,
+  unmarkStripeActionProcessed,
 } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
@@ -231,12 +232,24 @@ async function processAutomations(
           continue;
         }
 
+        // 配信系だけは「先に記録→実行→例外なら取り消し」(at-most-once)。
+        // 送信成功→記録前に waitUntil が打ち切られると、cron再処理が同じメッセージを
+        // もう一度送ってしまう（2026-08-13 mochi me: 17:21送信→30秒打ち切り→17:30再送。
+        // automation_log自体も書かれる前に死ぬため、時間窓ガードでも検知できない）。
+        // ユーザー向け配信は「稀な取りこぼし」より「重複送信」のほうが害が大きいので先記録にする。
+        // GAS書き込み等の非配信アクションは従来どおり成功後記録(at-least-once)のまま。
+        const preMark = idemKey !== undefined && action.type === 'send_messages';
         try {
+          if (preMark) await markStripeActionProcessed(db, idemKey, actionKey);
           await executeAction(db, action, payload, actionEnv);
           results.push({ action: action.type, label: action.label, success: true });
           // 成功したアクションのみ記録（失敗は未記録→次の再処理で再実行される）
-          if (idemKey) await markStripeActionProcessed(db, idemKey, actionKey);
+          if (idemKey && !preMark) await markStripeActionProcessed(db, idemKey, actionKey);
         } catch (err) {
+          // 送信が例外で失敗した場合は先記録を取り消し、次の再処理で送り直せるようにする
+          if (preMark) {
+            try { await unmarkStripeActionProcessed(db, idemKey, actionKey); } catch { /* 取り消し失敗時は再処理でスキップされる側に倒れる */ }
+          }
           const errorMsg = err instanceof Error ? err.message : String(err);
           results.push({ action: action.type, label: action.label, success: false, error: errorMsg });
           if (action.onError === 'abort') break;

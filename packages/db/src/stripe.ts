@@ -114,3 +114,20 @@ export async function markStripeActionProcessed(
     .bind(stripeEventId, actionKey)
     .run();
 }
+
+/**
+ * アクション記録の取り消し。配信系アクションの「先記録→実行→失敗なら取り消し」用
+ * （2026-08-13 mochi me事例: 送信成功→記録前にwaitUntil打ち切りで死ぬと、
+ *  cron再処理が同じメッセージをもう一度送ってしまう。送信は先に記録して二重送信を塞ぎ、
+ *  送信自体が例外で失敗したときだけ取り消して再処理に委ねる）。
+ */
+export async function unmarkStripeActionProcessed(
+  db: D1Database,
+  stripeEventId: string,
+  actionKey: string,
+): Promise<void> {
+  await db
+    .prepare(`DELETE FROM stripe_processed_actions WHERE stripe_event_id = ? AND action_key = ?`)
+    .bind(stripeEventId, actionKey)
+    .run();
+}
