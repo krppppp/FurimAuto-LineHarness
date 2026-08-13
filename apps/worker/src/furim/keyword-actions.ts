@@ -1,6 +1,6 @@
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
-import { enqueueGasRetryJob } from './gas-retry-queue.js';
+import { enqueueGasRetryJob, buildKeycodeResetMessages, fetchCurrentKeyCode } from './gas-retry-queue.js';
 import { copyTicketFlexMessage } from './messages.js';
 import { getFriendByLineUserId, getFriendById, getAffiliateByCode, completeFriendActiveScenarios, getScenarioByName, enrollFriendInScenario } from '@line-crm/db';
 
@@ -71,10 +71,10 @@ export async function handleKeywordAction(
       // エラー文言で「もう一度送って」と手間を返すのではなく、受付済みを返して裏で完遂する
       console.error('[furim] キーコードリセット: GAS失敗。再実行キューに積みます', lineUserId, err);
       if (db) {
+        // 完遂通知は sweep 側が resetKeyCode 専用の説明＋キーコードのセットを組むので notifyMessage は不要
         await enqueueGasRetryJob(db, {
           lineUserId,
           method: 'resetKeyCode',
-          notifyMessage: '紐づいた設定のリセットが完了しました。\n（処理が混み合っていたため、自動で再実行しました）',
         });
         const acceptedMessage = { type: 'text', text: 'リセットを受け付けました。\nただいま処理が混み合っているため、完了しましたらこのトークでお知らせします（数分以内）。' } as never;
         try {
@@ -87,16 +87,20 @@ export async function handleKeywordAction(
       throw err;
     }
     console.log('[furim] キーコードリセット: GAS完了・返信します', lineUserId);
+    // 返信は「何がリセットされ・次に何をするか」の説明＋コピー用のキーコード単体を一括で送る
+    // （2026-08-13 くろさん指示。「完了しました」だけでは次の行動が伝わらなかった）。
+    // キーコードが取れなくてもリセット完了の案内は返す（メニュー誘導にフォールバック）
+    const keyCode = await fetchCurrentKeyCode(env.GAS_DEPLOY_ID, lineUserId);
+    const doneMessages = buildKeycodeResetMessages(keyCode) as never[];
     // GAS側のリセットは完了済みなので、返信は何があっても届けきる。
     // replyMessageが落ちると呼び出し元のcatchでエラー文言に化け、実際にはリセット済みなのに
     // 「失敗した」と伝わってしまう（2026-08-12 小笠さん事象では reply・エラー通知とも届かず無反応だった）
-    const doneMessage = { type: 'text', text: '紐づいた設定のリセットが完了しました。' } as never;
     try {
-      await lineClient.replyMessage(replyToken, [doneMessage]);
+      await lineClient.replyMessage(replyToken, doneMessages);
       console.log('[furim] キーコードリセット: 返信完了', lineUserId);
     } catch (err) {
       console.error('[furim] キーコードリセットのreply失敗。pushで再送します:', lineUserId, err);
-      await lineClient.pushMessage(lineUserId, [doneMessage]);
+      await lineClient.pushMessage(lineUserId, doneMessages);
       console.log('[furim] キーコードリセット: push再送完了', lineUserId);
     }
     return true;

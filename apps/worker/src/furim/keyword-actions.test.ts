@@ -96,19 +96,41 @@ describe('processReferral 冪等ガード', () => {
 });
 
 describe('handleKeywordAction キーコードリセットの特別対応', () => {
-  it('【キーワード】プレフィックスなしの単体文字列でも resetKeyCode が呼ばれる', async () => {
-    gasGet.mockResolvedValueOnce({});
+  it('【キーワード】プレフィックスなしでも動き、説明＋キーコード単体を一括で返信する', async () => {
+    gasGet.mockResolvedValueOnce({});                          // resetKeyCode
+    gasGet.mockResolvedValueOnce({ keyCode: 'pb_test123' });   // getKeyCode
     const client = makeClient();
 
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env);
 
     expect(result).toBe(true);
     expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
-    expect(client.replyMessage).toHaveBeenCalledWith('rt', [{ type: 'text', text: '紐づいた設定のリセットが完了しました。' }]);
+    expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'getKeyCode', lineUserId: 'Uuser' });
+    const messages = client.replyMessage.mock.calls[0][1];
+    expect(messages).toHaveLength(2);
+    expect(messages[0].text).toContain('リセットされたもの');
+    expect(messages[0].text).toContain('次にやること');
+    expect(messages[0].text).toContain('入力し直すまで自動化はご利用いただけません');
+    // キーコードはコピーしやすいよう単体メッセージ
+    expect(messages[1].text).toBe('pb_test123');
+  });
+
+  it('キーコードが取得できなくても、メニュー誘導つきの説明だけで返す', async () => {
+    gasGet.mockResolvedValueOnce({});                                  // resetKeyCode
+    gasGet.mockResolvedValueOnce({ keyCode: 'エラーコード(401)' });     // getKeyCode 失敗相当
+    const client = makeClient();
+
+    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env);
+
+    expect(result).toBe(true);
+    const messages = client.replyMessage.mock.calls[0][1];
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toContain('キーコード発行');
   });
 
   it('文中に含まれる場合でも部分一致で発火する（既存の他キーワードと同じ判定方式）', async () => {
     gasGet.mockResolvedValueOnce({});
+    gasGet.mockResolvedValueOnce({ keyCode: 'pb_test123' });
     const client = makeClient();
 
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'お手数ですがキーコードリセットお願いします', env);
@@ -119,6 +141,7 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
 
   it('従来通り【キーワード】プレフィックス付きでも動く', async () => {
     gasGet.mockResolvedValueOnce({});
+    gasGet.mockResolvedValueOnce({ keyCode: 'pb_test123' });
     const client = makeClient();
 
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', '【キーワード】キーコードリセット', env);
@@ -147,18 +170,22 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
 
   it('replyが失敗してもpushで完了通知を届ける（リセット自体は成功しているため）', async () => {
     gasGet.mockResolvedValueOnce({});
+    gasGet.mockResolvedValueOnce({ keyCode: 'pb_test123' });
     const client = makeClient();
     client.replyMessage.mockRejectedValueOnce(new Error('Invalid reply token'));
 
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', '【キーワード】キーコードリセット', env);
 
     expect(result).toBe(true);
-    // 例外を外へ投げない（呼び出し元がエラー文言に化けさせないため）
-    expect(client.pushMessage).toHaveBeenCalledWith('Uuser', [{ type: 'text', text: '紐づいた設定のリセットが完了しました。' }]);
+    // 例外を外へ投げない（呼び出し元がエラー文言に化けさせないため）。reply と同じ2通をpushで届ける
+    const pushed = client.pushMessage.mock.calls[0][1];
+    expect(pushed).toHaveLength(2);
+    expect(pushed[1].text).toBe('pb_test123');
   });
 
   it('replyが成功したときはpushしない（無駄な二重送信をしない）', async () => {
     gasGet.mockResolvedValueOnce({});
+    gasGet.mockResolvedValueOnce({ keyCode: 'pb_test123' });
     const client = makeClient();
 
     await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env);
