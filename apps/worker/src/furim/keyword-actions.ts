@@ -68,20 +68,16 @@ export async function handleKeywordAction(
       await gasGet(env.GAS_DEPLOY_ID, { method: 'resetKeyCode', lineUserId });
     } catch (err) {
       // インラインで完遂できなかったら再実行キューに積み、cronが必ず完遂させる。
-      // エラー文言で「もう一度送って」と手間を返すのではなく、受付済みを返して裏で完遂する
+      // 中間の「受け付けました」返信はしない（2026-08-14 くろさん方針: 余計な返信はいらない）。
+      // 完遂通知はreplyTokenを優先し、失効していたらpush（push月間上限の節約）
       console.error('[furim] キーコードリセット: GAS失敗。再実行キューに積みます', lineUserId, err);
       if (db) {
         // 完遂通知は sweep 側が resetKeyCode 専用の説明＋キーコードのセットを組むので notifyMessage は不要
         await enqueueGasRetryJob(db, {
           lineUserId,
           method: 'resetKeyCode',
+          replyToken,
         });
-        const acceptedMessage = { type: 'text', text: 'リセットを受け付けました。\nただいま処理が混み合っているため、完了しましたらこのトークでお知らせします（数分以内）。' } as never;
-        try {
-          await lineClient.replyMessage(replyToken, [acceptedMessage]);
-        } catch {
-          await lineClient.pushMessage(lineUserId, [acceptedMessage]);
-        }
         return true;
       }
       throw err;

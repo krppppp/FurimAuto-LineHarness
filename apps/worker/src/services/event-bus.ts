@@ -555,7 +555,34 @@ async function executeAction(
       const method = action.params.method as string;
       const args = (action.params.args ?? {}) as Record<string, unknown>;
       const resolvedArgs = await resolveGasArgs(db, args, friendId, payload);
-      const response = await gasPost(gasDeployId, { method, ...resolvedArgs });
+      let response: unknown;
+      try {
+        response = await gasPost(gasDeployId, { method, ...resolvedArgs });
+      } catch (err) {
+        // setCustomerData（新規顧客のマスター行作成）は失敗を落とせない。再実行キューに積み、
+        // cronが「同一LINE_IDの行が既にあるか」を確認したうえで完遂させる。
+        // GAS側はWorkerが見切っても完走することがあるため、盲目リトライは重複行を生む
+        // （2026-08-14 よっしーさん3重行）。doneCheckつきのキュー退避だけが安全な再実行手段
+        if (method === 'setCustomerData' && friendId) {
+          const friend = await db
+            .prepare('SELECT line_user_id FROM friends WHERE id = ?')
+            .bind(friendId)
+            .first<{ line_user_id: string }>();
+          if (friend) {
+            const { enqueueGasRetryJob } = await import('../furim/gas-retry-queue.js');
+            await enqueueGasRetryJob(db, {
+              lineUserId: friend.line_user_id,
+              method,
+              params: resolvedArgs as Record<string, string>,
+              callType: 'post',
+              doneCheck: 'customerRowExists',
+            });
+            console.warn(`[event-bus] ${method} 失敗→再実行キューに退避 friendId=${friendId}: ${String(err)}`);
+            break;
+          }
+        }
+        throw err;
+      }
       // capture: { eventDataキー: GAS応答フィールド } — 後続stepの {{eventData.KEY}} で参照できる
       const capture = action.params.capture as Record<string, string> | undefined;
       if (capture && response && typeof response === 'object') {

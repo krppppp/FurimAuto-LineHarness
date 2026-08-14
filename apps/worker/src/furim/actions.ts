@@ -1,5 +1,6 @@
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
+import { enqueueGasRetryJob } from './gas-retry-queue.js';
 import { getSentGiftBatches, setSentGiftBatches } from './firebase-client.js';
 import {
   carouselTemplate,
@@ -335,17 +336,25 @@ async function actionKeycodeIssue(
   db?: D1Database,
 ) {
   let data: Record<string, string> | null = null;
-  for (let attempt = 1; attempt <= 2 && !data; attempt++) {
-    try {
-      data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getKeyCode', lineUserId }) as Record<string, string>;
-    } catch (err) {
-      console.error(`[furim] getKeyCode attempt ${attempt} failed:`, err);
-    }
+  try {
+    data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getKeyCode', lineUserId }) as Record<string, string>;
+  } catch (err) {
+    console.error('[furim] getKeyCode failed:', err);
   }
   console.log('[furim] getKeyCode response:', data);
 
   if (!data?.keyCode) {
-    // GAS 2回失敗 — replyToken は失効している可能性が高いので push で案内
+    // 1回きり実行で失敗 → 再実行キューに積んでcronが完遂し、キーコードを届ける
+    // （2026-08-14 くろさん方針: インラインリトライ廃止・中間の返信もしない。
+    //   完遂通知はreplyToken優先→失効時のみpushで月間上限を節約）
+    if (db) {
+      await enqueueGasRetryJob(db, {
+        lineUserId,
+        method: 'getKeyCode',
+        replyToken,
+      });
+      return;
+    }
     await lineClient.pushMessage(lineUserId, [{ type: 'text', text: '申し訳ございません、発行処理が混み合っています🙇\nお手数ですが、少し時間をおいてもう一度「キーコード発行」をタップしてください。' } as never]);
     return;
   }
