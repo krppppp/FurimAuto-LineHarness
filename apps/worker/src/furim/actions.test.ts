@@ -41,17 +41,24 @@ describe('actionKeycodeIssue (キーコード発行のフォールバック)', (
     expect(client.pushMessage).toHaveBeenCalledWith('Uxxx', [{ type: 'text', text: 'pb_abcd1234' }]);
   });
 
-  it('GAS 1回目失敗 → リトライ成功で通常返信', async () => {
-    gasGet.mockRejectedValueOnce(new Error('GAS GET 500')).mockResolvedValueOnce({ keyCode: 'pb_abcd1234' });
+  it('GAS失敗 → リトライせず再実行キューに積む（中間返信なし・2026-08-14 くろさん方針）', async () => {
+    gasGet.mockRejectedValue(new Error('GAS GET 500'));
     const client = makeClient();
+    const stmt = { bind: vi.fn(), run: vi.fn().mockResolvedValue({}), first: vi.fn().mockResolvedValue(null) };
+    stmt.bind.mockReturnValue(stmt);
+    const db = { prepare: vi.fn().mockReturnValue(stmt) };
 
-    await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】キーコード発行', env);
+    await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】キーコード発行', env, db as never);
 
-    expect(gasGet).toHaveBeenCalledTimes(2);
-    expect(client.replyMessage).toHaveBeenCalledWith('rt', [{ type: 'text', text: 'pb_abcd1234' }]);
+    expect(gasGet).toHaveBeenCalledTimes(1); // 1回きり実行
+    const sqls = db.prepare.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(sqls.some((q: string) => q.includes('INSERT INTO gas_retry_jobs'))).toBe(true);
+    // 完遂通知はcron側がreplyToken優先で送るため、この場では何も送らない
+    expect(client.replyMessage).not.toHaveBeenCalled();
+    expect(client.pushMessage).not.toHaveBeenCalled();
   });
 
-  it('GAS 2回失敗 → push で再操作を案内 (無言にしない)', async () => {
+  it('GAS失敗かつdb無し → push で再操作を案内 (無言にしない)', async () => {
     gasGet.mockRejectedValue(new Error('GAS GET 500'));
     const client = makeClient();
 

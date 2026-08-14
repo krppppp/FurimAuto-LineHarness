@@ -105,7 +105,7 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
 
     expect(result).toBe(true);
     expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
-    expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'getKeyCode', lineUserId: 'Uuser' });
+    expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'getKeyCode', lineUserId: 'Uuser' }, expect.anything());
     const messages = client.replyMessage.mock.calls[0][1];
     expect(messages).toHaveLength(2);
     expect(messages[0].text).toContain('リセットされたもの');
@@ -149,22 +149,23 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
     expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
   });
 
-  it('GASが失敗したら再実行キューに積み、受付済みを返信する（無言にもエラー返しにもしない）', async () => {
+  it('GASが失敗したら再実行キューに積むだけで中間返信はしない（2026-08-14 くろさん方針）', async () => {
     gasGet.mockRejectedValueOnce(new Error('GAS fetch hang (8000ms)'));
     const client = makeClient();
-    const stmt = { bind: vi.fn(), run: vi.fn().mockResolvedValue({}) };
+    const stmt = { bind: vi.fn(), run: vi.fn().mockResolvedValue({}), first: vi.fn().mockResolvedValue(null) };
     stmt.bind.mockReturnValue(stmt);
     const db = { prepare: vi.fn().mockReturnValue(stmt) };
 
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, db as never);
 
     expect(result).toBe(true);
-    // gas_retry_jobs への INSERT が走る
-    expect(db.prepare.mock.calls[0][0]).toContain('INSERT INTO gas_retry_jobs');
+    // gas_retry_jobs への INSERT が走る（完遂通知はcron側がreplyToken優先で送る）
+    const sqls = db.prepare.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(sqls.some((q: string) => q.includes('INSERT INTO gas_retry_jobs'))).toBe(true);
     expect(stmt.run).toHaveBeenCalled();
-    // ユーザーには受付済みメッセージ（エラー文言ではない）
-    const replied = client.replyMessage.mock.calls[0][1][0].text;
-    expect(replied).toContain('受け付けました');
+    // 中間の「受け付けました」返信は廃止（余計な返信はしない）
+    expect(client.replyMessage).not.toHaveBeenCalled();
+    expect(client.pushMessage).not.toHaveBeenCalled();
   });
 
   it('replyが失敗してもpushで完了通知を届ける（リセット自体は成功しているため）', async () => {

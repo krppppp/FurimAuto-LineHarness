@@ -54,6 +54,21 @@ export interface ActionEnv {
   richMenuDefaultHome?: string;
 }
 
+// call_gas_post の失敗時に gas_retry_jobs キューへ退避してよい書き込み系メソッドと、
+// キュー実行前の「実行済みチェック」（gas-retry-queue.ts の DONE_CHECKS キー）。
+// GAS側はWorkerがタイムアウトで見切っても実行を完走することがあるため、非冪等な
+// メソッドは再実行前に効果の有無を必ず確認する。リスト外のメソッドは従来どおり
+// throw して stripe_events sweep（イベント丸ごと再実行）に委ねる
+const GAS_QUEUE_METHODS: Record<string, { doneCheck: string | null }> = {
+  setCustomerData: { doneCheck: 'customerRowExists' },
+  setSubscriptionData: { doneCheck: 'subscriptionRecorded' },
+  // setKeyCode はGAS側の接頭語一致ガード（同一プランなら再発行しない）が冪等性を担保する
+  setKeyCode: { doneCheck: null },
+  setTransactionData: { doneCheck: 'transactionRecorded' },
+  deleteSubscription: { doneCheck: 'subscriptionDeleted' },
+  setTicketTransaction: { doneCheck: 'ticketTransactionRecorded' },
+};
+
 /**
  * Fire an event and run all registered handlers.
  *
@@ -551,19 +566,25 @@ async function executeAction(
     case 'call_gas_post': {
       const gasDeployId = env.gasDeployId;
       if (!gasDeployId) break;
-      const { gasPost } = await import('../furim/gas-client.js');
+      const { gasPost, getGasErrorFromResponse } = await import('../furim/gas-client.js');
       const method = action.params.method as string;
       const args = (action.params.args ?? {}) as Record<string, unknown>;
       const resolvedArgs = await resolveGasArgs(db, args, friendId, payload);
       let response: unknown;
       try {
         response = await gasPost(gasDeployId, { method, ...resolvedArgs });
+        // GASはHTTP 200のまま失敗を返すことがある（{success:false} / HTMLエラーページ）。
+        // 成功扱いで無言ロストしないよう、応答本文の失敗も例外に揃える
+        const failure = getGasErrorFromResponse(response);
+        if (failure) throw new Error(`${method}: ${failure}`);
       } catch (err) {
-        // setCustomerData（新規顧客のマスター行作成）は失敗を落とせない。再実行キューに積み、
-        // cronが「同一LINE_IDの行が既にあるか」を確認したうえで完遂させる。
-        // GAS側はWorkerが見切っても完走することがあるため、盲目リトライは重複行を生む
-        // （2026-08-14 よっしーさん3重行）。doneCheckつきのキュー退避だけが安全な再実行手段
-        if (method === 'setCustomerData' && friendId) {
+        // GAS_QUEUE_METHODS の書き込み系は失敗を落とせない。再実行キューに積み、cronが
+        // doneCheck（実行前の実行済み確認）つきで完遂させる。
+        // GAS側はWorkerが見切っても完走することがあるため、盲目リトライは重複書き込みを生む
+        // （2026-08-14 よっしーさん3重行）。doneCheckつきのキュー退避だけが安全な再実行手段。
+        // これによりイベント本体は1パスで完走し、sweepのイベント丸ごと再実行を発生させない
+        const queueSpec = GAS_QUEUE_METHODS[method];
+        if (queueSpec && friendId) {
           const friend = await db
             .prepare('SELECT line_user_id FROM friends WHERE id = ?')
             .bind(friendId)
@@ -573,11 +594,15 @@ async function executeAction(
             await enqueueGasRetryJob(db, {
               lineUserId: friend.line_user_id,
               method,
-              params: resolvedArgs as Record<string, string>,
+              params: resolvedArgs as Record<string, unknown>,
               callType: 'post',
-              doneCheck: 'customerRowExists',
+              doneCheck: queueSpec.doneCheck,
+              // 同一ユーザーの別イベント分（別インボイス等）を落とさないようイベントIDで一意化
+              dedupeKey: payload.idempotencyKey ? `${method}:${payload.idempotencyKey}` : undefined,
+              maxAttempts: 20,
             });
             console.warn(`[event-bus] ${method} 失敗→再実行キューに退避 friendId=${friendId}: ${String(err)}`);
+            // 退避時はresponseが無いため後続のcaptureはスキップされる（stripe系automationはcapture未使用）
             break;
           }
         }

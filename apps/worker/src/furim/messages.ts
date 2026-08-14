@@ -216,3 +216,12 @@ export function surveyButton(altText: string) {
     },
   };
 }
+
+// 更新課金でキーコードが再発行されたときの通知（stripe-processorのインライン成功時と
+// gas-retry-queueのキュー完遂時で共通）。キーコードはコピーしやすいよう単体メッセージで送る
+export function keycodeReissuedMessages(keyCode: string): Array<{ type: 'text'; text: string }> {
+  return [
+    { type: 'text', text: '🔑 本日の更新でご予約のプラン変更が適用され、キーコードが新しくなりました。\n\n次のメッセージでお送りするキーコードをコピーして、拡張機能のキーコード欄に入力し直してご利用ください。' },
+    { type: 'text', text: keyCode },
+  ];
+}

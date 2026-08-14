@@ -7,9 +7,13 @@ import {
   markStripeEventCompleted,
   markStripeEventFailed,
   updateFriendPlanName,
+  hasProcessedStripeAction,
+  markStripeActionProcessed,
 } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
-import { gasGet, gasPost } from '../furim/gas-client.js';
+import { gasGet, gasPost, getGasErrorFromResponse } from '../furim/gas-client.js';
+import { enqueueGasRetryJob } from '../furim/gas-retry-queue.js';
+import { keycodeReissuedMessages } from '../furim/messages.js';
 import { fireEvent } from './event-bus.js';
 import { logOutgoing } from '../utils/message-log.js';
 import type { Env } from '../index.js';
@@ -101,13 +105,18 @@ export async function processStripeEvent(
     const isNewSubscription = billingReason === 'subscription_create';
 
     // LINE ID を解決（メタデータになければGASシートで照合）
+    // GAS照合のfetch失敗は「未解決のまま進む」と友だち特定・通知が全部欠けたまま
+    // イベントがcompletedになってしまうため記録しておき、後段のsubscription metadata
+    // フォールバックでも解決できなければthrowしてsweepの再試行に委ねる
     let resolvedLineUserId = lineUserId;
+    let gasLookupFailed = false;
     if (!resolvedLineUserId && stripeCustomerId && env.GAS_DEPLOY_ID) {
       try {
         const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
         resolvedLineUserId = gasData?.customer_line_id ?? null;
       } catch (e) {
         console.error('[stripe/invoice] getLINEIDwithStripeID failed:', e);
+        gasLookupFailed = true;
       }
     }
 
@@ -150,6 +159,12 @@ export async function processStripeEvent(
     // （invoice metadataには載らず、CheckoutがStripe顧客を新規作成した場合はシート照合も効かないため）
     if (!resolvedLineUserId && subMetadata.lineUserId) resolvedLineUserId = subMetadata.lineUserId;
 
+    // GAS照合のfetch失敗が原因で未解決の場合はイベントをpendingに残してsweepで再試行する
+    // （GASが正常応答で空を返した=LINE紐付けなし、は従来どおり続行）
+    if (!resolvedLineUserId && gasLookupFailed) {
+      throw new Error(`getLINEIDwithStripeID fetch failed and no metadata fallback (event=${body.id}); will retry via cron`);
+    }
+
     // plan-builder（機能単位サブスク）: metadataの機能セットを顧客行フラグへ同期。
     // 初回・毎月更新の両方で発火し、premiumは支払いごとにチケット200枚付与。
     // ラベルは「プラン」を含む "PBプラン:" 接頭必須（getKeyCodeSetの期限切れ文言・
@@ -157,52 +172,85 @@ export async function processStripeEvent(
     // planName.includes("プラン") を見るため）。
     const isPlanBuilder = subMetadata.source === 'plan-builder';
     if (isPlanBuilder && env.GAS_DEPLOY_ID) {
-      try {
-        const pbPackages = subMetadata.packages ?? '';
-        const pbLabel = 'PBプラン:' + [pbPackages, subMetadata.features].filter(Boolean).join('+');
-        const result = await gasPost(env.GAS_DEPLOY_ID, {
-          method: 'syncFeaturesFromSubscription',
-          lineUserId: subMetadata.lineUserId ?? resolvedLineUserId ?? '',
-          stripeCustomerID: stripeCustomerId,
-          packages: pbPackages,
-          features: subMetadata.features ?? '',
-          multiChannelSites: subMetadata.multiChannelSites ?? '',
-          subscriptionId,
-          planLabel: pbLabel,
-          grantPremiumTickets: pbPackages.split(',').includes('premium'),
-        });
-        console.log('[stripe/invoice] plan-builder sync:', JSON.stringify(result).slice(0, 200));
-        // PBサブスクはStripe側にplan.nicknameが無くplanNameが空になる。
-        // 空のままだと後続automationのsetSubscriptionDataがプラン名を空上書きするため、
-        // GASが合成した日本語ラベル（なければキーベースのラベル）で埋める
-        const syncRes = result as { planLabel?: string; keyCode?: string; keyCodeIssued?: boolean } | null;
-        if (!planName) planName = syncRes?.planLabel || pbLabel;
-
-        // キーコードが再発行された場合は新キーコードをユーザーへ通知する。
-        // - subscription_cycle: ダウングレード予約の切替日・移行顧客の初回更新（ラベル変化で再発行）
-        // - subscription_update: アップグレード即時実行の差額invoice。通常はplan-change.tsの
-        //   同期が先に発行して返信するが、この同期が競合で先勝ちした場合（2026-07-14 澁谷さん
-        //   事象の類型）はplan-change側がkeyCodeIssued=falseになり通知が漏れるため、ここで送る。
-        //   発行判定は冪等（ラベル一致なら再発行しない）ので二重通知にはならない
-        if (syncRes?.keyCodeIssued && syncRes.keyCode && (billingReason === 'subscription_cycle' || billingReason === 'subscription_update') && resolvedLineUserId && env.LINE_CHANNEL_ACCESS_TOKEN) {
-          try {
-            // キーコードは単独メッセージで送る（LINE はメッセージ単位でしかコピーできないため）
-            const kcText = `🔑 本日の更新でご予約のプラン変更が適用され、キーコードが新しくなりました。\n\n次のメッセージでお送りするキーコードをコピーして、拡張機能のキーコード欄に入力し直してご利用ください。`;
-            await new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN).pushMessage(resolvedLineUserId, [
-              { type: 'text', text: kcText } as never,
-              { type: 'text', text: syncRes.keyCode } as never,
-            ]);
-            const kcFriend = await getFriendByLineUserId(db, resolvedLineUserId);
-            if (kcFriend) {
-              await logOutgoing(db, kcFriend.id, 'text', kcText);
-              await logOutgoing(db, kcFriend.id, 'text', syncRes.keyCode);
-            }
-          } catch (e) {
-            console.error('[stripe/invoice] keycode notice failed:', e);
-          }
+      const pbPackages = subMetadata.packages ?? '';
+      const pbLabel = 'PBプラン:' + [pbPackages, subMetadata.features].filter(Boolean).join('+');
+      // sweepのイベント再実行と gas_retry_jobs キューの二重経路を防ぐための実行済みマーク。
+      // 初回試行で「完遂」または「キュー退避」した時点でマークし、以降の再実行では触らない
+      const syncActionKey = 'hardcoded:sync-features';
+      const syncGasArgs = {
+        lineUserId: subMetadata.lineUserId ?? resolvedLineUserId ?? '',
+        stripeCustomerID: stripeCustomerId,
+        packages: pbPackages,
+        features: subMetadata.features ?? '',
+        multiChannelSites: subMetadata.multiChannelSites ?? '',
+        subscriptionId,
+        planLabel: pbLabel,
+        grantPremiumTickets: pbPackages.split(',').includes('premium'),
+      };
+      if (await hasProcessedStripeAction(db, body.id, syncActionKey)) {
+        // 再実行時: 同期はインライン完遂済みかキューが担当中。planNameだけ復元する
+        // （初回試行がD1のfriends.plan_nameに同期済み。無ければキーベースのラベル）
+        if (!planName) {
+          const syncedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
+          planName = (syncedFriend as { plan_name?: string } | null)?.plan_name || pbLabel;
         }
-      } catch (e) {
-        console.error('[stripe/invoice] syncFeaturesFromSubscription failed:', e);
+      } else {
+        try {
+          const result = await gasPost(env.GAS_DEPLOY_ID, { method: 'syncFeaturesFromSubscription', ...syncGasArgs });
+          const failure = getGasErrorFromResponse(result);
+          if (failure) throw new Error(failure);
+          console.log('[stripe/invoice] plan-builder sync:', JSON.stringify(result).slice(0, 200));
+          await markStripeActionProcessed(db, body.id, syncActionKey);
+          // PBサブスクはStripe側にplan.nicknameが無くplanNameが空になる。
+          // 空のままだと後続automationのsetSubscriptionDataがプラン名を空上書きするため、
+          // GASが合成した日本語ラベル（なければキーベースのラベル）で埋める
+          const syncRes = result as { planLabel?: string; keyCode?: string; keyCodeIssued?: boolean } | null;
+          if (!planName) planName = syncRes?.planLabel || pbLabel;
+
+          // キーコードが再発行された場合は新キーコードをユーザーへ通知する。
+          // - subscription_cycle: ダウングレード予約の切替日・移行顧客の初回更新（ラベル変化で再発行）
+          // - subscription_update: アップグレード即時実行の差額invoice。通常はplan-change.tsの
+          //   同期が先に発行して返信するが、この同期が競合で先勝ちした場合（2026-07-14 澁谷さん
+          //   事象の類型）はplan-change側がkeyCodeIssued=falseになり通知が漏れるため、ここで送る。
+          //   発行判定は冪等（ラベル一致なら再発行しない）ので二重通知にはならない
+          if (syncRes?.keyCodeIssued && syncRes.keyCode && (billingReason === 'subscription_cycle' || billingReason === 'subscription_update') && resolvedLineUserId && env.LINE_CHANNEL_ACCESS_TOKEN) {
+            try {
+              // キーコードは単独メッセージで送る（LINE はメッセージ単位でしかコピーできないため）
+              const kcMessages = keycodeReissuedMessages(syncRes.keyCode);
+              await new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN).pushMessage(resolvedLineUserId, kcMessages as never[]);
+              const kcFriend = await getFriendByLineUserId(db, resolvedLineUserId);
+              if (kcFriend) {
+                for (const m of kcMessages) await logOutgoing(db, kcFriend.id, 'text', m.text);
+              }
+            } catch (e) {
+              console.error('[stripe/invoice] keycode notice failed:', e);
+            }
+          }
+        } catch (e) {
+          // 従来はここで握りつぶしてイベントがcompletedになり、キーコード同期漏れが
+          // 永久ロストしていた。再実行キューに退避してcronが完遂させる（キュー完遂時の
+          // 再発行通知は __notifyKeycodeReissue フラグで sweep 側が送る）
+          const syncLineUserId = subMetadata.lineUserId || resolvedLineUserId || '';
+          if (!syncLineUserId) {
+            // 退避先が無い: イベントをpendingに残しsweepの再試行に委ねる
+            throw e;
+          }
+          await enqueueGasRetryJob(db, {
+            lineUserId: syncLineUserId,
+            method: 'syncFeaturesFromSubscription',
+            params: {
+              ...syncGasArgs,
+              __notifyKeycodeReissue: (billingReason === 'subscription_cycle' || billingReason === 'subscription_update') ? '1' : '0',
+            },
+            callType: 'post',
+            doneCheck: null,
+            dedupeKey: `syncFeaturesFromSubscription:${body.id}`,
+            maxAttempts: 20,
+          });
+          await markStripeActionProcessed(db, body.id, syncActionKey);
+          console.warn('[stripe/invoice] syncFeaturesFromSubscription 失敗→再実行キューに退避:', String(e));
+          if (!planName) planName = pbLabel;
+        }
       }
 
       if (isNewSubscription) {
@@ -275,6 +323,10 @@ export async function processStripeEvent(
     // ambassador coupon: GASで紹介クーポン確認 → Stripeクーポン適用（code_managed相当・継続課金時のみ）
     // アンバサダー紹介クーポン: 従来の顧客レベル適用は、サブスク側discount（併用割引）を
     // 持つ顧客には一切効かない（サブスク側優先のため不発）。サブスクへのスタック追加に変更（2026-07-14）
+    // 既知の穴（2026-08-14調査・受容）: updateIntroductionCoupon はGAS側が「クーポン適用フラグを
+    // 先に立ててから」IDを返すため、fetchがハングしてGAS側だけ完走するとシート上は適用済み・
+    // Stripe未適用のまま翌月以降も拾えず割引がロストする。GAS非改修方針のためWorker側では
+    // 塞げない。発生時はクーポン適用履歴とStripe側discountを突き合わせて手動適用する
     let ambassadorCouponApplied = false;
     if (!isNewSubscription && resolvedLineUserId && env.GAS_DEPLOY_ID && stripeCustomerId) {
       try {
@@ -376,7 +428,12 @@ export async function processStripeEvent(
       try {
         const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
         resolvedLineUserId = gasData?.customer_line_id ?? null;
-      } catch (e) { console.error('[stripe/payment_failed] getLINEIDwithStripeID failed:', e); }
+      } catch (e) {
+        // fetch失敗のまま進むと「友だち未特定」の縮退動作でイベントが完了してしまう。
+        // pendingに残してsweepで再試行する（GAS正常応答で空=LINE紐付けなし、は続行）
+        console.error('[stripe/payment_failed] getLINEIDwithStripeID failed:', e);
+        throw e;
+      }
     }
     const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
 
@@ -419,7 +476,12 @@ export async function processStripeEvent(
       try {
         const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
         resolvedLineUserId = gasData?.customer_line_id ?? null;
-      } catch (e) { console.error('[stripe/subscription.deleted] getLINEIDwithStripeID failed:', e); }
+      } catch (e) {
+        // fetch失敗のまま進むと友だち未特定で解約フローが空振りしたままイベントが
+        // 完了してしまう。pendingに残してsweepで再試行する
+        console.error('[stripe/subscription.deleted] getLINEIDwithStripeID failed:', e);
+        throw e;
+      }
     }
     const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
     // action単位でbody.idを冪等キーに厳密1回実行。未完なら(clearAll後に)throwしてcron再処理に回す。
@@ -433,16 +495,31 @@ export async function processStripeEvent(
     // planLabelは渡さない: 直前のautomation(deleteSubscription)がプラン名に書いた
     // 「キャンセル済み」を上書きしないため（getKeyCodeSetのキャンセル判定が見る）
     if (obj.metadata?.source === 'plan-builder' && env.GAS_DEPLOY_ID) {
+      const clearArgs = {
+        lineUserId: obj.metadata?.lineUserId ?? resolvedLineUserId ?? '',
+        stripeCustomerID: stripeCustomerId,
+        subscriptionId: obj.id,
+        clearAll: true,
+      };
       try {
-        await gasPost(env.GAS_DEPLOY_ID, {
-          method: 'syncFeaturesFromSubscription',
-          lineUserId: obj.metadata?.lineUserId ?? resolvedLineUserId ?? '',
-          stripeCustomerID: stripeCustomerId,
-          subscriptionId: obj.id,
-          clearAll: true,
-        });
+        const result = await gasPost(env.GAS_DEPLOY_ID, { method: 'syncFeaturesFromSubscription', ...clearArgs });
+        const failure = getGasErrorFromResponse(result);
+        if (failure) throw new Error(failure);
       } catch (e) {
-        console.error('[stripe/subscription.deleted] syncFeaturesFromSubscription failed:', e);
+        // 従来は握りつぶしで「解約したのに機能フラグが残る」が無言で起きていた。
+        // 再実行キューに退避してcronが完遂させる（clearAllは冪等なのでdoneCheck不要）
+        const clearLineUserId = clearArgs.lineUserId;
+        if (!clearLineUserId) throw e; // 退避先が無ければpendingに残しsweepへ
+        await enqueueGasRetryJob(db, {
+          lineUserId: clearLineUserId,
+          method: 'syncFeaturesFromSubscription',
+          params: clearArgs,
+          callType: 'post',
+          doneCheck: null,
+          dedupeKey: `syncFeaturesFromSubscription:clearAll:${body.id}`,
+          maxAttempts: 20,
+        });
+        console.warn('[stripe/subscription.deleted] syncFeaturesFromSubscription 失敗→再実行キューに退避:', String(e));
       }
     }
     if (!subDeletedOk) {

@@ -46,6 +46,22 @@ export async function gasGet(deployId: string, params: Record<string, string>, o
   try { return JSON.parse(text); } catch { return text; }
 }
 
+// GASは処理失敗時もHTTP 200で {success:false, error} を返し、doGet/doPostの未捕捉例外は
+// HTMLエラーページ(200)になる。res.okだけでは失敗を検知できないため、応答本文から
+// 失敗を判定する。失敗ならその説明文字列、正常ならnullを返す。
+// ※ success フィールドを持たない正常応答（getKeyCode等）は失敗扱いにしない
+export function getGasErrorFromResponse(result: unknown): string | null {
+  if (typeof result === 'string' && result.trimStart().startsWith('<')) {
+    return 'GAS returned HTML error page (uncaught exception)';
+  }
+  if (result && typeof result === 'object') {
+    const r = result as Record<string, unknown>;
+    if (r.success === false) return `GAS success=false: ${String(r.error ?? '(no error message)')}`.slice(0, 300);
+    if (r.result === 'error') return 'GAS result=error';
+  }
+  return null;
+}
+
 export async function gasPost(deployId: string, body: Record<string, unknown>, opts?: GasCallOptions): Promise<unknown> {
   const res = await fetchGasOnce(`${GAS_BASE}/${deployId}/exec`, {
     method: 'POST',

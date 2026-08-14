@@ -10,11 +10,19 @@ vi.mock('@line-crm/db', () => ({
   markStripeEventFailed: vi.fn(),
   applyScoring: vi.fn(),
   updateFriendPlanName: vi.fn(),
+  hasProcessedStripeAction: vi.fn().mockResolvedValue(false),
+  markStripeActionProcessed: vi.fn(),
 }));
 
-vi.mock('../furim/gas-client.js', () => ({
+// getGasErrorFromResponse は実実装を使う（success:false 検知のテストのため）
+vi.mock('../furim/gas-client.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   gasGet: vi.fn(),
   gasPost: vi.fn(),
+}));
+
+vi.mock('../furim/gas-retry-queue.js', () => ({
+  enqueueGasRetryJob: vi.fn(),
 }));
 
 vi.mock('./event-bus.js', () => ({
@@ -345,5 +353,108 @@ describe('processStripeEvent — invoice_paid でのプラン名D1同期', () =>
     });
 
     expect(updateFriendPlanName).not.toHaveBeenCalled();
+  });
+});
+
+import { hasProcessedStripeAction, markStripeActionProcessed } from '@line-crm/db';
+import { gasPost } from '../furim/gas-client.js';
+import { enqueueGasRetryJob } from '../furim/gas-retry-queue.js';
+
+describe('processStripeEvent — GAS失敗のキュー退避（2026-08-14 Stripe経路統合）', () => {
+  test('getLINEIDwithStripeID のfetch失敗＋metadataフォールバック不成立ならthrowしてsweep再試行に委ねる', async () => {
+    const { db } = makeDb(null);
+    vi.mocked(gasGet).mockRejectedValue(new Error('GAS fetch hang'));
+
+    await expect(processStripeEvent(db, env, {
+      id: 'evt_lookup_1',
+      type: 'invoice.payment_succeeded',
+      data: { object: { id: 'in_l1', customer: 'cus_l1', billing_reason: 'subscription_cycle' } },
+    })).rejects.toThrow(/getLINEIDwithStripeID fetch failed/);
+  });
+
+  test('getLINEIDwithStripeID が失敗しても subscription metadata で解決できれば続行する', async () => {
+    const { db } = makeDb({ id: 'log-1' });
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+    vi.mocked(gasGet).mockRejectedValue(new Error('GAS fetch hang'));
+    const fetchStub = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('/v1/subscriptions/')) {
+        return Promise.resolve({ ok: true, json: async () => ({ plan: { nickname: 'テストプラン' }, items: { data: [] }, metadata: { lineUserId: 'U-meta' } }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    vi.stubGlobal('fetch', fetchStub);
+
+    try {
+      await expect(processStripeEvent(db, { ...(env as object), STRIPE_SECRET_KEY: 'sk_test_1' } as never, {
+        id: 'evt_lookup_2',
+        type: 'invoice.payment_succeeded',
+        data: { object: { id: 'in_l2', customer: 'cus_l2', billing_reason: 'subscription_cycle', subscription: 'sub_l2' } },
+      })).resolves.toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('plan-builderのsyncFeatures失敗はキュー退避＋実行済みマークして処理を続行する', async () => {
+    const { db } = makeDb({ id: 'log-1' });
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+    vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-pb' });
+    vi.mocked(gasPost).mockRejectedValueOnce(new Error('GAS fetch hang'));
+    const fetchStub = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('/v1/subscriptions/')) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: { data: [] }, metadata: { source: 'plan-builder', lineUserId: 'U-pb', packages: 'premium' } }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    vi.stubGlobal('fetch', fetchStub);
+
+    try {
+      await expect(processStripeEvent(db, { ...(env as object), STRIPE_SECRET_KEY: 'sk_test_1' } as never, {
+        id: 'evt_pb_q1',
+        type: 'invoice.payment_succeeded',
+        data: { object: { id: 'in_pb1', customer: 'cus_pb1', billing_reason: 'subscription_cycle', subscription: 'sub_pb1' } },
+      })).resolves.toBeUndefined();
+
+      expect(enqueueGasRetryJob).toHaveBeenCalledTimes(1);
+      const job = vi.mocked(enqueueGasRetryJob).mock.calls[0][1];
+      expect(job).toMatchObject({
+        lineUserId: 'U-pb',
+        method: 'syncFeaturesFromSubscription',
+        callType: 'post',
+        dedupeKey: 'syncFeaturesFromSubscription:evt_pb_q1',
+        maxAttempts: 20,
+      });
+      expect((job.params as Record<string, unknown>).__notifyKeycodeReissue).toBe('1');
+      expect(markStripeActionProcessed).toHaveBeenCalledWith(db, 'evt_pb_q1', 'hardcoded:sync-features');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('sync-featuresが実行済みマーク済みならGASを呼ばない（sweep再実行とキューの二重経路防止）', async () => {
+    const { db } = makeDb({ id: 'log-1' });
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1', plan_name: 'PBプラン:premium' } as never);
+    vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-pb' });
+    vi.mocked(hasProcessedStripeAction).mockResolvedValueOnce(true as never);
+    const fetchStub = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('/v1/subscriptions/')) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: { data: [] }, metadata: { source: 'plan-builder', lineUserId: 'U-pb', packages: 'premium' } }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    vi.stubGlobal('fetch', fetchStub);
+
+    try {
+      await processStripeEvent(db, { ...(env as object), STRIPE_SECRET_KEY: 'sk_test_1' } as never, {
+        id: 'evt_pb_q2',
+        type: 'invoice.payment_succeeded',
+        data: { object: { id: 'in_pb2', customer: 'cus_pb2', billing_reason: 'subscription_cycle', subscription: 'sub_pb2' } },
+      }, { isRetry: true });
+
+      expect(gasPost).not.toHaveBeenCalled();
+      expect(enqueueGasRetryJob).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

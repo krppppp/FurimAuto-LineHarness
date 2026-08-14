@@ -231,9 +231,14 @@ describe('fireEvent — send_message action logging', () => {
   });
 });
 
-vi.mock('../furim/gas-client.js', () => ({
+vi.mock('../furim/gas-client.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   gasPost: vi.fn().mockResolvedValue({ success: true, keyCode: 'pb_test123' }),
   gasGet: vi.fn().mockResolvedValue({}),
+}));
+
+vi.mock('../furim/gas-retry-queue.js', () => ({
+  enqueueGasRetryJob: vi.fn(),
 }));
 
 describe('fireEvent — 汎用eventData等値条件', () => {
@@ -400,5 +405,77 @@ describe('fireEvent — 冪等 (idempotencyKey / stripe再処理)', () => {
     expect(ok1).toBe(false); // 初回失敗→未完(=stripe_eventはcompletedにならずcron再処理される)
     expect(ok2).toBe(true);  // 再処理で成功
     expect((addTag as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(2); // 失敗分だけ再実行
+  });
+});
+
+describe('fireEvent — call_gas_post 失敗時のキュー退避（2026-08-14 Stripe経路統合）', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    idem.done.clear();
+  });
+
+  async function setupGasAutomation(method: string) {
+    const db = await import('@line-crm/db');
+    (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      {
+        id: 'auto-gas',
+        line_account_id: 'acc-1',
+        conditions: JSON.stringify({}),
+        actions: JSON.stringify([
+          { type: 'call_gas_post', params: { method, args: { stripeCustomerID: 'cus_1', subscriptionID: 'sub_1' } } },
+        ]),
+      },
+    ]);
+  }
+
+  it('ホワイトリストのメソッドはgasPost例外でキュー退避し、automationは成功扱いになる', async () => {
+    await setupGasAutomation('setSubscriptionData');
+    const gas = await import('../furim/gas-client.js');
+    (gas.gasPost as unknown as { mockRejectedValueOnce: (e: unknown) => void }).mockRejectedValueOnce(new Error('GAS fetch hang'));
+    const queue = await import('../furim/gas-retry-queue.js');
+
+    const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: [] });
+    const ok = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'friend-1', idempotencyKey: 'evt_q1', eventData: {} }, 'tok', 'acc-1', { gasDeployId: 'dep-1' });
+
+    expect(ok).toBe(true);
+    const enq = queue.enqueueGasRetryJob as unknown as { mock: { calls: unknown[][] } };
+    expect(enq.mock.calls).toHaveLength(1);
+    expect(enq.mock.calls[0][1]).toMatchObject({
+      lineUserId: 'U_test',
+      method: 'setSubscriptionData',
+      callType: 'post',
+      doneCheck: 'subscriptionRecorded',
+      dedupeKey: 'setSubscriptionData:evt_q1',
+      maxAttempts: 20,
+      params: { stripeCustomerID: 'cus_1', subscriptionID: 'sub_1' },
+    });
+  });
+
+  it('success:false応答も失敗としてキュー退避される（無言ロストの穴を塞ぐ）', async () => {
+    await setupGasAutomation('setTransactionData');
+    const gas = await import('../furim/gas-client.js');
+    (gas.gasPost as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({ success: false, error: '該当レコードなし' });
+    const queue = await import('../furim/gas-retry-queue.js');
+
+    const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: [] });
+    const ok = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'friend-1', idempotencyKey: 'evt_q2', eventData: {} }, 'tok', 'acc-1', { gasDeployId: 'dep-1' });
+
+    expect(ok).toBe(true);
+    const enq = queue.enqueueGasRetryJob as unknown as { mock: { calls: unknown[][] } };
+    expect(enq.mock.calls).toHaveLength(1);
+    expect(enq.mock.calls[0][1]).toMatchObject({ method: 'setTransactionData', doneCheck: 'transactionRecorded' });
+  });
+
+  it('ホワイトリスト外メソッドのsuccess:falseはautomation失敗になり、キューには積まれない', async () => {
+    await setupGasAutomation('setSurveyResult');
+    const gas = await import('../furim/gas-client.js');
+    (gas.gasPost as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({ success: false, error: 'boom' });
+    const queue = await import('../furim/gas-retry-queue.js');
+
+    const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: [] });
+    const ok = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'friend-1', idempotencyKey: 'evt_q3', eventData: {} }, 'tok', 'acc-1', { gasDeployId: 'dep-1' });
+
+    expect(ok).toBe(false);
+    expect((queue.enqueueGasRetryJob as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(0);
   });
 });

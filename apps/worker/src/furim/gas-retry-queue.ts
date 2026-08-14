@@ -1,4 +1,4 @@
-// GAS呼び出しの再実行キュー（2026-08-13新設・2026-08-14汎用化）。
+// GAS呼び出しの再実行キュー（2026-08-13新設・2026-08-14汎用化・Stripe経路統合）。
 //
 // Worker→GASのfetchは間欠的にハングする。2026-08-14のくろさん方針で、
 // インラインのリトライは全廃して1回きり実行とし、失敗はすべてこのキューに積んで
@@ -6,15 +6,21 @@
 // 実行を完走することがあるため、書き込み系は実行前に done_check で効果の有無を
 // 確認し、すでにあれば実行済みと判断してスキップする（マスターシート3重行の再発防止）。
 // 完遂通知は replyToken を優先し、失効時のみ push（push月間上限の節約）。
-// stripe_events の sweep と同じ「durableに積んで消費側が拾う」設計。
+// stripe_events の sweep と同じ「durableに積んで消費側が拾う」設計だが、こちらは
+// GAS呼び出し1本単位。Stripe系のGASステップもここに退避することで、イベント本体は
+// 1パスで完走し、sweepによるイベント丸ごと再実行（二重送信・処理分断の温床）を
+// ほぼ発生させない。
 import { jstNow } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
-import { gasGet, gasPost } from './gas-client.js';
+import { gasGet, gasPost, getGasErrorFromResponse } from './gas-client.js';
+import { keycodeReissuedMessages } from './messages.js';
 
-const MAX_ATTEMPTS = 5;
+const DEFAULT_MAX_ATTEMPTS = 5;
 
 // cron側はGASのコールドスタート・シートロック待ちを悠然と待てる
 const SWEEP_GAS_TIMEOUT_MS = 120_000;
+
+const MASTER_SHEET = '顧客情報-サブスク情報-キーコード';
 
 // ===== キーコードリセットの返信文（インライン成功時と再実行完遂時で共通） =====
 // 「紐づいた設定のリセットが完了しました。」だけでは何が起きて次に何をすべきか
@@ -59,50 +65,142 @@ export async function fetchCurrentKeyCode(gasDeployId: string, lineUserId: strin
 export type GasRetryJobInput = {
   lineUserId: string;
   method: string;
-  params?: Record<string, string>;
+  params?: Record<string, unknown>;
   // 'get'（doGet・デフォルト）| 'post'（doPost。setCustomerData等の書き込み系）
   callType?: 'get' | 'post';
   // 完遂通知に使う。失効していたらpushにフォールバック
   replyToken?: string | null;
-  // 実行前の「実行済みチェック」キー（下のDONE_CHECKS）。書き込み系は必ず指定する
+  // 実行前の「実行済みチェック」キー（下のDONE_CHECKS）。非冪等な書き込み系は必ず指定する
   doneCheck?: string | null;
+  // 重複積み防止の判定キー。省略時はmethod（同一ユーザー×同一メソッドで1件）。
+  // stripe系は「method:StripeイベントID」で一意化し、同一ユーザーの別インボイス分を落とさない
+  dedupeKey?: string;
+  // 省略時5。台帳書き込み系はGASの長時間障害に耐えるため20を指定する
+  maxAttempts?: number;
   // 完遂時にユーザーへ送る文言。nullなら通知しない（method個別の組み立てが優先）
   notifyMessage?: string | null;
 };
 
 export async function enqueueGasRetryJob(db: D1Database, job: GasRetryJobInput): Promise<void> {
-  // 同一ユーザー×同一メソッドのpendingが既にあれば積まない。
+  const dedupeKey = job.dedupeKey ?? job.method;
+  // 同一ユーザー×同一dedupe_keyのpendingが既にあれば積まない。
   // ボタン連打でジョブが多重に積まれて完遂通知（push）が乱打されるのを防ぐ
   const existing = await db.prepare(
-    `SELECT id FROM gas_retry_jobs WHERE line_user_id = ? AND method = ? AND status = 'pending' LIMIT 1`,
-  ).bind(job.lineUserId, job.method).first();
+    `SELECT id FROM gas_retry_jobs WHERE line_user_id = ? AND COALESCE(dedupe_key, method) = ? AND status = 'pending' LIMIT 1`,
+  ).bind(job.lineUserId, dedupeKey).first();
   if (existing) {
-    console.log(`[gas-retry] 同一pendingジョブがあるため積み直しをスキップ method=${job.method} lineUserId=${job.lineUserId}`);
+    console.log(`[gas-retry] 同一pendingジョブがあるため積み直しをスキップ dedupeKey=${dedupeKey} lineUserId=${job.lineUserId}`);
     return;
   }
   const now = jstNow();
   await db.prepare(
-    `INSERT INTO gas_retry_jobs (id, line_user_id, method, params, call_type, reply_token, done_check, notify_message, attempts, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?)`,
+    `INSERT INTO gas_retry_jobs (id, line_user_id, method, params, call_type, reply_token, done_check, dedupe_key, max_attempts, notify_message, attempts, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?)`,
   ).bind(
     crypto.randomUUID(), job.lineUserId, job.method, JSON.stringify(job.params ?? {}),
-    job.callType ?? 'get', job.replyToken ?? null, job.doneCheck ?? null, job.notifyMessage ?? null,
+    job.callType ?? 'get', job.replyToken ?? null, job.doneCheck ?? null,
+    dedupeKey, job.maxAttempts ?? DEFAULT_MAX_ATTEMPTS, job.notifyMessage ?? null,
     now, now,
   ).run();
 }
 
 // ===== 実行前の「実行済みチェック」 =====
 // true を返したら「GAS側で既に完遂している」ので実行せずdoneにする。
-// チェック自体が失敗したら安全側（未実行扱い）に倒して実行に進む…のではなく、
-// このジョブは書き込み系なので実行もスキップして次回巡回に回す（重複行のリスクを取らない）。
-type DoneCheckFn = (gasDeployId: string, job: { line_user_id: string; params: string }) => Promise<boolean>;
+// チェック自体が失敗（throw）したら、書き込み系ジョブなので実行もスキップして
+// 次回巡回に回す（重複書き込みのリスクを取らない）。
 
-const DONE_CHECKS: Record<string, DoneCheckFn> = {
+type QueueJobRow = { line_user_id: string; params: string };
+type DoneCheckFn = (gasDeployId: string, job: QueueJobRow) => Promise<boolean>;
+
+function jobParams(job: QueueJobRow): Record<string, unknown> {
+  return JSON.parse(job.params || '{}') as Record<string, unknown>;
+}
+
+// claudeApi getData でシート行を取得する（読み取り専用・done_check用）
+async function fetchSheetRows(
+  gasDeployId: string,
+  sheet: string,
+  headerRow: number,
+  filterCol: string,
+  filterVal: string,
+): Promise<Array<Record<string, unknown>>> {
+  const res = await gasGet(gasDeployId, {
+    method: 'getData', sheet, headerRow: String(headerRow), filterCol, filterVal,
+  }, { timeoutMs: SWEEP_GAS_TIMEOUT_MS });
+  const failure = getGasErrorFromResponse(res);
+  if (failure) throw new Error(`getData(${sheet}) failed: ${failure}`);
+  const data = res as { success?: boolean; rows?: Array<Record<string, unknown>> };
+  if (data?.success !== true || !Array.isArray(data.rows)) throw new Error(`getData(${sheet}) unexpected response`);
+  return data.rows;
+}
+
+// シート値(ISO/TZ付き)とargs値(JST文字列/TZ無し)が混在するため、双方をepochに正規化して比較する
+export function toEpoch(value: unknown): number | null {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const hasTz = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s);
+  const iso = s.includes('T') ? s : s.replace(' ', 'T');
+  const t = Date.parse(hasTz ? iso : `${iso}+09:00`);
+  return Number.isNaN(t) ? null : t;
+}
+
+export const DONE_CHECKS: Record<string, DoneCheckFn> = {
   // setCustomerData: マスターシートに同一LINE_IDの行が既にあれば実行済み
   customerRowExists: async (gasDeployId, job) => {
     const data = await gasGet(gasDeployId, { method: 'getStripeIDwithLINEID', lineUserId: job.line_user_id }, { timeoutMs: SWEEP_GAS_TIMEOUT_MS }) as Record<string, string> | null;
     const stripeId = data?.customer_stripe_id || data?.stripeCustomerId || data?.stripeID || data?.data;
     return !!stripeId;
+  },
+
+  // setSubscriptionData: マスター行のサブスクIDと終了日時が書き込み予定値と一致していれば実行済み。
+  // 通算支払い回数/総額の加算・プレミアムチケット+200が非冪等なため、再実行は必ずここで防ぐ
+  subscriptionRecorded: async (gasDeployId, job) => {
+    const p = jobParams(job);
+    const customerId = String(p.stripeCustomerID ?? '');
+    if (!customerId) throw new Error('subscriptionRecorded: stripeCustomerID missing');
+    const rows = await fetchSheetRows(gasDeployId, MASTER_SHEET, 3, 'Stripe顧客ID', customerId);
+    const wantEnd = toEpoch(p.subscriptionEndDateTime);
+    return rows.some((r) => {
+      if (String(r['サブスクID'] ?? '') !== String(p.subscriptionID ?? '')) return false;
+      // 終了日時が引数に無い（Stripe API取得失敗）場合はサブスクID一致のみで判定
+      if (wantEnd == null) return true;
+      const gotEnd = toEpoch(r['サブスク終了日時']);
+      return gotEnd != null && Math.abs(gotEnd - wantEnd) <= 60_000;
+    });
+  },
+
+  // setTransactionData: 取引台帳に同一インボイスIDの行があれば実行済み（無条件appendのため）
+  transactionRecorded: async (gasDeployId, job) => {
+    const p = jobParams(job);
+    const invoiceId = String(p.invoiceID ?? '');
+    if (!invoiceId) throw new Error('transactionRecorded: invoiceID missing');
+    const rows = await fetchSheetRows(gasDeployId, 'サブスクトランザクション', 1, 'インボイスID', invoiceId);
+    return rows.length > 0;
+  },
+
+  // deleteSubscription: 既にキャンセル済みなら実行済み。
+  // さらに行のサブスクIDが対象と不一致（削除完遂後の空欄・ユーザーが再契約済みの別ID）の場合も
+  // 実行してはいけない（実行すると現契約のキーコード・機能フラグを消す事故になる）ためdone扱い
+  subscriptionDeleted: async (gasDeployId, job) => {
+    const p = jobParams(job);
+    const customerId = String(p.stripeCustomerID ?? '');
+    if (!customerId) throw new Error('subscriptionDeleted: stripeCustomerID missing');
+    const rows = await fetchSheetRows(gasDeployId, MASTER_SHEET, 3, 'Stripe顧客ID', customerId);
+    if (rows.length === 0) return true; // 行自体が無ければGAS側もno-op
+    const row = rows[0];
+    if (String(row['プラン名'] ?? '') === 'キャンセル済み') return true;
+    if (String(row['サブスクID'] ?? '') !== String(p.subscriptionID ?? '')) return true;
+    return false;
+  },
+
+  // setTicketTransaction: チケット台帳に同一決済(請求書ID=paymentIntentId)の行があれば実行済み
+  ticketTransactionRecorded: async (gasDeployId, job) => {
+    const p = jobParams(job);
+    const paymentIntentId = String(p.paymentIntentId ?? '');
+    if (!paymentIntentId) throw new Error('ticketTransactionRecorded: paymentIntentId missing');
+    const rows = await fetchSheetRows(gasDeployId, 'チケットトランザクション', 1, '請求書ID', paymentIntentId);
+    return rows.length > 0;
   },
 };
 
@@ -126,7 +224,7 @@ async function notifyUser(
 }
 
 // cronから呼ぶ。pendingのジョブを拾ってGASを再実行し、成功したら通知して完了にする。
-// 1回の巡回で5件まで（GASが不調のときに叩きすぎない）。
+// 1回の巡回で10件まで（GASが不調のときに叩きすぎない）。
 export async function sweepGasRetryJobs(
   db: D1Database,
   lineClient: LineClient,
@@ -134,15 +232,16 @@ export async function sweepGasRetryJobs(
 ): Promise<void> {
   if (!env.GAS_DEPLOY_ID) return;
   const rows = await db.prepare(
-    `SELECT id, line_user_id, method, params, call_type, reply_token, done_check, notify_message, attempts FROM gas_retry_jobs
-     WHERE status = 'pending' ORDER BY created_at LIMIT 5`,
-  ).all<{ id: string; line_user_id: string; method: string; params: string; call_type: string; reply_token: string | null; done_check: string | null; notify_message: string | null; attempts: number }>();
+    `SELECT id, line_user_id, method, params, call_type, reply_token, done_check, notify_message, attempts, max_attempts FROM gas_retry_jobs
+     WHERE status = 'pending' ORDER BY created_at LIMIT 10`,
+  ).all<{ id: string; line_user_id: string; method: string; params: string; call_type: string; reply_token: string | null; done_check: string | null; notify_message: string | null; attempts: number; max_attempts: number }>();
 
   for (const job of rows.results ?? []) {
-    if (job.attempts >= MAX_ATTEMPTS) {
+    const maxAttempts = job.max_attempts || DEFAULT_MAX_ATTEMPTS;
+    if (job.attempts >= maxAttempts) {
       await db.prepare(`UPDATE gas_retry_jobs SET status = 'failed', updated_at = ? WHERE id = ?`)
         .bind(jstNow(), job.id).run();
-      console.error(`[gas-retry] 上限到達で断念 method=${job.method} lineUserId=${job.line_user_id} (${MAX_ATTEMPTS}回)`);
+      console.error(`[gas-retry] 上限到達で断念 method=${job.method} lineUserId=${job.line_user_id} (${maxAttempts}回)`);
       continue;
     }
     try {
@@ -155,13 +254,20 @@ export async function sweepGasRetryJobs(
         continue;
       }
 
-      const params = JSON.parse(job.params || '{}') as Record<string, string>;
-      let result: unknown = null;
+      const params = jobParams(job);
+      // `__` プレフィックスは通知判定用のメタデータ。GASには送らない
+      const gasParams = Object.fromEntries(Object.entries(params).filter(([k]) => !k.startsWith('__')));
+      let result: unknown;
       if (job.call_type === 'post') {
-        result = await gasPost(env.GAS_DEPLOY_ID, { method: job.method, ...params }, { timeoutMs: SWEEP_GAS_TIMEOUT_MS });
+        result = await gasPost(env.GAS_DEPLOY_ID, { method: job.method, ...gasParams }, { timeoutMs: SWEEP_GAS_TIMEOUT_MS });
       } else {
-        result = await gasGet(env.GAS_DEPLOY_ID, { method: job.method, lineUserId: job.line_user_id, ...params }, { timeoutMs: SWEEP_GAS_TIMEOUT_MS });
+        const getParams = Object.fromEntries(Object.entries(gasParams).map(([k, v]) => [k, String(v)]));
+        result = await gasGet(env.GAS_DEPLOY_ID, { method: job.method, lineUserId: job.line_user_id, ...getParams }, { timeoutMs: SWEEP_GAS_TIMEOUT_MS });
       }
+
+      // GASはHTTP 200のまま失敗を返すことがある（{success:false} / HTMLエラーページ）
+      const failure = getGasErrorFromResponse(result);
+      if (failure) throw new Error(failure);
 
       // キーコード発行はマスター行が未作成のうちは "エラーコード(401)" を返す。
       // その間は失敗扱いで残し、行が出来てから（setCustomerDataジョブの完遂後に）発行して届ける
@@ -179,6 +285,14 @@ export async function sweepGasRetryJobs(
           // キーコード発行の完遂通知はキーコード単体（インライン成功時と同じ）
           const keyCode = (result as { keyCode: string }).keyCode;
           await notifyUser(lineClient, job.line_user_id, job.reply_token, [{ type: 'text', text: keyCode }] as never[]);
+        } else if (job.method === 'syncFeaturesFromSubscription') {
+          // 更新時のキーコード再発行通知（インライン成功時のstripe-processorと同じ文面）。
+          // GAS完走済み・Worker見切りのケースでは再実行時 keyCodeIssued=false になり
+          // 通知は送られない（ユーザーはメニューの「キーコード発行」で自己回復可能）
+          const r = result as { keyCodeIssued?: boolean; keyCode?: string } | null;
+          if (params.__notifyKeycodeReissue === '1' && r?.keyCodeIssued && r.keyCode) {
+            await notifyUser(lineClient, job.line_user_id, job.reply_token, keycodeReissuedMessages(r.keyCode) as never[]);
+          }
         } else if (job.notify_message) {
           await notifyUser(lineClient, job.line_user_id, job.reply_token, [{ type: 'text', text: job.notify_message }] as never[]);
         }
