@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { jstNow } from '@line-crm/db';
 import type { Env } from '../index.js';
 
 /**
@@ -67,11 +68,14 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
     const utmContent = clampStr(body.utmContent);
     const isMobile = body.mobile ? 1 : 0;
 
+    // created_at は他テーブル(ref_tracking等)と同じJSTで明示指定する
+    // （テーブルDEFAULTの datetime('now') はUTCで日別集計の日付境界がズレる）
+    const now = jstNow();
     const stmt = c.env.DB.prepare(
       `INSERT INTO lp_events
        (session_id, page, event_type, max_scroll_pct, ms_on_page,
-        ref, has_click_id, utm_campaign, utm_content, is_mobile)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ref, has_click_id, utm_campaign, utm_content, is_mobile, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const batch = [];
@@ -92,6 +96,7 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
           utmCampaign,
           utmContent,
           isMobile,
+          now,
         ),
       );
     }
