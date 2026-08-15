@@ -29,6 +29,7 @@ export interface RefTracking {
   utm_campaign: string | null;
   user_agent: string | null;
   ip_address: string | null;
+  lp_session_id: string | null;
   created_at: string;
 }
 
@@ -233,6 +234,7 @@ export async function recordRefTracking(
     utmCampaign?: string | null;
     userAgent?: string | null;
     ipAddress?: string | null;
+    lpSessionId?: string | null;
   },
 ): Promise<RefTracking> {
   const id = crypto.randomUUID();
@@ -243,8 +245,8 @@ export async function recordRefTracking(
       `INSERT INTO ref_tracking
        (id, ref_code, friend_id, entry_route_id, source_url,
         fbclid, gclid, twclid, ttclid, utm_source, utm_medium, utm_campaign,
-        user_agent, ip_address, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        user_agent, ip_address, lp_session_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -261,6 +263,7 @@ export async function recordRefTracking(
       opts.utmCampaign ?? null,
       opts.userAgent ?? null,
       opts.ipAddress ?? null,
+      opts.lpSessionId ?? null,
       now,
     )
     .run();

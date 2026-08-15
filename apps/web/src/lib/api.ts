@@ -1359,6 +1359,11 @@ export const api = {
     funnel: (id: string) =>
       fetchApi<ApiResponse<EntryRouteFunnel>>(`/api/entry-routes/${id}/funnel`),
   },
+  // LP行動分析 (lp_events ビーコン集計)。型はページ側で定義。
+  lpAnalytics: {
+    pages: (query: string) => fetchApi<ApiResponse<unknown>>(`/api/analytics/lp-pages${query}`),
+    detail: (query: string) => fetchApi<ApiResponse<unknown>>(`/api/analytics/lp-detail${query}`),
+  },
   // tracked_links は別管理だが /inflow-links 一覧で「(未登録)」誤表示を防ぐため
   // 同ページから参照する。Worker の applyRefAttribution は entry_routes → tracked_links
   // の順でフォールバックするので、tracked_links 登録済み ref は実際にはシナリオ発火している。

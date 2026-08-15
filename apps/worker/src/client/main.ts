@@ -78,6 +78,23 @@ function getRef(): string | null {
   return params.get('ref');
 }
 
+// 広告クリックID・UTM・LPセッションIDをLIFF URLから /api/liff/link へ転送する。
+// モバイル経路の ref_tracking 帰属（オフラインCV・LP行動計測との接続）に使う。
+function getAdParams(): Record<string, string> {
+  const params = new URLSearchParams(window.location.search);
+  const out: Record<string, string> = {};
+  const map: Record<string, string> = {
+    gclid: 'gclid', fbclid: 'fbclid', twclid: 'twclid', ttclid: 'ttclid',
+    utm_source: 'utmSource', utm_medium: 'utmMedium', utm_campaign: 'utmCampaign',
+    sid: 'sid',
+  };
+  for (const [urlKey, bodyKey] of Object.entries(map)) {
+    const v = params.get(urlKey);
+    if (v) out[bodyKey] = v;
+  }
+  return out;
+}
+
 function getSavedUuid(): string | null {
   try {
     return localStorage.getItem(UUID_STORAGE_KEY);
@@ -151,6 +168,7 @@ function showFriendAdd(profile: { displayName: string; pictureUrl?: string }) {
               ig: params.get('ig') || undefined,
               iga: params.get('iga') || undefined,
               igan: params.get('igan') || undefined,
+              ...getAdParams(),
             }),
           });
           if (res.ok) {
@@ -261,6 +279,7 @@ async function linkAndAddFlow() {
         ig: linkParams.get('ig') || '',
         iga: linkParams.get('iga') || '',
         igan: linkParams.get('igan') || '',
+        ...getAdParams(),
       }),
     }).then(async (res) => {
       if (res.ok) {

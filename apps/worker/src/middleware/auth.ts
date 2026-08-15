@@ -180,7 +180,8 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path.match(/^\/api\/forms\/[^/]+$/) || // GET form definition (public for LIFF)
     path === '/api/meet-callback' || // Meet Harness completion callback
     path === '/api/qr' || // Public QR proxy — used by desktop landing pages
-    path === '/api/health' // Liveness probe (update CLI / self-update verify)
+    path === '/api/health' || // Liveness probe (update CLI / self-update verify)
+    path === '/api/lp-beacon' // LP behavior beacon from furimauto.com (sendBeacon, no auth)
   ) {
     return next();
   }

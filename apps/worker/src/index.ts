@@ -61,6 +61,8 @@ import { automations } from './routes/automations.js';
 import { richMenus } from './routes/rich-menus.js';
 import { trackedLinks } from './routes/tracked-links.js';
 import { entryRoutes } from './routes/entry-routes.js';
+import { lpBeacon } from './routes/lp-beacon.js';
+import { lpAnalytics } from './routes/lp-analytics.js';
 import { furim } from './routes/furim.js';
 import { furimCoupons } from './routes/furim-coupons.js';
 import { furimChats } from './routes/furim-chats.js';
@@ -217,6 +219,8 @@ app.route('/', automations);
 app.route('/', richMenus);
 app.route('/', trackedLinks);
 app.route('/', entryRoutes);
+app.route('/', lpBeacon);
+app.route('/', lpAnalytics);
 app.route('/', furim);
 app.route('/', furimCoupons);
 app.route('/', furimChats);
@@ -348,6 +352,14 @@ app.get('/r/:ref', async (c) => {
   if (liffIdMatch) liffParams.set('liffId', liffIdMatch[1]);
   if (ref) liffParams.set('ref', ref);
   if (formId) liffParams.set('form', formId);
+  // 広告クリックID・UTM・LPセッションIDをLIFF URLへ引き継ぐ。
+  // /auth/line(モバイル)は全クエリをここへ転送してくるが、以前はこの再構築で
+  // 落ちていたため、モバイル友だち追加の ref_tracking にクリックIDが入らず
+  // オフラインCVが発火しなかった。
+  for (const k of ['gclid', 'fbclid', 'twclid', 'ttclid', 'utm_source', 'utm_medium', 'utm_campaign', 'sid']) {
+    const v = c.req.query(k);
+    if (v) liffParams.set(k, v);
+  }
   const gate = c.req.query('gate');
   if (gate) liffParams.set('gate', gate);
   const xh = c.req.query('xh');
