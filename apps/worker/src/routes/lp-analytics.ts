@@ -52,7 +52,9 @@ function sessionCte(f: RangeFilter): string {
           WHERE rt.lp_session_id = e.session_id AND rt.friend_id IS NOT NULL
         ) AS friend_added
       FROM lp_events e
-      WHERE date(e.created_at) BETWEEN ? AND ?
+      -- created_at は jstNow() の ISO+09:00 形式。SQLite の date() はオフセットを
+      -- UTC に変換してしまうため '+9 hours' で JST の日付に戻す
+      WHERE date(e.created_at, '+9 hours') BETWEEN ? AND ?
       GROUP BY e.session_id, e.page
     )
   `;
@@ -157,7 +159,7 @@ lpAnalytics.get('/api/analytics/lp-detail', async (c) => {
     const daily = await db
       .prepare(
         `${cte}
-         SELECT date(s.started_at) AS day,
+         SELECT date(s.started_at, '+9 hours') AS day,
                 COUNT(*) AS sessions,
                 SUM(s.cta_clicked) AS cta_sessions,
                 SUM(s.friend_added) AS friend_adds
