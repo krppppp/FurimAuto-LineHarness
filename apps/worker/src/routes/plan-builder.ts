@@ -208,7 +208,7 @@ export type PlanSelectionInput = {
   features?: string[];
   multiChannelSites?: string[];
   lineUserId?: string;
-  // Checkoutリンクの有効期限（秒）。Stripeの許容範囲1800〜86400にクランプ。省略時は従来どおり1時間
+  // Checkoutリンクの有効期限（秒）。Stripeの許容範囲1800〜86400にクランプ。省略時は12時間
   expiresInSeconds?: number;
 };
 
@@ -257,20 +257,33 @@ export async function resolvePlanSelection(gasDeployId: string | undefined, body
   }
   const total = subtotal - comboAmount;
 
-  // トーク・Flexに載せる選択内容サマリ
-  const summaryLines: string[] = [];
-  for (const p of pkgs) summaryLines.push(`・${p.display_name}`);
+  // トーク・Flexに載せる選択内容サマリ。
+  // 機能のdisplay_nameはサイト名を含まない（値段変更 等）ため、複数サイト選択時に
+  // 同名機能が重複して見える（2026-08-18 くろさん指摘）。【サイト名】見出しで
+  // グルーピングして、どのサイトの機能かを一目で分かるようにする
+  const grouped: Record<string, string[]> = {};
+  const ungrouped: string[] = [];
+  const pushLine = (site: string, line: string) => {
+    if (SITE_NAMES[site]) (grouped[site] ??= []).push(line);
+    else ungrouped.push(line); // premium/trial(site=all)・サイト横断機能は見出しなし
+  };
+  for (const p of pkgs) pushLine(p.site, `・${p.display_name}`);
   for (const f of feats) {
-    if (f.feature_key === 'AutoMultiChannel') summaryLines.push(`・${f.display_name}（${mcSites.length}サイト巡回）`);
-    else summaryLines.push(`・${f.display_name}`);
+    if (f.feature_key === 'AutoMultiChannel') ungrouped.push(`・${f.display_name}（${mcSites.length}サイト巡回）`);
+    else pushLine(f.site, `・${f.display_name}`);
   }
+  const summaryLines: string[] = [];
+  for (const siteId of Object.keys(SITE_NAMES)) {
+    if (grouped[siteId]?.length) summaryLines.push(`【${SITE_NAMES[siteId]}】`, ...grouped[siteId]);
+  }
+  summaryLines.push(...ungrouped);
   if (comboAmount > 0) summaryLines.push(`・複数サイト併用割引 -${comboAmount.toLocaleString('ja-JP')}円`);
 
   return { pkgs, feats, mcSites, nFull, nSemi, comboAmount, subtotal, total, summaryLines };
 }
 
 // Stripe Checkout Session を発行する（ルート / webhook(plan-apply) 共用）。
-// リンクは1時間で失効させる（LINEで案内する注意書きと揃える）
+// リンクは12時間で失効させる（LINEで案内する注意書きと揃える。2026-08-18に1時間→12時間へ変更）
 export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: PlanSelectionInput): Promise<{ url: string; total: number; summaryLines: string[] }> {
   const secretKey = env.STRIPE_SECRET_KEY;
   if (!secretKey) throw new Error('STRIPE_SECRET_KEY not configured');
@@ -281,7 +294,7 @@ export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: Plan
     mode: 'subscription',
     success_url: `${env.WORKER_PUBLIC_URL}/plan-builder/thanks`,
     cancel_url: `${env.WORKER_PUBLIC_URL}/plan-builder`,
-    expires_at: String(Math.floor(Date.now() / 1000) + Math.min(Math.max(Math.floor(body.expiresInSeconds ?? 3600), 1800), 86400)),
+    expires_at: String(Math.floor(Date.now() / 1000) + Math.min(Math.max(Math.floor(body.expiresInSeconds ?? 43200), 1800), 86400)),
   };
   let i = 0;
   for (const p of pkgs) {

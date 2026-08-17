@@ -479,7 +479,7 @@ async function handleEvent(
     }
 
     // 【プラン申し込み】PB-XXXXXX: plan-builder LIFFの申込ボタンから送られる申込メッセージ。
-    // 申込コードで選択内容を引き、Checkoutリンク（1時間有効）をFlexで返信する
+    // 申込コードで選択内容を引き、Checkoutリンク（12時間有効）をFlexで返信する
     if (incomingText.startsWith('【プラン申し込み】') && env?.STRIPE_SECRET_KEY && env?.GAS_DEPLOY_ID) {
       const { handlePlanApplyMessage } = await import('../furim/plan-apply.js');
       await handlePlanApplyMessage(db, loggingClient, userId, event.replyToken, incomingText, {

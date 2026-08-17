@@ -3,7 +3,7 @@ import { jstNow } from '@line-crm/db';
 import { createPlanBuilderCheckout, type PlanCheckoutEnv } from '../routes/plan-builder.js';
 
 // LIFFの申込ボタン→liff.sendMessagesで届く「【プラン申し込み】PB-XXXXXX」を処理する。
-// コードで plan_builder_intents から選択内容を引き、Checkoutリンク（1時間有効）を
+// コードで plan_builder_intents から選択内容を引き、Checkoutリンク（12時間有効）を
 // ボタン入りFlexで返信する。
 export async function handlePlanApplyMessage(
   db: D1Database,
@@ -81,7 +81,7 @@ export async function handlePlanApplyMessage(
               },
               {
                 type: 'text',
-                text: '⚠️ このリンクは発行から1時間有効です。期限が切れた場合は、お手数ですがもう一度メニューの「プラン診断」からお申し込みください。',
+                text: '⚠️ このリンクは発行から12時間有効です。期限が切れた場合は、お手数ですがもう一度メニューの「プラン診断」からお申し込みください。',
                 size: 'xxs',
                 color: '#999999',
                 wrap: true,
