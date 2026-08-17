@@ -260,7 +260,7 @@ export async function handleButtonAction(
     // 先に更新へ誘導して新形式で作らせる（2026-08-17 くろさん指示）
     await lineClient.replyMessage(replyToken, [{
       type: 'text',
-      text: '✅在庫管理シートを有効化しました！\n\nメルカリ・ラクマ・Shops・ヤフオク・ヤフフリの在庫を1枚のスプレッドシートでまとめて管理し、売れたら他サイトの出品を自動でお知らせ・削除できます📦\n\n【使い始め方】\n① FurimAuto拡張機能を最新版（v4.2.2以降）へ更新する\nバージョンはキーコードを入力するポップアップの上部で確認できます。\n更新方法: https://furimauto.com/howto/#checkVersion\n\n② 拡張機能でキーコードを再取得（または再入力）して最新状態にする\n\n③ 解説動画の手順で、あなた専用の在庫管理シートを作成する\n▶ https://youtu.be/TTaS_qM_vsk\n\nうまく表示されない時は一度拡張を開き直してキーコードを再取得してみてください🙏',
+      text: '✅在庫管理シートを有効化しました！\n\nメルカリ・ラクマ・Shops・ヤフオク・ヤフフリの在庫を1枚のスプレッドシートでまとめて管理し、売れたら他サイトの出品を自動でお知らせ・削除できます📦\n\n【使い始め方】\n① FurimAuto拡張機能を最新版（v4.2.2以降）へ更新する\n更新方法: https://furimauto.com/howto/#checkVersion\n\n② キーコード入力画面にてバージョンが4.2.2であることを確認して、入力ボタンを一度押して成功になるまでそのまま待つ\n\n③ 出品一覧ページを一度更新してみると、新たに緑色の「在庫管理シートを作成」ボタンが現れる\n\n④ 説明書に沿ってセットアップする\nhttps://furimauto.com/howto/index.html#inventorySheet\n\nうまく表示されない時は一度拡張を開き直してキーコードを再取得してみてください🙏',
     } as never]);
     return true;
   }
