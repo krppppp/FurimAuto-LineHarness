@@ -27,6 +27,17 @@ export async function sendAdConversions(
   for (const platform of platforms) {
     const config: AdPlatformConfig = JSON.parse(platform.config);
 
+    // 冪等ガード: 同一 (platform, friend, event) の送信済みログがあればスキップ。
+    // follow webhook と cron catch-up (retryMissedAdConversions) の二重送信防止。
+    const alreadySent = await db
+      .prepare(
+        `SELECT 1 FROM ad_conversion_logs
+         WHERE ad_platform_id = ? AND friend_id = ? AND event_name = ? AND status = 'sent' LIMIT 1`,
+      )
+      .bind(platform.id, friendId, eventName)
+      .first();
+    if (alreadySent) continue;
+
     try {
       switch (platform.name) {
         case 'meta':
@@ -76,6 +87,39 @@ export async function sendAdConversions(
         status: 'failed',
         errorMessage: String(error),
       });
+    }
+  }
+}
+
+/**
+ * follow webhook 時の広告CV送信が ref_tracking 書き込みとのレース（サブ秒）で
+ * スキップされた分を catch-up 再送する。アンバサダー紹介の再試行と同じ思想で
+ * 冪等（sendAdConversions 内の送信済みガードが二重送信を防ぐ）。
+ * 対象: 直近7日の新規友だちのうち、クリックID付き ref_tracking があるのに
+ * line_friend_add の送信済みログが無いもの。
+ */
+export async function retryMissedAdConversions(db: D1Database): Promise<void> {
+  const rows = await db
+    .prepare(
+      `SELECT DISTINCT rt.friend_id AS friend_id
+       FROM ref_tracking rt
+       JOIN friends f ON f.id = rt.friend_id
+       WHERE (rt.gclid IS NOT NULL OR rt.fbclid IS NOT NULL OR rt.twclid IS NOT NULL OR rt.ttclid IS NOT NULL)
+         AND f.created_at >= datetime('now', '+9 hours', '-7 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM ad_conversion_logs l
+           WHERE l.friend_id = rt.friend_id
+             AND l.event_name = 'line_friend_add'
+             AND l.status = 'sent'
+         )`,
+    )
+    .all<{ friend_id: string }>();
+
+  for (const r of rows.results ?? []) {
+    try {
+      await sendAdConversions(db, r.friend_id, 'line_friend_add');
+    } catch (err) {
+      console.error('[ad-conversion retry] send error:', err);
     }
   }
 }

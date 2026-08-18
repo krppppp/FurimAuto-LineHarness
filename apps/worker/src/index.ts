@@ -923,6 +923,14 @@ async function scheduled(
     );
   }
 
+  // 広告CVのcatch-up再送（毎回・冪等）: follow webhook の CV送信が ref_tracking
+  // 書き込みとのサブ秒レースでスキップされた分を回収する（2026-08-18監査で実害確認）。
+  ctx.waitUntil(
+    import('./services/ad-conversion.js')
+      .then(({ retryMissedAdConversions }) => retryMissedAdConversions(env.DB))
+      .catch((err) => console.error('[cron] ad-conversion retry error:', err)),
+  );
+
   // GASシート認可ヘルスチェック: 毎時30分にシート読み取りを実叩きし、
   // 認可失効（7日周期事故の再発）を顧客報告より先に検知してスタッフへWeb Push
   if (jstMinutes === 30) {
