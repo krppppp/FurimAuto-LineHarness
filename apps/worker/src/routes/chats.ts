@@ -639,15 +639,21 @@ chats.post('/api/chats/:id/send', async (c) => {
       if (messageType !== 'text') {
         return c.json({ success: false, error: 'quote reply is only supported for text messages' }, 400);
       }
+      // 受信メッセージ（webhookで保存）に加え、自分が送ったメッセージ（送信レスポンスの
+      // quoteTokenを下で保存している）も引用できる（2026-08-18 くろさん要望）
       const quoted = await c.env.DB
-        .prepare(`SELECT quote_token FROM messages_log WHERE id = ? AND friend_id = ? AND direction = 'incoming'`)
+        .prepare(`SELECT quote_token FROM messages_log WHERE id = ? AND friend_id = ?`)
         .bind(body.replyToMessageId, friend.id)
         .first<{ quote_token: string | null }>();
       quoteToken = quoted?.quote_token ?? null;
     }
 
+    // 自分の送信メッセージへの引用返信用に、push応答の sentMessages[].quoteToken を保存する
+    let sentQuoteToken: string | null = null;
     if (messageType === 'text') {
-      await lineClient.pushTextMessage(friend.line_user_id, body.content, quoteToken ?? undefined);
+      const pushRes = await lineClient.pushTextMessage(friend.line_user_id, body.content, quoteToken ?? undefined) as
+        { sentMessages?: Array<{ id: string; quoteToken?: string }> } | null;
+      sentQuoteToken = pushRes?.sentMessages?.[0]?.quoteToken ?? null;
     } else if (messageType === 'flex') {
       const contents = JSON.parse(body.content);
       await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
@@ -663,11 +669,11 @@ chats.post('/api/chats/:id/send', async (c) => {
       );
     }
 
-    // メッセージログに記録
+    // メッセージログに記録（quote_token: 自分の送信への引用返信に使う）
     const logId = crypto.randomUUID();
     await c.env.DB
-      .prepare(`INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, reply_to_message_id, created_at) VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?, ?)`)
-      .bind(logId, friend.id, messageType, body.content, body.replyToMessageId ?? null, jstNow())
+      .prepare(`INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, reply_to_message_id, quote_token, created_at) VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?, ?, ?)`)
+      .bind(logId, friend.id, messageType, body.content, body.replyToMessageId ?? null, sentQuoteToken, jstNow())
       .run();
 
     // チャットの最終メッセージ日時を更新（chat.id を直接使う — friend_id で呼ばれても resolveOrCreateChat 済み）

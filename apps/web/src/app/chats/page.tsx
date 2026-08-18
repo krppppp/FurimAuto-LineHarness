@@ -1595,8 +1595,10 @@ export default function ChatsPage() {
                             </span>
                           </div>
 
-                          {/* 引用して返信ボタン。quote_tokenを持つ受信テキストにのみ表示 */}
-                          {!isOutgoing && msg.messageType === 'text' && msg.quoteToken && (
+                          {/* 引用して返信ボタン。quote_tokenを持つテキストに表示
+                              （受信＝webhookで保存 / 送信＝push応答のquoteTokenを保存。
+                              旧メッセージや自動配信はtoken未保存のため出ない） */}
+                          {msg.messageType === 'text' && msg.quoteToken && (
                             <button
                               type="button"
                               onClick={() => {

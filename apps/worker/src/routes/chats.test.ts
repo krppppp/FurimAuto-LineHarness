@@ -103,6 +103,7 @@ describe('POST /api/chats/:id/send — 引用返信', () => {
       'text',
       '了解です',
       'msg-original-1',
+      null, // 送信応答にquoteToken無し（モック）→ outgoing行のquote_tokenはnull
       '2026-07-30T12:00:00.000+09:00',
     );
   });
@@ -193,6 +194,7 @@ describe('POST /api/chats/:id/send — 引用返信', () => {
       'text',
       '通常メッセージ',
       null,
+      null, // 送信応答にquoteToken無し（モック）→ outgoing行のquote_tokenはnull
       '2026-07-30T12:00:00.000+09:00',
     );
   });
