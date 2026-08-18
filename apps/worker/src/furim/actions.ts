@@ -250,7 +250,7 @@ export async function handleFurimAction(
       case 'クーポンGET':
         await lineClient.replyMessage(replyToken, [
           { type: 'image', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/coupon_get.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/coupon_get.png' } as never,
-          { type: 'text', text: '【SNSでシェアするだけで毎月お得になるクーポンをGET!!】\n\n🔵SNSで投稿していただいたら500円OFF\n→各SNSどれか1つでハッシュタグをつけて投稿したスクショをお送りいただくだけでOK！毎月1回ご利用可能です😄\n\n🔴Googleの拡張機能の公式ページにレビューを投稿していただいたら1000円OFF\nhttps://x.gd/whptf\nGmailアカウント1つに付き1回可能です✋' } as never,
+          { type: 'text', text: '【Xで口コミを投稿して毎月お得になるクーポンをGET!!】\n\n🔵 X（旧Twitter）にFurimAutoの口コミを投稿していただいたら500円OFF\n\n① ハッシュタグ #FurimAuto を付けて、使ってみた感想・口コミをXに投稿\n② 投稿したポストのURLを、このトークにそのまま送信\n\nスクショは不要です！URLを確認後、次回のお支払いに適用される500円OFFクーポンを付与いたします。毎月1回ご利用可能です😄\n\n🔴Googleの拡張機能の公式ページにレビューを投稿していただいたら1000円OFF\nhttps://x.gd/whptf\nGmailアカウント1つに付き1回可能です✋' } as never,
           { type: 'video', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/coupon.mp4', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png', trackingId: 'setup' } as never,
         ]);
         return true;

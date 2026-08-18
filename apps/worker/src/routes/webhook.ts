@@ -19,6 +19,9 @@ import { handleFurimAction, actionFurimanCoupon, actionExtendTrial } from '../fu
 import type { FurimActionsEnv } from '../furim/actions.js';
 import { handleButtonAction } from '../furim/button-actions.js';
 import { handleKeywordAction } from '../furim/keyword-actions.js';
+
+// X口コミクーポン申請の通知先（くろさん）。申請URLと付与コマンドをpushする
+const X_REVIEW_STAFF_LINE_USER_ID = 'U5d35c3e6b2be0a6ec699b2a1de2aba93';
 import { handleAIChat } from '../furim/ai-chat.js';
 import { getAiMode } from '../furim/firebase-client.js';
 import { withOutgoingLog } from '../utils/message-log.js';
@@ -528,6 +531,36 @@ async function handleEvent(
       const gasDeployId = env.GAS_DEPLOY_ID;
       await runHandlerSafely('handleKeywordAction', loggingClient, userId, retryHint, () =>
         handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db));
+      return;
+    }
+
+    // X口コミクーポン申請: ポストURLの受け取り口（AIチャットモード中でも通す）。
+    // ガイドタブ「クーポンGET」でポストURLの送信を案内している（2026-08-18〜スクショ運用を廃止）。
+    // 受付返信＋タグ付けをし、スタッフへURL直リンク付きで通知する（検索・照合の手間をなくす）
+    const xPostUrl = incomingText.match(/https?:\/\/(?:www\.)?(?:x\.com|twitter\.com|mobile\.twitter\.com)\/[A-Za-z0-9_]+\/status\/\d+\S*/)?.[0];
+    if (xPostUrl) {
+      try {
+        const tagName = 'X口コミ申請';
+        let tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+        if (!tag) {
+          await db.prepare('INSERT OR IGNORE INTO tags (id, name) VALUES (?, ?)').bind(crypto.randomUUID(), tagName).run();
+          tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+        }
+        if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friend.id, tag.id).run();
+      } catch (e) {
+        console.error('[webhook] X口コミ申請タグ付け失敗:', e);
+      }
+      await runHandlerSafely('xReviewCouponIntake', loggingClient, userId, 'もう一度ポストのURLをお送りください', async () => {
+        await loggingClient.replyMessage(event.replyToken, [{
+          type: 'text',
+          text: '📮 ポストのURLを受け付けました！\n\n内容を確認のうえ、次回のお支払いに適用される500円OFFクーポンを付与いたします。確認完了まで少しお待ちください😊\n\n（毎月1回ご利用いただけます。翌月もぜひご投稿ください！）',
+        } as never]);
+        // スタッフ通知: URL直リンクで確認・リポスト・付与コマンドまでワンストップ
+        await loggingClient.pushMessage(X_REVIEW_STAFF_LINE_USER_ID, [{
+          type: 'text',
+          text: `📣 X口コミクーポン申請\n${friend.display_name ?? '(名前不明)'} さん\n${xPostUrl}\n\n確認OKなら付与コマンド:\nnode scripts/grant-coupon.mjs ${userId} --amount=500 --name=X口コミ感謝クーポン --prod --yes`,
+        } as never]);
+      });
       return;
     }
 
