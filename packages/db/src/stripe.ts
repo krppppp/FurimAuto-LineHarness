@@ -121,6 +121,60 @@ export async function markStripeActionProcessed(
  *  cron再処理が同じメッセージをもう一度送ってしまう。送信は先に記録して二重送信を塞ぎ、
  *  送信自体が例外で失敗したときだけ取り消して再処理に委ねる）。
  */
+/** 配信アクションの記録を取得（status/retry_key込み。2段階先記録用） */
+export async function getStripeActionRecord(
+  db: D1Database,
+  stripeEventId: string,
+  actionKey: string,
+): Promise<{ status: string; retry_key: string | null } | null> {
+  const row = await db
+    .prepare(`SELECT status, retry_key FROM stripe_processed_actions WHERE stripe_event_id = ? AND action_key = ? LIMIT 1`)
+    .bind(stripeEventId, actionKey)
+    .first<{ status: string; retry_key: string | null }>();
+  return row ?? null;
+}
+
+/**
+ * 配信アクションの先記録（2段階の1段目）。pending行をretry_keyつきで確保し、
+ * 使用すべきretry_keyを返す（既存pending行があればそのキーを引き継ぐ＝再送時も同一キー）。
+ */
+export async function ensureStripeDeliveryPending(
+  db: D1Database,
+  stripeEventId: string,
+  actionKey: string,
+  newRetryKey: string,
+): Promise<string> {
+  await db
+    .prepare(`INSERT OR IGNORE INTO stripe_processed_actions (stripe_event_id, action_key, status, retry_key) VALUES (?, ?, 'pending', ?)`)
+    .bind(stripeEventId, actionKey, newRetryKey)
+    .run();
+  const row = await db
+    .prepare(`SELECT retry_key FROM stripe_processed_actions WHERE stripe_event_id = ? AND action_key = ? LIMIT 1`)
+    .bind(stripeEventId, actionKey)
+    .first<{ retry_key: string | null }>();
+  if (row && !row.retry_key) {
+    // 旧仕様のpending行など、キー未保持なら付与しておく
+    await db
+      .prepare(`UPDATE stripe_processed_actions SET retry_key = ? WHERE stripe_event_id = ? AND action_key = ?`)
+      .bind(newRetryKey, stripeEventId, actionKey)
+      .run();
+    return newRetryKey;
+  }
+  return row?.retry_key ?? newRetryKey;
+}
+
+/** 配信アクションの送信成功を確定（2段階の2段目）。pending→done */
+export async function markStripeActionSent(
+  db: D1Database,
+  stripeEventId: string,
+  actionKey: string,
+): Promise<void> {
+  await db
+    .prepare(`UPDATE stripe_processed_actions SET status = 'done' WHERE stripe_event_id = ? AND action_key = ?`)
+    .bind(stripeEventId, actionKey)
+    .run();
+}
+
 export async function unmarkStripeActionProcessed(
   db: D1Database,
   stripeEventId: string,

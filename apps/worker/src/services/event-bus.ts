@@ -28,6 +28,9 @@ import { AutomationActionRow, MessageRow,
   hasProcessedStripeAction,
   markStripeActionProcessed,
   unmarkStripeActionProcessed,
+  getStripeActionRecord,
+  ensureStripeDeliveryPending,
+  markStripeActionSent,
 } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
@@ -242,29 +245,44 @@ async function processAutomations(
         // 冪等: このアクションが (idemKey, automationId:stepIndex) で既に成功済みならスキップ。
         // 初回waitUntil途中死→cron再処理でも、済みアクション(GAS append/加算・送信)を再実行しない。
         const actionKey = `${automation.id}:${i}`;
-        if (idemKey && await hasProcessedStripeAction(db, idemKey, actionKey)) {
-          results.push({ action: action.type, label: (action.label ?? '') + ' (already-done)', success: true });
-          continue;
+        const isDelivery = action.type === 'send_messages';
+
+        // 配信系は2段階先記録（2026-08-18改訂）:
+        //   premark(pending)＋X-Line-Retry-Key → 送信 → done更新。
+        // 旧at-most-once先記録は「premark直後のwaitUntil打ち切り」で配信が永久ロストした
+        // （2026-08-18 NakaRyuさん・黒岩さん主プランの新規登録メッセージ未達）。
+        // 2段階化により再処理はpending（送信未確認）を再送する。再送は保存済みの同一
+        // Retry-Keyを使うため、「実は送れていた」場合もLINE側が24時間重複排除する
+        // （取りこぼしゼロ×重複ゼロ。送信成功→done更新前に死ぬraceもRetry-Keyが吸収）。
+        // GAS書き込み等の非配信アクションは従来どおり成功後記録(at-least-once)のまま。
+        let deliveryRetryKey: string | undefined;
+        if (idemKey) {
+          if (isDelivery) {
+            const rec = await getStripeActionRecord(db, idemKey, actionKey);
+            if (rec?.status === 'done') {
+              results.push({ action: action.type, label: (action.label ?? '') + ' (already-done)', success: true });
+              continue;
+            }
+            deliveryRetryKey = rec?.retry_key ?? crypto.randomUUID();
+          } else if (await hasProcessedStripeAction(db, idemKey, actionKey)) {
+            results.push({ action: action.type, label: (action.label ?? '') + ' (already-done)', success: true });
+            continue;
+          }
         }
 
-        // 配信系だけは「先に記録→実行→例外なら取り消し」(at-most-once)。
-        // 送信成功→記録前に waitUntil が打ち切られると、cron再処理が同じメッセージを
-        // もう一度送ってしまう（2026-08-13 mochi me: 17:21送信→30秒打ち切り→17:30再送。
-        // automation_log自体も書かれる前に死ぬため、時間窓ガードでも検知できない）。
-        // ユーザー向け配信は「稀な取りこぼし」より「重複送信」のほうが害が大きいので先記録にする。
-        // GAS書き込み等の非配信アクションは従来どおり成功後記録(at-least-once)のまま。
-        const preMark = idemKey !== undefined && action.type === 'send_messages';
+        const preMark = idemKey !== undefined && isDelivery;
         try {
-          if (preMark) await markStripeActionProcessed(db, idemKey, actionKey);
-          await executeAction(db, action, payload, actionEnv);
+          if (preMark) {
+            deliveryRetryKey = await ensureStripeDeliveryPending(db, idemKey, actionKey, deliveryRetryKey ?? crypto.randomUUID());
+          }
+          await executeAction(db, action, payload, actionEnv, deliveryRetryKey);
           results.push({ action: action.type, label: action.label, success: true });
           // 成功したアクションのみ記録（失敗は未記録→次の再処理で再実行される）
           if (idemKey && !preMark) await markStripeActionProcessed(db, idemKey, actionKey);
+          if (preMark) await markStripeActionSent(db, idemKey, actionKey);
         } catch (err) {
-          // 送信が例外で失敗した場合は先記録を取り消し、次の再処理で送り直せるようにする
-          if (preMark) {
-            try { await unmarkStripeActionProcessed(db, idemKey, actionKey); } catch { /* 取り消し失敗時は再処理でスキップされる側に倒れる */ }
-          }
+          // 配信の例外時はpendingのまま残す（削除しない）。retry_keyを保持したまま
+          // 次の再処理が同一キーで再送するため、二重配信にならずに送り直せる
           const errorMsg = err instanceof Error ? err.message : String(err);
           results.push({ action: action.type, label: action.label, success: false, error: errorMsg });
           if (action.onError === 'abort') break;
@@ -408,6 +426,8 @@ async function executeAction(
   action: { type: string; params: Record<string, unknown> },
   payload: EventPayload,
   env: ActionEnv,
+  // 配信系のX-Line-Retry-Key（2段階先記録の再送を重複なしにする）
+  deliveryRetryKey?: string,
 ): Promise<void> {
   const lineAccessToken = env.lineAccessToken;
   const friendId = payload.friendId;
@@ -693,14 +713,14 @@ async function executeAction(
         } catch (err: unknown) {
           const errMsg = err instanceof Error ? err.message : String(err);
           if (errMsg.includes('400') || errMsg.includes('Invalid reply token')) {
-            await lineClient.pushMessage(friend.line_user_id, messages);
+            await lineClient.pushMessage(friend.line_user_id, messages, { retryKey: deliveryRetryKey });
             deliveryType = 'push';
           } else {
             throw err;
           }
         }
       } else {
-        await lineClient.pushMessage(friend.line_user_id, messages);
+        await lineClient.pushMessage(friend.line_user_id, messages, { retryKey: deliveryRetryKey });
         deliveryType = 'push';
       }
       for (const m of messages) {

@@ -37,7 +37,7 @@ function fakeDb(opts: {
 }
 
 // 冪等記録のインメモリ状態（hasProcessedStripeAction/markStripeActionProcessedをモック）
-const idem = vi.hoisted(() => ({ done: new Set<string>() }));
+const idem = vi.hoisted(() => ({ done: new Set<string>(), delivery: new Map<string, { status: string; retry_key: string | null }>() }));
 
 vi.mock('@line-crm/db', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@line-crm/db');
@@ -45,6 +45,21 @@ vi.mock('@line-crm/db', async () => {
     ...actual,
     hasProcessedStripeAction: vi.fn(async (_db: unknown, ek: string, ak: string) => idem.done.has(`${ek}::${ak}`)),
     markStripeActionProcessed: vi.fn(async (_db: unknown, ek: string, ak: string) => { idem.done.add(`${ek}::${ak}`); }),
+    getStripeActionRecord: vi.fn(async (_db: unknown, ek: string, ak: string) => idem.delivery.get(`${ek}::${ak}`) ?? null),
+    ensureStripeDeliveryPending: vi.fn(async (_db: unknown, ek: string, ak: string, key: string) => {
+      const k = `${ek}::${ak}`;
+      const ex = idem.delivery.get(k);
+      if (ex) {
+        if (!ex.retry_key) ex.retry_key = key;
+        return ex.retry_key;
+      }
+      idem.delivery.set(k, { status: 'pending', retry_key: key });
+      return key;
+    }),
+    markStripeActionSent: vi.fn(async (_db: unknown, ek: string, ak: string) => {
+      const r = idem.delivery.get(`${ek}::${ak}`);
+      if (r) r.status = 'done';
+    }),
     getActiveOutgoingWebhooksByEvent: vi.fn().mockResolvedValue([]),
     applyScoring: vi.fn().mockResolvedValue(undefined),
     getActiveAutomationsByEvent: vi.fn(),
@@ -60,11 +75,17 @@ vi.mock('@line-crm/db', async () => {
   };
 });
 
+// pushの挙動をテストから差し替えられるように共有implに委譲する
+// （インスタンスごとのvi.fnは維持するので、mock.results経由の既存アサーションはそのまま動く）
+const lineCtl = vi.hoisted(() => ({
+  pushImpl: (async () => undefined) as (to: string, msgs: unknown[], opts?: { retryKey?: string }) => Promise<unknown>,
+}));
+
 vi.mock('@line-crm/line-sdk', () => {
   return {
     LineClient: vi.fn().mockImplementation(() => ({
       replyMessage: vi.fn().mockResolvedValue(undefined),
-      pushMessage: vi.fn().mockResolvedValue(undefined),
+      pushMessage: vi.fn((to: string, msgs: unknown[], opts?: { retryKey?: string }) => lineCtl.pushImpl(to, msgs, opts)),
     })),
   };
 });
@@ -477,5 +498,60 @@ describe('fireEvent — call_gas_post 失敗時のキュー退避（2026-08-14 S
 
     expect(ok).toBe(false);
     expect((queue.enqueueGasRetryJob as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(0);
+  });
+});
+
+
+describe('fireEvent — 配信の2段階先記録とX-Line-Retry-Key（2026-08-18）', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    idem.done.clear();
+    idem.delivery.clear();
+    lineCtl.pushImpl = async () => undefined;
+  });
+
+  it('送信失敗はpendingのまま残り、再処理が同一Retry-Keyで再送し、成功後はスキップされる', async () => {
+    const db = await import('@line-crm/db');
+    (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      {
+        id: 'auto-delivery',
+        line_account_id: 'acc-1',
+        conditions: JSON.stringify({}),
+        actions: JSON.stringify([
+          { type: 'send_messages', params: { messages: [{ messageType: 'text', content: '継続課金ありがとうございます' }] } },
+        ]),
+      },
+    ]);
+
+    const seenKeys: Array<string | undefined> = [];
+    let failFirst = true;
+    lineCtl.pushImpl = async (_to, _msgs, opts) => {
+      seenKeys.push(opts?.retryKey);
+      if (failFirst) {
+        failFirst = false;
+        throw new Error('LINE API error: 500');
+      }
+      return undefined;
+    };
+
+    const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: [] });
+
+    // 1回目: 送信失敗 → 自動化は未完(false)・記録はpendingのまま
+    const ok1 = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'friend-1', idempotencyKey: 'evt_dl_1', eventData: {} }, 'tok', 'acc-1');
+    expect(ok1).toBe(false);
+    expect(idem.delivery.get('evt_dl_1::auto-delivery:0')?.status).toBe('pending');
+
+    // 2回目(再処理): pendingなので再送される。Retry-Keyは1回目と同一
+    const ok2 = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'friend-1', idempotencyKey: 'evt_dl_1', eventData: {} }, 'tok', 'acc-1');
+    expect(ok2).toBe(true);
+    expect(seenKeys).toHaveLength(2);
+    expect(seenKeys[0]).toBeTruthy();
+    expect(seenKeys[1]).toBe(seenKeys[0]);
+    expect(idem.delivery.get('evt_dl_1::auto-delivery:0')?.status).toBe('done');
+
+    // 3回目: doneなので送信されない
+    const ok3 = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'friend-1', idempotencyKey: 'evt_dl_1', eventData: {} }, 'tok', 'acc-1');
+    expect(ok3).toBe(true);
+    expect(seenKeys).toHaveLength(2);
   });
 });
