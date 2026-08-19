@@ -1,10 +1,55 @@
 import { fireEvent } from './event-bus.js';
+import { gasGet, getGasErrorFromResponse } from '../furim/gas-client.js';
 
 type KaisetsuMeta = {
   kaisetsu: boolean;
+  /** 「解説見た」以外の一般の試用ユーザーもクロージング対象にするフラグ（GASの顧客マスター由来） */
+  closing?: boolean;
   trial_end: string;
   kaisetsu_last_sent?: string;
 };
+
+type ActiveTrial = { lineUserId: string; trialEnd: string };
+
+/**
+ * 顧客マスター（GAS）から「無料試用中で終了が近い人」を取り込み、friends.metadata に
+ * closing=true / trial_end を立てる。
+ *
+ * これが無いと配信対象は「解説見た」を送った人（kaisetsu=true）だけで、本番全期間で6人しか
+ * 居なかった。試用終了が近い一般ユーザーには終盤の案内が1通も無い状態だったため取り込む。
+ * kaisetsu フラグには触らない（タグ整理や通常シナリオ停止の挙動は解説見た組だけのまま）。
+ */
+async function syncClosingTargets(db: D1Database, gasDeployId: string): Promise<void> {
+  const res = await gasGet(gasDeployId, { method: 'listActiveTrials' }, { timeoutMs: 30_000 });
+  const gasError = getGasErrorFromResponse(res);
+  if (gasError) throw new Error(`listActiveTrials: ${gasError}`);
+
+  const trials = ((res as { trials?: ActiveTrial[] })?.trials ?? []).filter((t) => t?.lineUserId && t?.trialEnd);
+  let updated = 0;
+
+  for (const trial of trials) {
+    const friend = await db
+      .prepare('SELECT id, metadata FROM friends WHERE line_user_id = ? AND is_following = 1')
+      .bind(trial.lineUserId)
+      .first<{ id: string; metadata: string }>();
+    if (!friend) continue;
+
+    const meta = JSON.parse(friend.metadata || '{}') as KaisetsuMeta;
+    // 解説見た組は独自の延長日を持っているので上書きしない
+    if (meta.kaisetsu) continue;
+    if (meta.closing === true && meta.trial_end === trial.trialEnd) continue;
+
+    meta.closing = true;
+    meta.trial_end = trial.trialEnd;
+    await db
+      .prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
+      .bind(JSON.stringify(meta), friend.id)
+      .run();
+    updated++;
+  }
+
+  console.log(`[kaisetsu] closing targets synced: ${trials.length} trials, ${updated} updated`);
+}
 
 function todayJst(): string {
   return new Date(Date.now() + 9 * 60 * 60_000).toISOString().slice(0, 10);
@@ -19,26 +64,48 @@ function getRemainingDays(trialEnd: string): number {
 export async function processKaisetsuDeliveries(
   db: D1Database,
   lineAccessToken: string,
+  gasDeployId?: string,
 ): Promise<void> {
   const today = todayJst();
-
-  const result = await db
-    .prepare(`SELECT id, line_user_id, metadata FROM friends WHERE metadata LIKE '%"kaisetsu":true%' AND is_following = 1`)
-    .all<{ id: string; line_user_id: string; metadata: string }>();
 
   // 21:00 JST にのみ配信
   const jstHour = new Date(Date.now() + 9 * 60 * 60_000).getUTCHours();
   if (jstHour !== 21) return;
 
+  if (gasDeployId) {
+    try {
+      await syncClosingTargets(db, gasDeployId);
+    } catch (err) {
+      // 取り込みに失敗しても既存対象への配信は続ける
+      console.error('[kaisetsu] syncClosingTargets error:', err);
+    }
+  }
+
+  const result = await db
+    .prepare(
+      `SELECT id, line_user_id, metadata FROM friends
+       WHERE is_following = 1
+         AND (metadata LIKE '%"kaisetsu":true%' OR metadata LIKE '%"closing":true%')`,
+    )
+    .all<{ id: string; line_user_id: string; metadata: string }>();
+
   for (const friend of result.results) {
     try {
       const meta = JSON.parse(friend.metadata || '{}') as KaisetsuMeta;
-      if (!meta.kaisetsu || !meta.trial_end) continue;
+      if ((!meta.kaisetsu && !meta.closing) || !meta.trial_end) continue;
 
       const remaining = getRemainingDays(meta.trial_end);
 
-      // 期限切れ: タグ整理 + フラグクリア
+      // 期限切れ: フラグクリア（タグ整理は解説見た組だけ。一般の試用ユーザーの
+      // セグメントタグを触ると通常14シナリオの前提が崩れるため）
       if (remaining <= 0) {
+        if (!meta.kaisetsu) {
+          meta.closing = false;
+          await db.prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
+            .bind(JSON.stringify(meta), friend.id).run();
+          console.log(`[kaisetsu] expired ${friend.line_user_id} (closing only)`);
+          continue;
+        }
         const wasHighSeg = await db.prepare(
           `SELECT 1 FROM friend_tags ft JOIN tags t ON ft.tag_id = t.id WHERE ft.friend_id = ? AND t.name IN ('セグメント4','セグメント5','セグメント6','セグメント7','セグメント8') LIMIT 1`
         ).bind(friend.id).first();
