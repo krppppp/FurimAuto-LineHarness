@@ -1,4 +1,3 @@
-import type { LineClient } from '@line-crm/line-sdk';
 import { fireEvent } from './event-bus.js';
 
 type KaisetsuMeta = {
@@ -19,10 +18,9 @@ function getRemainingDays(trialEnd: string): number {
 
 export async function processKaisetsuDeliveries(
   db: D1Database,
-  lineClient: LineClient,
+  lineAccessToken: string,
 ): Promise<void> {
   const today = todayJst();
-  const lineAccessToken = (lineClient as unknown as { token?: string }).token;
 
   const result = await db
     .prepare(`SELECT id, line_user_id, metadata FROM friends WHERE metadata LIKE '%"kaisetsu":true%' AND is_following = 1`)
@@ -61,18 +59,23 @@ export async function processKaisetsuDeliveries(
         continue;
       }
 
-      // 今日すでに送信済みならスキップ
-      if (meta.kaisetsu_last_sent === today) continue;
+      // 今日の配信枠を先に取る（21:00 JST は "*/5" と "0 */6" の2つの cron が同時に発火し、
+      // 送信後に last_sent を書く方式では両方が同じ枠を通過して二重配信になっていた）。
+      // 条件付き UPDATE の changes で「自分が枠を取れたか」を判定し、取れた側だけが配信する。
+      const claim = await db
+        .prepare(
+          `UPDATE friends SET metadata = json_set(metadata, '$.kaisetsu_last_sent', ?), updated_at = datetime("now", "+9 hours")
+           WHERE id = ? AND COALESCE(json_extract(metadata, '$.kaisetsu_last_sent'), '') <> ?`,
+        )
+        .bind(today, friend.id, today)
+        .run();
+      if ((claim.meta?.changes ?? 0) === 0) continue;
 
       // オートメーションに委譲（closing_daily = 試用終盤クロージング配信）
       await fireEvent(db, 'closing_daily', {
         friendId: friend.id,
         eventData: { remaining_days: remaining },
       }, lineAccessToken);
-
-      meta.kaisetsu_last_sent = today;
-      await db.prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
-        .bind(JSON.stringify(meta), friend.id).run();
 
       console.log(`[kaisetsu] fired closing_daily for ${friend.line_user_id}, remaining=${remaining}days`);
     } catch (err) {

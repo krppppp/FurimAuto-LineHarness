@@ -1014,7 +1014,7 @@ async function scheduled(
     processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
     processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
     processReminderDeliveries(env.DB, defaultLineClient),
-    processKaisetsuDeliveries(env.DB, defaultLineClient), // furim: 解説動画配信
+    processKaisetsuDeliveries(env.DB, env.LINE_CHANNEL_ACCESS_TOKEN), // furim: 試用終盤クロージング配信
     processPendingCouponNotifications(env.DB, env), // furim: クーポン付与のLINE通知 (3分猶予後)
   );
   jobs.push(processQueuedBroadcasts(env.DB, defaultLineClient, env.WORKER_URL));
