@@ -265,6 +265,28 @@ export async function handleButtonAction(
     return true;
   }
 
+  // 掘り起こしキャンペーン: 1週間の全機能無料トライアルを付与する（通算1回きり）。
+  // 終了日時を7日後・キーコードを 1weektrial_ で刷新・端末判定文字列をクリア・全機能開放は GAS 側で行う。
+  // 有料会員はキーコード刷新が不利益になるため GAS が付与せず reason=paid を返す
+  if (text.includes('1週間無料プレゼント')) {
+    const result = await gasPost(env.GAS_DEPLOY_ID, { method: 'grantOneWeekTrial', lineUserId }) as Record<string, string>;
+    const messages: unknown[] = [];
+    if (result && result.success) {
+      messages.push({
+        type: 'text',
+        text: `🎁1週間の無料期間をプレゼントしました！\n\n${result.expiry ? `ご利用期限: ${result.expiry}\n\n` : ''}この期間は在庫管理シートを含む全機能をお使いいただけます。\n（通算1回のみ有効です）\n\n【使い始め方】\n① FurimAuto拡張機能を最新版へ更新する\n更新方法: https://furimauto.com/howto/#checkVersion\n\n② リッチメニューの「キーコード発行」をタップして新しいキーコードを受け取る\n\n③ 拡張機能のキーコード入力欄に丸ごと貼り付けて入力ボタンを押す\n\n④ 出品一覧ページを開き直すと、全機能が使える状態になっています\n\nうまくいかないときは、このLINEにそのままご返信ください🙇`,
+      });
+    } else if (result && result.reason === 'already') {
+      messages.push({ type: 'text', text: '🙇こちらのプレゼントは通算1回のみ有効です。\n\n既にお受け取りいただいているため、今回は付与されませんでした。\n\n引き続きご利用いただく場合は、必要な機能だけを選べるビュッフェ式プラン（月980円税抜〜）もご用意しています。\n\n▼ 料金シミュレーション＆お申し込み ▼\n' + PLAN_BUILDER_LIFF_URL });
+    } else if (result && result.reason === 'paid') {
+      messages.push({ type: 'text', text: '✅現在ご契約中のプランで、既に各機能をご利用いただける状態です。\n\nこのプレゼントは、ご契約のない方の再開用としてご用意しているものです。キーコードや契約内容はそのままにしてあります。\n\nご不明点があればこのLINEにそのままご返信ください🙇' });
+    } else {
+      messages.push({ type: 'text', text: '申し訳ございません、付与処理に失敗しました🙇\n\nお手数ですが、このLINEにそのままご返信ください。担当者が確認して付与いたします。' });
+    }
+    await lineClient.replyMessage(replyToken, messages as never[]);
+    return true;
+  }
+
   await lineClient.replyMessage(replyToken, [{ type: 'text', text: '現在急ピッチで準備中です！' } as never]);
   return true;
 }
