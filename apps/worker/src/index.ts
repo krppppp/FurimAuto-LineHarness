@@ -941,6 +941,17 @@ async function scheduled(
     );
   }
 
+  // LIFF ID 取り違え検知: 案内先(env.LIFF_URL)とフロントに焼かれたIDの突き合わせ。
+  // 比較のみで外部通信は無いので毎tick走らせ、通知だけ毎時15分に絞る
+  // （2026-08-18の事故は丸2日誰も気づけなかった）
+  ctx.waitUntil(
+    import('./services/liff-health.js')
+      .then(({ checkLiffIdConsistency }) =>
+        checkLiffIdConsistency(env.DB, env, { notify: jstMinutes === 15 }),
+      )
+      .catch((err) => console.error('[cron] liff-health error:', err)),
+  );
+
   // Get all active accounts from DB
   const dbAccounts = await getLineAccounts(env.DB);
 
