@@ -112,6 +112,14 @@ bucket_name = "line-harness-images"
 [env.prod.triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 
+# SNS等に貼る短縮リンクを自社ドメインで出すためのルート（2026-08-20 Cloudflare移行）。
+# workers.dev のままだと見慣れないドメインでクリック率に響くため。
+# `/r/` は WordPress に存在しないパスなので Xserver 側とは衝突しない。
+# 既存の workers.dev URL も生き続けるので、過去に配ったリンクは壊れない。
+[[env.prod.routes]]
+pattern = "furimauto.com/r/*"
+zone_name = "furimauto.com"
+
 [env.prod.vars]
 WORKER_NAME = "line-harness-prod"
 ADMIN_PAGES_PROJECT = "line-harness-admin-prod"
