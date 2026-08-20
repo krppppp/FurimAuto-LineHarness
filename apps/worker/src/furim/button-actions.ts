@@ -274,7 +274,13 @@ export async function handleButtonAction(
     if (result && result.success) {
       messages.push({
         type: 'text',
-        text: `🎁1週間の無料期間をプレゼントしました！\n\n${result.expiry ? `ご利用期限: ${result.expiry}\n\n` : ''}この期間は在庫管理シートを含む全機能をお使いいただけます。\n（通算1回のみ有効です）\n\n【使い始め方】\n① FurimAuto拡張機能を最新版へ更新する\n更新方法: https://furimauto.com/howto/#checkVersion\n\n② リッチメニューの「キーコード発行」をタップして新しいキーコードを受け取る\n\n③ 拡張機能のキーコード入力欄に丸ごと貼り付けて入力ボタンを押す\n\n④ 出品一覧ページを開き直すと、全機能が使える状態になっています\n\nうまくいかないときは、このLINEにそのままご返信ください🙇`,
+        text: `🎁1週間の無料期間をプレゼントしました！\n\n${result.expiry ? `ご利用期限: ${result.expiry}\n\n` : ''}この期間は在庫管理シートを含む全機能をお使いいただけます。\n\n導入方法はこちらの1分動画を参考にしてください！\n\nうまくいかないときは、このLINEにそのままご返信ください🙇`,
+      });
+      messages.push({
+        type: 'video',
+        originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/install.mp4',
+        previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png',
+        trackingId: 'oneWeekTrial',
       });
     } else if (result && result.reason === 'already') {
       messages.push({ type: 'text', text: '🙇こちらのプレゼントは通算1回のみ有効です。\n\n既にお受け取りいただいているため、今回は付与されませんでした。\n\n引き続きご利用いただく場合は、必要な機能だけを選べるビュッフェ式プラン（月980円税抜〜）もご用意しています。\n\n▼ 料金シミュレーション＆お申し込み ▼\n' + PLAN_BUILDER_LIFF_URL });
