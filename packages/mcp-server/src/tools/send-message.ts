@@ -14,7 +14,7 @@ export function registerSendMessage(server: McpServer): void {
           "Message content. For text: plain string. For image: JSON string with originalContentUrl and previewImageUrl (both HTTPS URLs). For flex: JSON string of LINE Flex Message.",
         ),
       messageType: z
-        .enum(["text", "image", "flex"])
+        .enum(["text", "image", "flex", "video"])
         .default("text")
         .describe(
           "Message type: 'text' for plain text, 'image' for standalone image, 'flex' for Flex Message JSON",

@@ -538,6 +538,26 @@ export function buildMessage(messageType: string, messageContent: string, altTex
     }
   }
 
+  // 動画メッセージ（Flexのヘッダー動画と違い尺の制限が緩く、トーク内でそのまま再生できる）。
+  // content は {originalContentUrl, previewImageUrl, trackingId?} のJSON
+  if (messageType === 'video') {
+    try {
+      const parsed = JSON.parse(messageContent) as {
+        originalContentUrl: string;
+        previewImageUrl: string;
+        trackingId?: string;
+      };
+      return {
+        type: 'video',
+        originalContentUrl: parsed.originalContentUrl,
+        previewImageUrl: parsed.previewImageUrl,
+        ...(parsed.trackingId ? { trackingId: parsed.trackingId } : {}),
+      } as Message;
+    } catch {
+      return { type: 'text', text: messageContent };
+    }
+  }
+
   if (messageType === 'flex') {
     try {
       const contents = JSON.parse(messageContent);

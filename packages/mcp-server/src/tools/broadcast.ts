@@ -10,7 +10,7 @@ export function registerBroadcast(server: McpServer): void {
       title: z
         .string()
         .describe("Internal title for this broadcast (not shown to users)"),
-      messageType: z.enum(["text", "flex"]).describe("Message type"),
+      messageType: z.enum(["text", "flex", "video"]).describe("Message type"),
       messageContent: z
         .string()
         .describe(
