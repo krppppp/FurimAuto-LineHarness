@@ -265,16 +265,17 @@ export async function handleButtonAction(
     return true;
   }
 
-  // 掘り起こしキャンペーン: 1週間の全機能無料トライアルを付与する（通算1回きり）。
-  // 終了日時を7日後・キーコードを 1weektrial_ で刷新・端末判定文字列をクリア・全機能開放は GAS 側で行う。
+  // 掘り起こしキャンペーン: 期間限定の全機能無料開放を付与する（1キャンペーンにつき1回きり）。
+  // 期限はキャンペーン終了日時（押した時点からのN日ではない）・キーコード刷新・端末判定文字列のクリア・
+  // 全機能開放は GAS 側（grantOneWeekTrial / TRIAL_PROMOS）で行う。
   // 有料会員はキーコード刷新が不利益になるため GAS が付与せず reason=paid を返す
-  if (text.includes('1週間無料プレゼント')) {
+  if (text.includes('1週間無料プレゼント') || text.includes('無料開放プレゼント')) {
     const result = await gasPost(env.GAS_DEPLOY_ID, { method: 'grantOneWeekTrial', lineUserId }) as Record<string, string>;
     const messages: unknown[] = [];
     if (result && result.success) {
       messages.push({
         type: 'text',
-        text: `🎁1週間の無料期間をプレゼントしました！\n\n${result.expiry ? `ご利用期限: ${result.expiry}\n\n` : ''}この期間は在庫管理シートを含む全機能をお使いいただけます。\n\n導入方法はこちらの1分動画を参考にしてください！\n\nうまくいかないときは、このLINEにそのままご返信ください🙇`,
+        text: `🎁無料開放を適用しました！\n\n${result.expiry ? `ご利用期限: ${result.expiry} まで\n\n` : ''}期限までの間、フリマサイト自動化・自動コピー出品・自動併売在庫管理のすべてをお使いいただけます。\n\n早く始めるほど長く使えますので、今日から動かしてみてください！\n\n導入方法はこちらの1分動画を参考にしてください！\n\nうまくいかないときは、このLINEにそのままご返信ください🙇`,
       });
       messages.push({
         type: 'video',
@@ -283,7 +284,9 @@ export async function handleButtonAction(
         trackingId: 'oneWeekTrial',
       });
     } else if (result && result.reason === 'already') {
-      messages.push({ type: 'text', text: '🙇こちらのプレゼントは通算1回のみ有効です。\n\n既にお受け取りいただいているため、今回は付与されませんでした。\n\n引き続きご利用いただく場合は、必要な機能だけを選べるビュッフェ式プラン（月980円税抜〜）もご用意しています。\n\n▼ 料金シミュレーション＆お申し込み ▼\n' + PLAN_BUILDER_LIFF_URL });
+      messages.push({ type: 'text', text: '🙇こちらのプレゼントは、お一人さま1回のみ有効です。\n\n既にお受け取りいただいているため、今回は付与されませんでした。\n\n引き続きご利用いただく場合は、必要な機能だけを選べるビュッフェ式プラン（月980円税抜〜）もご用意しています。\n\n▼ 料金シミュレーション＆お申し込み ▼\n' + PLAN_BUILDER_LIFF_URL });
+    } else if (result && result.reason === 'expired') {
+      messages.push({ type: 'text', text: '🙇このキャンペーンは終了しました。\n\n次回のご案内をお待ちください。お急ぎの場合は、必要な機能だけを選べるビュッフェ式プラン（月980円税抜〜）からご利用いただけます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n' + PLAN_BUILDER_LIFF_URL });
     } else if (result && result.reason === 'paid') {
       messages.push({ type: 'text', text: '✅現在ご契約中のプランで、既に各機能をご利用いただける状態です。\n\nこのプレゼントは、ご契約のない方の再開用としてご用意しているものです。キーコードや契約内容はそのままにしてあります。\n\nご不明点があればこのLINEにそのままご返信ください🙇' });
     } else {
