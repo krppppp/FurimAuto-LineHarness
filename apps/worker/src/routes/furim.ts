@@ -17,6 +17,13 @@ const furim = new Hono<Env>();
 // 旧14本（FurimAuto 通常/紹介 ステップ配信（セグメントN: ...））は is_active=0 で残置。
 export const UNIFIED_SCENARIO_NAME = 'FurimAuto ステップ配信 統合版';
 
+// 統合版の本番カットオーバー時刻。これ以前に登録した友だちは scenario-switch で
+// 自動enrollしない（Day0の4セットが既存試用者へ突然届くのを防ぐ）。
+// 旧ステップ配信は 2026-08-17 からGASトリガー停止で誰にも届いておらず、
+// 既存者はクロージング(closing_daily)だけ受ける現状維持となる。
+// 新規はカットオーバー後の friend_add automation が起点なので影響しない。
+export const UNIFIED_CUTOVER_AT = new Date('2026-08-24T23:00:00+09:00').getTime();
+
 function scenarioNameFor(segment: number, _isReferral: boolean): string | null {
   if (!Number.isInteger(segment) || segment < 1 || segment > 8) return null;
   return UNIFIED_SCENARIO_NAME;
@@ -68,6 +75,11 @@ furim.post('/api/furim/scenario-switch', async (c) => {
     // 旧実装は seg8 でシナリオを complete して kaisetsu cron 専任にしていたが、
     // 解説を見た人だけ本編が止まる理由がないため撤廃。クロージングは従来どおり
     // kaisetsu cron（closing_daily）が独立して面倒を見る。
+
+    // カットオーバー前に登録した友だちは自動enroll対象外（セグメントタグの更新だけ行う）
+    if (new Date(friend.created_at).getTime() < UNIFIED_CUTOVER_AT) {
+      return c.json({ success: true, data: { friendId: friend.id, scenarioId: null, scenarioName: 'skipped_pre_cutover' } });
+    }
 
     const scenarioName = scenarioNameFor(body.segment, Boolean(body.isReferral));
     if (!scenarioName) {
