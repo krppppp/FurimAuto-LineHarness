@@ -36,7 +36,13 @@ function addDays(date: Date, days: number): Date {
  * 次配信時刻を計算する。delivery_mode に応じて 3 通りの計算を切り替える。
  *
  * - relative: previousDeliveredAt + delay_minutes
- * - elapsed: enrolledAt + (offset_days*1440 + offset_minutes) 分
+ * - elapsed: enrolledAt + (offset_days*1440 + offset_minutes) 分。
+ *   ステップに delivery_time があるときだけ absolute_time と同じ計算に切り替わる
+ *   （enrolledAt + offset_days 日後の delivery_time・過去なら now）。
+ *   Day0 は登録からの経過分・Day1 以降は時刻固定、という1本のシナリオを
+ *   組めるようにするため。delivery_mode の CHECK 制約 (relative/elapsed/
+ *   absolute_time) を変えずに済むよう新モードは足していない。既存の elapsed
+ *   シナリオは delivery_time を持たない（route validation で拒否）ので互換。
  * - absolute_time: enrolledAt + offset_days 日後の delivery_time。過去なら now に丸める。
  */
 export function computeNextDeliveryAt(
@@ -48,11 +54,18 @@ export function computeNextDeliveryAt(
     case 'relative':
       return addMinutes(context.previousDeliveredAt, step.delay_minutes ?? 0);
 
-    case 'elapsed':
+    case 'elapsed': {
+      if (step.delivery_time) {
+        const target = addDays(context.enrolledAt, step.offset_days ?? 0);
+        const [h, m] = step.delivery_time.split(':').map(Number);
+        target.setHours(h, m, 0, 0);
+        return target < context.now ? context.now : target;
+      }
       return addMinutes(
         context.enrolledAt,
         (step.offset_days ?? 0) * 1440 + (step.offset_minutes ?? 0),
       );
+    }
 
     case 'absolute_time': {
       const target = addDays(context.enrolledAt, step.offset_days ?? 0);

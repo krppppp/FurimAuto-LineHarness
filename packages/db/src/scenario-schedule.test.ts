@@ -55,6 +55,21 @@ describe('computeNextDeliveryAt', () => {
       });
       expect(result.toISOString()).toBe(new Date('2026-05-11T20:32:00+09:00').toISOString());
     });
+
+    // Day0=経過分・Day1以降=時刻固定のハイブリッド構成（2026-08-24 シナリオ統合版）
+    it('switches to fixed clock time when the step has delivery_time', () => {
+      const scenario: ScenarioRow = { delivery_mode: 'elapsed' };
+      const step: StepRow = { delay_minutes: 0, offset_days: 1, offset_minutes: null, delivery_time: '09:00' };
+      const result = computeNextDeliveryAt(scenario, step, { enrolledAt, previousDeliveredAt: enrolledAt, now });
+      expect(result.toISOString()).toBe(new Date('2026-05-10T09:00:00+09:00').toISOString());
+    });
+
+    it('clamps a past delivery_time to now (same as absolute_time)', () => {
+      const scenario: ScenarioRow = { delivery_mode: 'elapsed' };
+      const step: StepRow = { delay_minutes: 0, offset_days: 0, offset_minutes: null, delivery_time: '09:00' };
+      const result = computeNextDeliveryAt(scenario, step, { enrolledAt, previousDeliveredAt: enrolledAt, now });
+      expect(result.toISOString()).toBe(now.toISOString());
+    });
   });
 
   describe('absolute_time mode', () => {

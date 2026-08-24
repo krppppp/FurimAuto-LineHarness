@@ -11,24 +11,15 @@ import type { Env } from '../index.js';
 
 const furim = new Hono<Env>();
 
-// セグメント番号 → シナリオ名（seed-furimauto-all-scenarios.mjs v2 の14本命名と一致させる）
-// 通常(7日)/紹介(14日)はシナリオ自体が別なので isReferral で振り分ける。
-// 旧実装は統合7本命名（FurimAuto セグメントN: ...）を探しており、DB上に存在しない名前の
-// ため全 scenario-switch が 404 → 誰も enroll されずステップ配信が完全停止していた（2026-07-15 修正）
-const SEGMENT_LABELS: Record<string, string> = {
-  '1': 'アンケート未回答',
-  '2': 'アンケート回答済み',
-  '3': 'キーコード発行済み',
-  '4': '拡張インストール済み',
-  '5': 'メルカリURL登録済み',
-  '6': 'FREEコピー出品チケット取得',
-  '7': 'Youtubeクーポン取得',
-};
+// 2026-08-24 シナリオ一本化: セグメント・通常/紹介に依らず常にこの1本へ enroll する。
+// セグメント切替でも本編の進捗はリセットされない（alreadyEnrolled ガードでスキップ）。
+// セグメントはタグとして付与を続けるので分析軸としては従来どおり使える。
+// 旧14本（FurimAuto 通常/紹介 ステップ配信（セグメントN: ...））は is_active=0 で残置。
+export const UNIFIED_SCENARIO_NAME = 'FurimAuto ステップ配信 統合版';
 
-function scenarioNameFor(segment: number, isReferral: boolean): string | null {
-  const label = SEGMENT_LABELS[String(segment)];
-  if (!label) return null;
-  return `FurimAuto ${isReferral ? '紹介' : '通常'} ステップ配信（セグメント${segment}: ${label}）`;
+function scenarioNameFor(segment: number, _isReferral: boolean): string | null {
+  if (!Number.isInteger(segment) || segment < 1 || segment > 8) return null;
+  return UNIFIED_SCENARIO_NAME;
 }
 
 /**
@@ -73,12 +64,10 @@ furim.post('/api/furim/scenario-switch', async (c) => {
       await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, newSegTag.id, jstNow()).run();
     }
 
-    // seg8 はシナリオなし（kaisetsu cron で管理）
-    if (body.segment === 8) {
-      await completeFriendActiveScenarios(db, friend.id);
-      console.log(`[furim/scenario-switch] friend=${friend.id} seg=8 → kaisetsu cron 管理（シナリオ登録なし）`);
-      return c.json({ success: true, data: { friendId: friend.id, scenarioId: null, scenarioName: 'kaisetsu' } });
-    }
+    // seg8（解説見た）も本編を継続する（2026-08-24 一本化）。
+    // 旧実装は seg8 でシナリオを complete して kaisetsu cron 専任にしていたが、
+    // 解説を見た人だけ本編が止まる理由がないため撤廃。クロージングは従来どおり
+    // kaisetsu cron（closing_daily）が独立して面倒を見る。
 
     const scenarioName = scenarioNameFor(body.segment, Boolean(body.isReferral));
     if (!scenarioName) {
@@ -94,15 +83,18 @@ furim.post('/api/furim/scenario-switch', async (c) => {
       return c.json({ success: false, error: `Scenario not found or inactive: ${scenarioName}` }, 404);
     }
 
-    // 同一シナリオに在籍中なら何もしない。GAS sendStepMessages は毎時・対象者全員分を
+    // 在籍中 or 完走済みなら何もしない。GAS sendStepMessages は毎時・対象者全員分を
     // 呼んでくるため、このガードがないと毎時 complete→re-enroll でステップ進行が
-    // Day0 にリセットされ続け、日次のステップ配信が一切前進しない
+    // Day0 にリセットされ続け、日次のステップ配信が一切前進しない。
+    // completed を含めるのは一本化(2026-08-24)から: 統合版はDay6で完走するため、
+    // 完走後もGASが毎時セグメントを送ってくる → completed を弾かないと本編が
+    // Day0から無限に再スタートする。掘り起こしは管理側の手動 enroll(dayZeroAt指定)で行う。
     const alreadyEnrolled = await db
-      .prepare(`SELECT id FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ? AND status IN ('active', 'delivering') LIMIT 1`)
+      .prepare(`SELECT id, status FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ? AND status IN ('active', 'delivering', 'completed') LIMIT 1`)
       .bind(friend.id, scenario.id)
-      .first<{ id: string }>();
+      .first<{ id: string; status: string }>();
     if (alreadyEnrolled) {
-      return c.json({ success: true, data: { friendId: friend.id, scenarioId: scenario.id, scenarioName, alreadyEnrolled: true } });
+      return c.json({ success: true, data: { friendId: friend.id, scenarioId: scenario.id, scenarioName, alreadyEnrolled: true, enrollmentStatus: alreadyEnrolled.status } });
     }
 
     await completeFriendActiveScenarios(db, friend.id);

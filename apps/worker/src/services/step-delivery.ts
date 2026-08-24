@@ -218,16 +218,29 @@ async function processSingleDelivery(
     }
   }
 
-  // 同日連続ステップ (delay=0・無条件) は1回のpushにまとめて送る (LINE上限5通/push・2026-08-01改修)。
+  // 同時刻の連続ステップは1回のpushにまとめて送る (LINE上限5通/push・2026-08-01改修)。
   // 5分cronごとに1通ずつだと「画像だけ届いて本文は5分後」の分断体験になるため。
   // 条件付きステップは従来通り単独tickで評価するためバンドルに含めない。
+  // 「同時刻」の判定は delivery_mode で変わる:
+  //   relative      → 次ステップの delay_minutes=0
+  //   elapsed/絶対時刻 → offset_days / offset_minutes / delivery_time が現ステップと完全一致
+  // (旧実装は常に delay_minutes=0 で判定していたが、elapsed では全ステップ delay=0 の
+  //  ため別時刻のセット同士が誤って1pushに結合されてしまう)
+  const isSameSchedule = (
+    next: (typeof steps)[number],
+  ): boolean =>
+    scenarioRow.delivery_mode === 'relative'
+      ? (next.delay_minutes ?? 0) === 0
+      : (next.offset_days ?? 0) === (currentStep.offset_days ?? 0) &&
+        (next.offset_minutes ?? 0) === (currentStep.offset_minutes ?? 0) &&
+        (next.delivery_time ?? null) === (currentStep.delivery_time ?? null);
   const bundleSteps = [currentStep];
   {
     let cursor = steps.indexOf(currentStep);
     while (
       bundleSteps.length < 5 &&
       cursor + 1 < steps.length &&
-      (steps[cursor + 1].delay_minutes ?? 0) === 0 &&
+      isSameSchedule(steps[cursor + 1]) &&
       !steps[cursor + 1].condition_type
     ) {
       cursor++;

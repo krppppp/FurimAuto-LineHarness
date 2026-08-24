@@ -135,11 +135,22 @@ function validateStepSchedule(
     return { ok: true };
   }
   if (mode === 'elapsed') {
-    if (body.delayMinutes != null || body.deliveryTime != null) {
-      return { ok: false, error: 'elapsed mode: only offsetDays + offsetMinutes are allowed' };
+    if (body.delayMinutes != null) {
+      return { ok: false, error: 'elapsed mode: delayMinutes is not allowed' };
     }
     if (typeof body.offsetDays !== 'number' || body.offsetDays < 0) {
       return { ok: false, error: 'elapsed mode: offsetDays (>=0) is required' };
+    }
+    // deliveryTime を持つステップだけ時刻固定 (absolute_time と同じ計算) になる。
+    // Day0=経過分・Day1以降=時刻固定 を1本で組むための拡張 (computeNextDeliveryAt 参照)。
+    if (body.deliveryTime != null) {
+      if (typeof body.deliveryTime !== 'string' || !HHMM_RE.test(body.deliveryTime)) {
+        return { ok: false, error: 'elapsed mode: deliveryTime must match HH:MM when set' };
+      }
+      if (body.offsetMinutes != null) {
+        return { ok: false, error: 'elapsed mode: offsetMinutes and deliveryTime are mutually exclusive' };
+      }
+      return { ok: true };
     }
     if (typeof body.offsetMinutes !== 'number' || body.offsetMinutes < 0 || body.offsetMinutes >= 1440) {
       return { ok: false, error: 'elapsed mode: offsetMinutes (0..1439) is required' };
@@ -523,6 +534,10 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
         }
         if (scheduleForValidation.offsetMinutes === undefined && existingStep.offset_minutes != null) {
           scheduleForValidation.offsetMinutes = existingStep.offset_minutes;
+        }
+        // 時刻固定ステップ (delivery_time あり・offset_minutes なし) の既存値穴埋め
+        if (scheduleForValidation.deliveryTime === undefined && existingStep.delivery_time != null) {
+          scheduleForValidation.deliveryTime = existingStep.delivery_time;
         }
       } else {
         // absolute_time

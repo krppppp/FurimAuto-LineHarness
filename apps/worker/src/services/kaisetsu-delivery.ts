@@ -7,6 +7,12 @@ type KaisetsuMeta = {
   closing?: boolean;
   trial_end: string;
   kaisetsu_last_sent?: string;
+  /**
+   * closing_daily を発火済みの残日数の記録（例: ["5","3"]）。
+   * 「解説見た」で試用が1週間延長されると remaining_days が巻き戻り、同じ残日数の
+   * クロージング文面が二重に届いてしまうため、一度発火した残日数は再発火させない。
+   */
+  closing_sent?: string[];
 };
 
 type ActiveTrial = { lineUserId: string; trialEnd: string };
@@ -126,6 +132,14 @@ export async function processKaisetsuDeliveries(
         continue;
       }
 
+      // 発火済み残日数ガード: 「解説見た」延長で remaining_days が巻き戻っても、
+      // 一度発火した残日数のクロージングは再発火させない（延長組への二重配信防止）。
+      const closingSent = Array.isArray(meta.closing_sent) ? meta.closing_sent.map(String) : [];
+      if (closingSent.includes(String(remaining))) {
+        console.log(`[kaisetsu] skip ${friend.line_user_id} remaining=${remaining} (already fired)`);
+        continue;
+      }
+
       // 今日の配信枠を先に取る（21:00 JST は "*/5" と "0 */6" の2つの cron が同時に発火し、
       // 送信後に last_sent を書く方式では両方が同じ枠を通過して二重配信になっていた）。
       // 条件付き UPDATE の changes で「自分が枠を取れたか」を判定し、取れた側だけが配信する。
@@ -137,6 +151,15 @@ export async function processKaisetsuDeliveries(
         .bind(today, friend.id, today)
         .run();
       if ((claim.meta?.changes ?? 0) === 0) continue;
+
+      // 発火記録は fireEvent の前に書く（送信失敗より二重配信の方が実害が大きい）。
+      // json_set で $.closing_sent だけ更新し、claim が書いた kaisetsu_last_sent は保持する。
+      await db
+        .prepare(
+          `UPDATE friends SET metadata = json_set(metadata, '$.closing_sent', json(?)), updated_at = datetime("now", "+9 hours") WHERE id = ?`,
+        )
+        .bind(JSON.stringify([...closingSent, String(remaining)]), friend.id)
+        .run();
 
       // オートメーションに委譲（closing_daily = 試用終盤クロージング配信）
       await fireEvent(db, 'closing_daily', {
