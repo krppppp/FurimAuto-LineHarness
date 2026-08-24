@@ -275,7 +275,8 @@ export async function handleFurimAction(
       case 'プラン確認': {
         // ガイドタブの「プラン診断」ボタンから。
         // 'プラン確認' はガイドタブv2（旧文言）を開いたままのユーザー向けの互換
-        const liffUrl = resolvedEnv.PLAN_BUILDER_LIFF_URL || 'https://liff.line.me/1661091589-81CpgAs1';
+        // フォールバックはDEVではなく本番URL（DEVを顧客へ送る事故の防止・2026-08-20）
+        const liffUrl = resolvedEnv.PLAN_BUILDER_LIFF_URL || 'https://liff.line.me/1660804123-ZfTZnrBV';
         await lineClient.replyMessage(replyToken, [
           {
             type: 'text',

@@ -189,7 +189,8 @@ export const DONE_CHECKS: Record<string, DoneCheckFn> = {
     const rows = await fetchSheetRows(gasDeployId, MASTER_SHEET, 3, 'Stripe顧客ID', customerId);
     if (rows.length === 0) return true; // 行自体が無ければGAS側もno-op
     const row = rows[0];
-    if (String(row['プラン名'] ?? '') === 'キャンセル済み') return true;
+    // くろさんが解約理由を「キャンセル済み(商材が合わない)」のように追記するため前方一致で見る
+    if (String(row['プラン名'] ?? '').startsWith('キャンセル済み')) return true;
     if (String(row['サブスクID'] ?? '') !== String(p.subscriptionID ?? '')) return true;
     return false;
   },

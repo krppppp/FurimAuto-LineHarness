@@ -305,9 +305,9 @@ broadcasts.post('/api/broadcasts', async (c) => {
       }
       for (const m of body.messages) {
         if (!m || typeof m.content !== 'string' || m.content.length === 0
-          || !['text', 'image', 'flex'].includes(m.type)) {
+          || !['text', 'image', 'flex', 'video'].includes(m.type)) {
           return c.json(
-            { success: false, error: 'each message needs a non-empty content and type of text|image|flex' },
+            { success: false, error: 'each message needs a non-empty content and type of text|image|flex|video' },
             400,
           );
         }
@@ -389,9 +389,9 @@ broadcasts.put('/api/broadcasts/:id', async (c) => {
       }
       for (const m of body.messages) {
         if (!m || typeof m.content !== 'string' || m.content.length === 0
-          || !['text', 'image', 'flex'].includes(m.type)) {
+          || !['text', 'image', 'flex', 'video'].includes(m.type)) {
           return c.json(
-            { success: false, error: 'each message needs a non-empty content and type of text|image|flex' },
+            { success: false, error: 'each message needs a non-empty content and type of text|image|flex|video' },
             400,
           );
         }

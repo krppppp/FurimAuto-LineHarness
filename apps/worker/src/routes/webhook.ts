@@ -498,7 +498,7 @@ async function handleEvent(
       // クロージャに渡すと env の絞り込みが外れるので、ここで確定させる
       const gasDeployId = env.GAS_DEPLOY_ID;
       await runHandlerSafely('handleButtonAction', loggingClient, userId, 'もう一度ボタンをタップしてください', () =>
-        handleButtonAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db));
+        handleButtonAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, PLAN_BUILDER_LIFF_URL: env.PLAN_BUILDER_LIFF_URL }, db));
       return;
     }
 

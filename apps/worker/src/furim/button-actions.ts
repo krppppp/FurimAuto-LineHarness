@@ -6,9 +6,17 @@ import { logOutgoing } from '../utils/message-log.js';
 export type ButtonActionsEnv = {
   GAS_DEPLOY_ID: string;
   STRIPE_SECRET_KEY?: string;
+  PLAN_BUILDER_LIFF_URL?: string;
 };
 
-const PLAN_BUILDER_LIFF_URL = 'https://liff.line.me/1661091589-81CpgAs1';
+// プラン診断LIFFは本番/DEVでチャネルが違う。ここにベタ書きするとDEVのURLを
+// 顧客へ送ってしまう（2026-08-20に実際に混入していた）。secret の
+// PLAN_BUILDER_LIFF_URL を正とし、未設定時のみ本番URLへ落とす。
+const PROD_PLAN_BUILDER_LIFF_URL = 'https://liff.line.me/1660804123-ZfTZnrBV';
+
+function planBuilderUrl(env: ButtonActionsEnv): string {
+  return env.PLAN_BUILDER_LIFF_URL || PROD_PLAN_BUILDER_LIFF_URL;
+}
 
 const FEATURE_VIDEOS: Record<string, { url: string; manual: string }> = {
   '値段変更(ワンバイワン)': { url: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E5%80%A4%E6%AE%B5%E5%A4%89%E6%9B%B4.mov', manual: 'https://furimauto.com/howto/#ｍChangePrice' },
@@ -145,7 +153,7 @@ export async function handleButtonAction(
     } else {
       await lineClient.replyMessage(replyToken, [
         { type: 'text', text: thanks } as never,
-        { type: 'text', text: `💡【機能を絞って安く続ける選択肢も】\n\nFurimAutoは必要な機能だけを選べるビュッフェ式です🍽\nよく使う機能1つだけなら月980円(税抜)から再開できます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n${PLAN_BUILDER_LIFF_URL}` } as never,
+        { type: 'text', text: `💡【機能を絞って安く続ける選択肢も】\n\nFurimAutoは必要な機能だけを選べるビュッフェ式です🍽\nよく使う機能1つだけなら月980円(税抜)から再開できます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n${planBuilderUrl(env)}` } as never,
       ]);
     }
     return true;
@@ -284,9 +292,9 @@ export async function handleButtonAction(
         trackingId: 'oneWeekTrial',
       });
     } else if (result && result.reason === 'already') {
-      messages.push({ type: 'text', text: '🙇こちらのプレゼントは、お一人さま1回のみ有効です。\n\n既にお受け取りいただいているため、今回は付与されませんでした。\n\n引き続きご利用いただく場合は、必要な機能だけを選べるビュッフェ式プラン（月980円税抜〜）もご用意しています。\n\n▼ 料金シミュレーション＆お申し込み ▼\n' + PLAN_BUILDER_LIFF_URL });
+      messages.push({ type: 'text', text: '🙇こちらのプレゼントは、お一人さま1回のみ有効です。\n\n既にお受け取りいただいているため、今回は付与されませんでした。\n\n引き続きご利用いただく場合は、必要な機能だけを選べるビュッフェ式プラン（月980円税抜〜）もご用意しています。\n\n▼ 料金シミュレーション＆お申し込み ▼\n' + planBuilderUrl(env) });
     } else if (result && result.reason === 'expired') {
-      messages.push({ type: 'text', text: '🙇このキャンペーンは終了しました。\n\n次回のご案内をお待ちください。お急ぎの場合は、必要な機能だけを選べるビュッフェ式プラン（月980円税抜〜）からご利用いただけます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n' + PLAN_BUILDER_LIFF_URL });
+      messages.push({ type: 'text', text: '🙇このキャンペーンは終了しました。\n\n次回のご案内をお待ちください。お急ぎの場合は、必要な機能だけを選べるビュッフェ式プラン（月980円税抜〜）からご利用いただけます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n' + planBuilderUrl(env) });
     } else if (result && result.reason === 'paid') {
       messages.push({ type: 'text', text: '✅現在ご契約中のプランで、既に各機能をご利用いただける状態です。\n\nこのプレゼントは、ご契約のない方の再開用としてご用意しているものです。キーコードや契約内容はそのままにしてあります。\n\nご不明点があればこのLINEにそのままご返信ください🙇' });
     } else {
