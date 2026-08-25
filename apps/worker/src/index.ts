@@ -70,6 +70,7 @@ import { processPendingCouponNotifications } from './services/coupon-notificatio
 import { planBuilder } from './routes/plan-builder.js';
 import { messagesRoute } from './routes/messages.js';
 import { processKaisetsuDeliveries } from './services/kaisetsu-delivery.js';
+import { syncSegmentsFromGas } from './services/segment-sync.js';
 import { sweepPendingStripeEvents } from './services/stripe-processor.js';
 import { sweepGasRetryJobs } from './furim/gas-retry-queue.js';
 import { forms } from './routes/forms.js';
@@ -1026,6 +1027,7 @@ async function scheduled(
     processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
     processReminderDeliveries(env.DB, defaultLineClient),
     processKaisetsuDeliveries(env.DB, env.LINE_CHANNEL_ACCESS_TOKEN, env.GAS_DEPLOY_ID), // furim: 試用終盤クロージング配信
+    syncSegmentsFromGas(env.DB, env.GAS_DEPLOY_ID), // furim: 毎時セグメント同期（内部で毎時:00ゲート・旧GASトリガーの置き換え）
     processPendingCouponNotifications(env.DB, env), // furim: クーポン付与のLINE通知 (3分猶予後)
   );
   jobs.push(processQueuedBroadcasts(env.DB, defaultLineClient, env.WORKER_URL));

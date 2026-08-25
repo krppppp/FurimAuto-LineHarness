@@ -29,10 +29,108 @@ function scenarioNameFor(segment: number, _isReferral: boolean): string | null {
   return UNIFIED_SCENARIO_NAME;
 }
 
+export interface ScenarioSwitchOutcome {
+  httpStatus: 200 | 400 | 404;
+  payload: {
+    success: boolean;
+    error?: string;
+    data?: {
+      friendId: string | null;
+      scenarioId: string | null;
+      scenarioName: string | null;
+      alreadyEnrolled?: boolean;
+      enrollmentStatus?: string;
+    };
+  };
+}
+
+/**
+ * セグメント切り替えの本体。route（GAS scenario-switch）と毎時セグメント同期cron
+ * （services/segment-sync.ts）の両方から呼ばれる。
+ * セグメントタグの付け替えを行い、ガードを通過した場合のみ統合版シナリオへ enroll する。
+ */
+export async function applyScenarioSwitch(
+  db: D1Database,
+  lineUserId: string,
+  segment: number,
+  isReferral: boolean,
+): Promise<ScenarioSwitchOutcome> {
+  const friend = await getFriendByLineUserId(db, lineUserId);
+  if (!friend) {
+    return { httpStatus: 404, payload: { success: false, error: 'Friend not found' } };
+  }
+
+  // 月額会員は既に課金済み、キャンセル済み(解約者)は試用導線の対象外のためセグメント管理対象外。
+  // 解約者への掘り起こし配信は自動enrollではなく、管理側の手動enroll(dayZeroAt指定)で行う
+  const excludedTag = await db.prepare(`SELECT t.name FROM tags t JOIN friend_tags ft ON t.id = ft.tag_id WHERE ft.friend_id = ? AND t.name IN ('月額会員', 'キャンセル済み') LIMIT 1`).bind(friend.id).first<{ name: string }>();
+  if (excludedTag) {
+    console.log(`[furim/scenario-switch] friend=${friend.id} は${excludedTag.name}のためセグメント切り替えをスキップ`);
+    return { httpStatus: 200, payload: { success: true, data: { friendId: friend.id, scenarioId: null, scenarioName: excludedTag.name === '月額会員' ? 'skipped_member' : 'skipped_cancelled' } } };
+  }
+
+  // セグメントタグ切り替え（古いセグメント全削除 → 新規付与）
+  const segTagRows = await db.prepare(
+    `SELECT id FROM tags WHERE name IN ('セグメント1','セグメント2','セグメント3','セグメント4','セグメント5','セグメント6','セグメント7','セグメント8')`
+  ).all<{ id: string }>();
+  for (const t of segTagRows.results) {
+    await db.prepare('DELETE FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(friend.id, t.id).run();
+  }
+  const newSegTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(`セグメント${segment}`).first<{ id: string }>();
+  if (newSegTag) {
+    await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, newSegTag.id, jstNow()).run();
+  }
+
+  // seg8（解説見た）も本編を継続する（2026-08-24 一本化）。
+  // 旧実装は seg8 でシナリオを complete して kaisetsu cron 専任にしていたが、
+  // 解説を見た人だけ本編が止まる理由がないため撤廃。クロージングは従来どおり
+  // kaisetsu cron（closing_daily）が独立して面倒を見る。
+
+  // カットオーバー前に登録した友だちは自動enroll対象外（セグメントタグの更新だけ行う）
+  if (new Date(friend.created_at).getTime() < UNIFIED_CUTOVER_AT) {
+    return { httpStatus: 200, payload: { success: true, data: { friendId: friend.id, scenarioId: null, scenarioName: 'skipped_pre_cutover' } } };
+  }
+
+  const scenarioName = scenarioNameFor(segment, Boolean(isReferral));
+  if (!scenarioName) {
+    return { httpStatus: 400, payload: { success: false, error: `Unknown segment: ${segment}` } };
+  }
+
+  const scenario = await db
+    .prepare('SELECT id, name FROM scenarios WHERE name = ? AND is_active = 1 LIMIT 1')
+    .bind(scenarioName)
+    .first<{ id: string; name: string }>();
+
+  if (!scenario) {
+    return { httpStatus: 404, payload: { success: false, error: `Scenario not found or inactive: ${scenarioName}` } };
+  }
+
+  // 在籍中 or 完走済みなら何もしない。呼び出し元は毎時・対象者全員分を
+  // 送ってくるため、このガードがないと毎時 complete→re-enroll でステップ進行が
+  // Day0 にリセットされ続け、日次のステップ配信が一切前進しない。
+  // completed を含めるのは一本化(2026-08-24)から: 統合版はDay6で完走するため、
+  // 完走後も毎時セグメントが送られてくる → completed を弾かないと本編が
+  // Day0から無限に再スタートする。掘り起こしは管理側の手動 enroll(dayZeroAt指定)で行う。
+  const alreadyEnrolled = await db
+    .prepare(`SELECT id, status FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ? AND status IN ('active', 'delivering', 'completed') LIMIT 1`)
+    .bind(friend.id, scenario.id)
+    .first<{ id: string; status: string }>();
+  if (alreadyEnrolled) {
+    return { httpStatus: 200, payload: { success: true, data: { friendId: friend.id, scenarioId: scenario.id, scenarioName, alreadyEnrolled: true, enrollmentStatus: alreadyEnrolled.status } } };
+  }
+
+  await completeFriendActiveScenarios(db, friend.id);
+  await enrollFriendInScenario(db, friend.id, scenario.id);
+
+  console.log(`[furim/scenario-switch] friend=${friend.id} seg=${segment} referral=${isReferral} → ${scenario.id}`);
+
+  return { httpStatus: 200, payload: { success: true, data: { friendId: friend.id, scenarioId: scenario.id, scenarioName } } };
+}
+
 /**
  * POST /api/furim/scenario-switch
  * GASから呼び出される。ユーザーのセグメントが変わった時に
  * 現在のシナリオを完了させ、新しいシナリオに切り替える。
+ * （2026-08-25以降の主経路は毎時セグメント同期cron。このrouteは互換用に残す）
  *
  * Body: { lineUserId: string, segment: 1-6, isReferral: boolean }
  */
@@ -44,77 +142,8 @@ furim.post('/api/furim/scenario-switch', async (c) => {
       return c.json({ success: false, error: 'lineUserId and segment are required' }, 400);
     }
 
-    const db = c.env.DB;
-
-    const friend = await getFriendByLineUserId(db, body.lineUserId);
-    if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
-    }
-
-    // 月額会員は既に課金済み、キャンセル済み(解約者)は試用導線の対象外のためセグメント管理対象外。
-    // 解約者への掘り起こし配信は自動enrollではなく、管理側の手動enroll(dayZeroAt指定)で行う
-    const excludedTag = await db.prepare(`SELECT t.name FROM tags t JOIN friend_tags ft ON t.id = ft.tag_id WHERE ft.friend_id = ? AND t.name IN ('月額会員', 'キャンセル済み') LIMIT 1`).bind(friend.id).first<{ name: string }>();
-    if (excludedTag) {
-      console.log(`[furim/scenario-switch] friend=${friend.id} は${excludedTag.name}のためセグメント切り替えをスキップ`);
-      return c.json({ success: true, data: { friendId: friend.id, scenarioId: null, scenarioName: excludedTag.name === '月額会員' ? 'skipped_member' : 'skipped_cancelled' } });
-    }
-
-    // セグメントタグ切り替え（古いセグメント全削除 → 新規付与）
-    const segTagRows = await db.prepare(
-      `SELECT id FROM tags WHERE name IN ('セグメント1','セグメント2','セグメント3','セグメント4','セグメント5','セグメント6','セグメント7','セグメント8')`
-    ).all<{ id: string }>();
-    for (const t of segTagRows.results) {
-      await db.prepare('DELETE FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(friend.id, t.id).run();
-    }
-    const newSegTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(`セグメント${body.segment}`).first<{ id: string }>();
-    if (newSegTag) {
-      await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, newSegTag.id, jstNow()).run();
-    }
-
-    // seg8（解説見た）も本編を継続する（2026-08-24 一本化）。
-    // 旧実装は seg8 でシナリオを complete して kaisetsu cron 専任にしていたが、
-    // 解説を見た人だけ本編が止まる理由がないため撤廃。クロージングは従来どおり
-    // kaisetsu cron（closing_daily）が独立して面倒を見る。
-
-    // カットオーバー前に登録した友だちは自動enroll対象外（セグメントタグの更新だけ行う）
-    if (new Date(friend.created_at).getTime() < UNIFIED_CUTOVER_AT) {
-      return c.json({ success: true, data: { friendId: friend.id, scenarioId: null, scenarioName: 'skipped_pre_cutover' } });
-    }
-
-    const scenarioName = scenarioNameFor(body.segment, Boolean(body.isReferral));
-    if (!scenarioName) {
-      return c.json({ success: false, error: `Unknown segment: ${body.segment}` }, 400);
-    }
-
-    const scenario = await db
-      .prepare('SELECT id, name FROM scenarios WHERE name = ? AND is_active = 1 LIMIT 1')
-      .bind(scenarioName)
-      .first<{ id: string; name: string }>();
-
-    if (!scenario) {
-      return c.json({ success: false, error: `Scenario not found or inactive: ${scenarioName}` }, 404);
-    }
-
-    // 在籍中 or 完走済みなら何もしない。GAS sendStepMessages は毎時・対象者全員分を
-    // 呼んでくるため、このガードがないと毎時 complete→re-enroll でステップ進行が
-    // Day0 にリセットされ続け、日次のステップ配信が一切前進しない。
-    // completed を含めるのは一本化(2026-08-24)から: 統合版はDay6で完走するため、
-    // 完走後もGASが毎時セグメントを送ってくる → completed を弾かないと本編が
-    // Day0から無限に再スタートする。掘り起こしは管理側の手動 enroll(dayZeroAt指定)で行う。
-    const alreadyEnrolled = await db
-      .prepare(`SELECT id, status FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ? AND status IN ('active', 'delivering', 'completed') LIMIT 1`)
-      .bind(friend.id, scenario.id)
-      .first<{ id: string; status: string }>();
-    if (alreadyEnrolled) {
-      return c.json({ success: true, data: { friendId: friend.id, scenarioId: scenario.id, scenarioName, alreadyEnrolled: true, enrollmentStatus: alreadyEnrolled.status } });
-    }
-
-    await completeFriendActiveScenarios(db, friend.id);
-    await enrollFriendInScenario(db, friend.id, scenario.id);
-
-    console.log(`[furim/scenario-switch] friend=${friend.id} seg=${body.segment} referral=${body.isReferral} → ${scenario.id}`);
-
-    return c.json({ success: true, data: { friendId: friend.id, scenarioId: scenario.id, scenarioName } });
+    const result = await applyScenarioSwitch(c.env.DB, body.lineUserId, body.segment, Boolean(body.isReferral));
+    return c.json(result.payload, result.httpStatus);
   } catch (err) {
     console.error('[furim/scenario-switch] error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
