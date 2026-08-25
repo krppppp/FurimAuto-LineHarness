@@ -38,6 +38,8 @@ export interface StripeWebhookBody {
       amount_paid?: number;
       customer_email?: string;
       tax?: number;
+      // API 2026-05-27.dahlia 以降 invoice.tax は廃止され total_taxes[] に移った
+      total_taxes?: Array<{ amount?: number }>;
       total_excluding_tax?: number;
       subtotal?: number;
       total_discount_amounts?: Array<{ amount: number }>;
@@ -316,7 +318,10 @@ export async function processStripeEvent(
 
     // 複数discountスタック対応: 併用割引+キャンペーンクーポン等の合算（[0]だけだと2枚目以降が漏れる）
     const discountAmount = (obj.total_discount_amounts ?? []).reduce((t, d) => t + (d.amount ?? 0), 0);
-    const taxAmount = obj.tax ?? 0;
+    // prod webhookのAPI版(2026-05-27.dahlia)では invoice.tax が無く total_taxes[] に入る。
+    // obj.tax ?? 0 のままだと税額が常に0で記録され、priceExclTax も税込額と同値になる
+    // （2026-07-09以降の台帳254件がこれで税区分を失っていた・2026-08-25修正）
+    const taxAmount = obj.tax ?? (obj.total_taxes ?? []).reduce((t, x) => t + (x.amount ?? 0), 0);
     const actualPaidAmount = obj.amount_paid ?? 0;
     const priceExclTax = actualPaidAmount - taxAmount;
 
