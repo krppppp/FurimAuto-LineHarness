@@ -53,9 +53,12 @@ export interface StripeWebhookBody {
 }
 
 /**
- * 再処理時の二重送信ガード: 同じイベント種別のautomationがこの友だちに対して
- * 直近withinMinutes内にsuccessしていれば true。
- * （初回実行がfireEventまで到達した後に死んだケースの再実行で使う）
+ * 同じイベント種別のautomationがこの友だちに対して直近withinMinutes内にsuccessしていれば true。
+ *
+ * 【用途は決済失敗通知の14日スロットルのみ】status='success' は「アクションが実際に実行された」
+ * ことを意味しない（条件不一致でスキップされたアクションも success として記録される）。
+ * そのため「配信済みかどうか」の判定には使えない。配信の冪等性は event-bus の
+ * action_key 単位の2段階機構が担う。2026-08-25に継続課金メッセージの抑制用途からは撤去した。
  */
 async function automationRanRecently(
   db: D1Database,
@@ -368,17 +371,18 @@ export async function processStripeEvent(
 
     const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
 
-    // 再処理時の継続課金メッセージ二重送信ガード（2026-08-11追加）。
-    // idempotencyKeyの「厳密1回」は、送信(executeAction)の成功を記録(markStripeActionProcessed)する前に
-    // waitUntilが打ち切られると成立しない。この窓に入ると再処理で同じ通知がもう一度飛ぶ。
-    // 実測: 2026-07-23 / 07-26 / 08-07(2件) / 08-11 の計5件、いずれも11〜15分間隔＝sweepの再処理間隔。
-    // 冪等キー導入(688201c, 2026-08-04)後も3件出ているため、配信系だけ時間窓ガードを併用する。
-    // suppressMessagesはsend_messagesアクションだけを飛ばすので、GAS台帳記録など未完了の処理は再実行される。
-    const invoiceNoticeAlreadySent = opts.isRetry === true
-      && await automationRanRecently(db, 'stripe_invoice_paid', resolvedFriend?.id ?? friendId, 60);
-    if (invoiceNoticeAlreadySent) {
-      console.log(`[stripe/invoice] 継続課金メッセージは送信済みのため抑制します (event=${body.id})`);
-    }
+    // 【2026-08-25に廃止】再処理時の時間窓ガード（automationRanRecently による配信抑制）
+    // 二重送信対策として2026-08-04に入れたが、2026-08-18の配信2段階化
+    // （event-bus: pending先記録＋X-Line-Retry-Key → 送信 → done更新）で不要になった。
+    // にもかかわらず残っていたため、逆に「まだ一度も送っていない配信」を止めていた:
+    //   automationRanRecently は automation_logs の status='success' しか見ない。
+    //   同じイベントでは「月額新規登録フロー」(priority10)が先に走り、継続課金では
+    //   全アクションが条件不一致でも success として記録される。1通も送っていないその成功を
+    //   根拠に、後続の「月額継続課金フロー」の send_messages が suppress された。
+    //   実害: 2026-07-22〜08-24に継続課金メッセージが6件未達（堤腰/clailribre/真由美/南/あつし/ひろむ）。
+    // 二重送信の防止は event-bus の action_key 単位の2段階機構に一本化する
+    // （done ならスキップ、pending なら同一Retry-Keyで再送＝取りこぼしゼロ×重複ゼロ）。
+    // 調査記録: .claude-company/departments/engineering/furim-auto/2026-08-25-missing-invoice-notifications.md
 
     // automationの各アクションは body.id を冪等キーに event-bus 側で厳密1回だけ実行される。
     // 途中で失敗したら allOk=false が返るので throw し、markStripeEventCompletedを回避 →
@@ -389,9 +393,9 @@ export async function processStripeEvent(
         eventData: {
           stripeCustomerId, lineUserId: resolvedLineUserId, billingReason, isNewSubscription,
           // プラン変更(subscription_update)の差額invoiceでは継続課金メッセージを出さない
-          // （変更完了+新キーコードの案内はplan-change.tsが返信済み）
-          // 再処理で既に送信済みの場合も同様に配信だけ抑制する
-          suppressMessages: billingReason === 'subscription_update' || invoiceNoticeAlreadySent,
+          // （変更完了+新キーコードの案内はplan-change.tsが返信済み）。これが唯一の抑制条件で、
+          // 再処理かどうかでは抑制しない（上記コメント参照）
+          suppressMessages: billingReason === 'subscription_update',
           // isLegacyPlan: 旧プラン一覧ベースのサブスク（automation側のsetKeyCode等はこちらだけ実行）
           source: subMetadata.source ?? '', isLegacyPlan: !isPlanBuilder,
           planName, planAmount, planTier,

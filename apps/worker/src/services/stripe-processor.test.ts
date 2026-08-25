@@ -243,8 +243,11 @@ describe('processStripeEvent — invoice_paid の冪等/再処理', () => {
     );
   });
 
-  test('再処理で継続課金メッセージが送信済みなら配信だけ抑制する', async () => {
-    // first() が行を返す = automationRanRecently が true（初回のfireEventがsuccessまで到達済み）
+  test('再処理でも直近のautomation実績では配信を抑制しない（2026-08-25にガード廃止）', async () => {
+    // first() が行を返す = automation_logs に直近successがある状態。
+    // 旧実装はこれを「送信済み」とみなして suppress していたが、successは条件不一致で
+    // スキップされたアクションも含むため、1通も送っていない配信を止めていた
+    // （継続課金メッセージ6件未達）。二重送信防止は event-bus の2段階機構が担う
     const { db } = makeDb({ id: 'log-1' });
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
     vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-paid' });
@@ -255,13 +258,26 @@ describe('processStripeEvent — invoice_paid の冪等/再処理', () => {
       data: { object: { id: 'in_dup', customer: 'cus_dup', billing_reason: 'subscription_cycle' } },
     }, { isRetry: true });
 
-    // 配信は抑制するが、fireEvent自体は呼ぶ（GAS台帳記録など未完了の処理は再実行させる）
     expect(fireEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fireEvent).mock.calls[0][2].eventData).toMatchObject({ suppressMessages: false });
+  });
+
+  test('プラン変更の差額invoiceは配信を抑制する（唯一残る抑制条件）', async () => {
+    const { db } = makeDb(null);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+    vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-paid' });
+
+    await processStripeEvent(db, env, {
+      id: 'evt_ip_upd',
+      type: 'invoice.payment_succeeded',
+      data: { object: { id: 'in_upd', customer: 'cus_upd', billing_reason: 'subscription_update' } },
+    });
+
     expect(vi.mocked(fireEvent).mock.calls[0][2].eventData).toMatchObject({ suppressMessages: true });
   });
 
   test('再処理でも未送信なら抑制しない', async () => {
-    // first() が null = automationRanRecently が false（初回がfireEventに到達せず死んだ）
+    // first() が null = automation_logs に直近successが無い状態
     const { db } = makeDb(null);
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
     vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-paid' });
@@ -276,6 +292,7 @@ describe('processStripeEvent — invoice_paid の冪等/再処理', () => {
   });
 
   test('初回実行は直近実績があっても抑制しない', async () => {
+    // ガード廃止後も期待値は同じ（初回・再処理を問わず抑制しない）
     const { db } = makeDb({ id: 'log-1' });
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
     vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-paid' });
