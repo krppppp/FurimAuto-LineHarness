@@ -667,6 +667,24 @@ chats.post('/api/chats/:id/send', async (c) => {
         parsed.originalContentUrl,
         parsed.previewImageUrl,
       );
+    } else if (messageType === 'video') {
+      const parsed = JSON.parse(body.content) as {
+        originalContentUrl: string;
+        previewImageUrl: string;
+        trackingId?: string;
+      };
+      await lineClient.pushMessage(friend.line_user_id, [
+        {
+          type: 'video',
+          originalContentUrl: parsed.originalContentUrl,
+          previewImageUrl: parsed.previewImageUrl,
+          ...(parsed.trackingId ? { trackingId: parsed.trackingId } : {}),
+        } as never,
+      ]);
+    } else {
+      // 未知のmessageTypeを黙ってログだけ書いてsuccessを返していた（videoが
+      // プレビューで届かない事故・2026-08-27）。以後は明示的にエラーにする
+      return c.json({ success: false, error: `unsupported messageType: ${messageType}` }, 400);
     }
 
     // メッセージログに記録（quote_token: 自分の送信への引用返信に使う）
