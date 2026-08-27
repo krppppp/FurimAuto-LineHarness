@@ -9,7 +9,6 @@ import {
   surveyButton,
 } from './messages.js';
 import {
-  completeFriendActiveScenarios,
   getFriendByLineUserId,
   getAffiliateByFriendId,
   createAffiliate,
@@ -676,15 +675,24 @@ export async function actionExtendTrial(
     try {
       const existing = await db.prepare('SELECT id, metadata FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string; metadata: string }>();
       if (existing) {
-        const daysToAdd = result.result === 'extended1w' ? 7 : 3;
-        const trialEnd = new Date(Date.now() + 9 * 60 * 60_000 + daysToAdd * 24 * 60 * 60_000);
+        // クロージング用 trial_end はGASが書いた実際の新期限(newExpiry)をそのまま使う。
+        // 旧実装の「今日+7日」自前計算はGAS（元期限+7日）と最大1日ズレていた。
+        // newExpiry が返らない異常時のみ従来式でフォールバック
+        let trialEndStr: string;
+        if (result.newExpiry && !Number.isNaN(new Date(result.newExpiry).getTime())) {
+          trialEndStr = new Date(new Date(result.newExpiry).getTime() + 9 * 60 * 60_000).toISOString().slice(0, 10);
+        } else {
+          const daysToAdd = result.result === 'extended1w' ? 7 : 3;
+          trialEndStr = new Date(Date.now() + 9 * 60 * 60_000 + daysToAdd * 24 * 60 * 60_000).toISOString().slice(0, 10);
+        }
         const meta = JSON.parse(existing.metadata || '{}');
         meta.kaisetsu = true;
-        meta.trial_end = trialEnd.toISOString().slice(0, 10);
+        meta.trial_end = trialEndStr;
         await db.prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
           .bind(JSON.stringify(meta), existing.id).run();
-        // 解説見たユーザーは通常シナリオを停止し、kaisetsu cron による有料案内に切り替える
-        await completeFriendActiveScenarios(db, existing.id);
+        // 本編シナリオは停止しない（2026-08-24 一本化決定「seg8も本編継続」・2026-08-27 徹底）。
+        // 旧実装はここで completeFriendActiveScenarios していたが、14日版シーケンスでは
+        // Day6昼に「解説見た」を促すため、停止すると後半（全自動化教育）が丸ごと届かなくなる
 
         // 解説見たタグ付与
         const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('解説見た').first<{ id: string }>();

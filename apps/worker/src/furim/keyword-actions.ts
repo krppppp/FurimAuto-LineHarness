@@ -123,9 +123,9 @@ export async function handleKeywordAction(
     const data = await gasPost(env.GAS_DEPLOY_ID, { method: 'setKeyCodeExpiry', lineUserId, expiryDate }) as Record<string, unknown>;
     if (data?.success) {
       await lineClient.replyMessage(replyToken, [
-        { type: 'text', text: `🎉【キャンペーン参加完了！】🎉\n\nFurimAutoの全機能を1週間無料でお試しいただけます！\n\nキーコードの準備ができましたので、\nリッチメニューの「キーコード発行」をタップしてください👇\n\n使い方は簡単3ステップ！\n①キーコードを発行\n②PCブラウザにFurimAutoを導入\n③キーコードを入力する\nだけ！✋\n\n初回の導入方法は下の1分動画を参考に最短3分で導入してみてください♪` } as never,
+        { type: 'text', text: `🎉【キャンペーン参加完了！】🎉\n\nFurimAutoの全機能を2週間無料でお試しいただけます！\n\nキーコードの準備ができましたので、\nリッチメニューの「キーコード発行」をタップしてください👇\n\n使い方は簡単3ステップ！\n①キーコードを発行\n②PCブラウザにFurimAutoを導入\n③キーコードを入力する\nだけ！✋\n\n初回の導入方法は下の1分動画を参考に最短3分で導入してみてください♪` } as never,
         { type: 'video', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/install.mp4', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png', trackingId: 'setup' } as never,
-        { type: 'text', text: `📣使い方や設定方法について\n\n💡無料の1週間で全機能フル活用!\n💡全自動化運用を実現して欲しい!\n💡理解することで必ず大きな効果がでます!\n\nリッチメニューの"Youtube動画講座"から\nFurimAutoの基礎から応用まで\n全ての機能を解説しています！` } as never,
+        { type: 'text', text: `📣使い方や設定方法について\n\n💡無料の2週間で全機能フル活用!\n💡全自動化運用を実現して欲しい!\n💡理解することで必ず大きな効果がでます!\n\nリッチメニューの"Youtube動画講座"から\nFurimAutoの基礎から応用まで\n全ての機能を解説しています！` } as never,
         copyTicketFlexMessage() as never,
       ]);
     } else {
@@ -220,7 +220,7 @@ export async function processReferral(
     body: new URLSearchParams({ coupon: data.introducedCouponID, 'metadata[ambassadorStripeID]': data.ambassadorStripeID, 'metadata[isIntroduced]': 'true', 'metadata[isFirstSubscription]': 'true' }).toString(),
   });
 
-  await notifyIntroduced([{ type: 'text', text: `友達紹介コードの確認が取れました😆\n\n無料試用期間を1週間追加して、友達登録から2週間ご利用いただけます。\n\n更に月額プランにご登録の際に、初月の利用料が半額になるクーポンを付与させていただきました♪\n\nそれではキーコードを発行して、2週間存分に使いまわして売り上げUPさせてください⭐️` } as never]);
+  await notifyIntroduced([{ type: 'text', text: `友達紹介コードの確認が取れました😆\n\n無料試用期間を1週間追加して、友達登録から3週間ご利用いただけます。\n\n更に月額プランにご登録の際に、初月の利用料が半額になるクーポンを付与させていただきました♪\n\nそれではキーコードを発行して、3週間存分に使いまわして売り上げUPさせてください⭐️` } as never]);
 
   let pushText = `【お友達の${data.introducedLineDisplayName}様があなたの友達紹介コードを入力しました】\n\n`;
   if (data.ambassadorCouponName) {

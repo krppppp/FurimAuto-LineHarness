@@ -46,11 +46,6 @@ export async function syncSegmentsFromGas(db: D1Database, gasDeployId?: string):
     return;
   }
 
-  const scenario = await db
-    .prepare('SELECT id FROM scenarios WHERE name = ? AND is_active = 1 LIMIT 1')
-    .bind(UNIFIED_SCENARIO_NAME)
-    .first<{ id: string }>();
-
   // 現状のセグメントタグ・登録日時・統合版enroll有無をまとめて引く
   type FriendRow = { id: string; line_user_id: string; created_at: string; seg_tag: string | null };
   const current = new Map<string, { friendId: string; createdAt: string; tags: Set<string>; enrolled: boolean }>();
@@ -75,17 +70,21 @@ export async function syncSegmentsFromGas(db: D1Database, gasDeployId?: string):
       current.set(r.line_user_id, entry);
     }
   }
-  if (scenario) {
+  // 在籍判定は「統合版系（名前前方一致）」全体で見る（2026-08-27 14日化）。
+  // 旧7日版と新14日版が並走するため、単一シナリオIDで見ると旧版在籍者を
+  // 「enroll漏れ」と誤判定して二重enrollしてしまう
+  {
     const friendIds = [...current.values()].map((e) => e.friendId);
     for (let i = 0; i < friendIds.length; i += CHUNK) {
       const chunk = friendIds.slice(i, i + CHUNK);
       const placeholders = chunk.map(() => '?').join(',');
       const rows = await db
         .prepare(
-          `SELECT DISTINCT friend_id FROM friend_scenarios
-           WHERE scenario_id = ? AND status IN ('active','delivering','completed') AND friend_id IN (${placeholders})`,
+          `SELECT DISTINCT fs.friend_id FROM friend_scenarios fs
+           JOIN scenarios s ON s.id = fs.scenario_id
+           WHERE s.name LIKE ? AND fs.status IN ('active','delivering','completed') AND fs.friend_id IN (${placeholders})`,
         )
-        .bind(scenario.id, ...chunk)
+        .bind(`${UNIFIED_SCENARIO_NAME}%`, ...chunk)
         .all<{ friend_id: string }>();
       const enrolledIds = new Set(rows.results.map((r) => r.friend_id));
       for (const entry of current.values()) {

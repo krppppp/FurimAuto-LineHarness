@@ -96,7 +96,7 @@ export async function handleButtonAction(
     const messages: unknown[] = [
       { type: 'text', text: `📣ご対応ありがとうございます！\n\nキーコードの準備ができましたので、\nリッチメニューの「キーコード発行」をタップしてください👇\n\n使い方は簡単3ステップ！\n①キーコードを発行\n②PCブラウザにFurimAutoを導入\n③キーコードを入力する\nだけ！✋\n\n初回の導入方法は下の1分動画を参考に最短3分で導入してみてください♪` },
       { type: 'video', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/meet.mp4', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png', trackingId: 'setup' },
-      { type: 'text', text: `📣使い方や設定方法について\n\n💡無料の1週間で全機能フル活用!\n💡全自動化運用を実現して欲しい!\n💡理解することで必ず大きな効果がでます!\n\nリッチメニューの"Youtube動画講座"から\nFurimAutoの基礎から応用まで\n全ての機能を解説しています！\n\n------------------------------------------------------------------------\n\n実際に使う際の細かい設定方法は\n"利用方法説明書"や"簡単解説1分動画"\nを参考にしてください☀️` },
+      { type: 'text', text: `📣使い方や設定方法について\n\n💡無料の2週間で全機能フル活用!\n💡全自動化運用を実現して欲しい!\n💡理解することで必ず大きな効果がでます!\n\nリッチメニューの"Youtube動画講座"から\nFurimAutoの基礎から応用まで\n全ての機能を解説しています！\n\n------------------------------------------------------------------------\n\n実際に使う際の細かい設定方法は\n"利用方法説明書"や"簡単解説1分動画"\nを参考にしてください☀️` },
       {
         type: 'flex',
         altText: '1分解説シリーズ',
@@ -113,7 +113,7 @@ export async function handleButtonAction(
       },
     ];
     await lineClient.replyMessage(replyToken, messages as never[]);
-    const referralPushText = `📣お友達からの紹介で登録してくれたお客様へ\n\nFurimAutoへようこそ🙇\n\nご紹介いただいたお友達から紹介コードをいただいていましたらこのLINEトークルームにコピペしてお送りください！\n\n以下のようにカッコで囲まれたテキストを何もいじることなく\n'そのまま'コピーして送信してください！\n\n【キーワード】友達紹介コード:XXXXXXXXXXXX\n\nそれだけで\n✅無料期間は2週間に延長\n✅初回月額料金半額クーポン付与`;
+    const referralPushText = `📣お友達からの紹介で登録してくれたお客様へ\n\nFurimAutoへようこそ🙇\n\nご紹介いただいたお友達から紹介コードをいただいていましたらこのLINEトークルームにコピペしてお送りください！\n\n以下のようにカッコで囲まれたテキストを何もいじることなく\n'そのまま'コピーして送信してください！\n\n【キーワード】友達紹介コード:XXXXXXXXXXXX\n\nそれだけで\n✅無料期間は3週間に延長\n✅初回月額料金半額クーポン付与`;
     if (surveyResult === '紹介') {
       await lineClient.pushMessage(lineUserId, [{ type: 'text', text: referralPushText } as never]);
     }

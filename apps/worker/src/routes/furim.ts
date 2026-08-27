@@ -107,12 +107,19 @@ export async function applyScenarioSwitch(
   // 在籍中 or 完走済みなら何もしない。呼び出し元は毎時・対象者全員分を
   // 送ってくるため、このガードがないと毎時 complete→re-enroll でステップ進行が
   // Day0 にリセットされ続け、日次のステップ配信が一切前進しない。
-  // completed を含めるのは一本化(2026-08-24)から: 統合版はDay6で完走するため、
+  // completed を含めるのは一本化(2026-08-24)から: 統合版は最終日で完走するため、
   // 完走後も毎時セグメントが送られてくる → completed を弾かないと本編が
   // Day0から無限に再スタートする。掘り起こしは管理側の手動 enroll(dayZeroAt指定)で行う。
+  // 判定は「統合版系（名前前方一致）」全体で行う（2026-08-27 14日化）: 旧7日版と
+  // 新14日版が並走するため、シナリオID単位で見ると旧版在籍者が「未在籍」と誤判定され
+  // 新版Day0へ二重enrollされてしまう。
   const alreadyEnrolled = await db
-    .prepare(`SELECT id, status FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ? AND status IN ('active', 'delivering', 'completed') LIMIT 1`)
-    .bind(friend.id, scenario.id)
+    .prepare(
+      `SELECT fs.id, fs.status FROM friend_scenarios fs
+       JOIN scenarios s ON s.id = fs.scenario_id
+       WHERE fs.friend_id = ? AND s.name LIKE ? AND fs.status IN ('active', 'delivering', 'completed') LIMIT 1`,
+    )
+    .bind(friend.id, `${UNIFIED_SCENARIO_NAME}%`)
     .first<{ id: string; status: string }>();
   if (alreadyEnrolled) {
     return { httpStatus: 200, payload: { success: true, data: { friendId: friend.id, scenarioId: scenario.id, scenarioName, alreadyEnrolled: true, enrollmentStatus: alreadyEnrolled.status } } };

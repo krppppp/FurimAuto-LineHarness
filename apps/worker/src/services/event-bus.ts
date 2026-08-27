@@ -392,7 +392,8 @@ async function resolveGasArgs(
         .first<{ id: string; line_user_id: string; display_name: string | null; metadata: string }>()
     : null;
   const nowJst = new Date(Date.now() + 9 * 60 * 60_000);
-  const trialEndJst = new Date(nowJst.getTime() + 7 * 24 * 60 * 60_000);
+  // 無料試用は14日（2026-08-27 くろさん決定で7日→14日化。既存登録者は7日のまま）
+  const trialEndJst = new Date(nowJst.getTime() + 14 * 24 * 60 * 60_000);
   const fmtJst = (d: Date) => d.toISOString().replace('T', ' ').slice(0, 19);
   const resolved: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) {

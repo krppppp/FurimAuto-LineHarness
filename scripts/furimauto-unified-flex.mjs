@@ -2,9 +2,10 @@
  * FurimAuto 統合版ステップ配信 Flexデザイン版の定義（2026-08-26 くろさん指示）
  *
  * 全配信をFlexバブルで囲い、テキストと画像を1枚のカードに統合する。
- * シナリオ種別ごとにヘッダー帯の色を変える:
- *   無料ステップ（ウェルカム＋Day0）      = グリーン #2FA25B（5段階画像の「ずっと無料」ゾーンと同色）
- *   段階ステップ（Day1〜6 本編＋特典への道） = オレンジ #F68A1D（ブランド色）
+ * シナリオ種別ごとにヘッダー帯の色を変える（14日試用・2026-08-27〜）:
+ *   無料ステップ（ウェルカム＋Day0〜4朝）   = グリーン #2FA25B（5段階画像の「ずっと無料」ゾーンと同色）
+ *   段階ステップ（Day7〜12朝の全自動化教育） = オレンジ #F68A1D（ブランド色）
+ *   15大特典への道（Day1〜6昼）           = レッド   #D94A3D
  *   クロージング（残5/3/2/1日）            = レッド   #D94A3D（締切）
  *
  * 設計ルール:
@@ -95,12 +96,12 @@ const PLAN_BTN = uriBtn('プラン診断をはじめる', PLAN_LIFF, { color: '#
 // ──────────────── ウェルカム（friend_add automation・無料ステップ） ────────────────
 
 export const WELCOME_MESSAGES = [
-  flexMsg('友だち追加ありがとうございます🎉 1週間の無料試用期間がスタートしました！', bubble({
+  flexMsg('友だち追加ありがとうございます🎉 2週間の無料試用期間がスタートしました！', bubble({
     color: COLORS.free,
     label: 'FurimAuto｜ようこそ',
     body: [
       heading('友だち追加ありがとうございます🎉'),
-      t('FurimAuto（フリマート）です。\n\nたった今からFurimAuto内の全ての機能を解放した【1週間の無料試用期間】がスタートしました！\n\nまずはChrome拡張機能の導入から。\n下の動画のとおりに進めるだけ、1分で終わります👇'),
+      t('FurimAuto（フリマート）です。\n\nたった今からFurimAuto内の全ての機能を解放した【2週間の無料試用期間】がスタートしました！\n\nまずはChrome拡張機能の導入から。\n下の動画のとおりに進めるだけ、1分で終わります👇'),
     ],
     footer: [uriBtn('導入ページを開く', 'https://furimauto.com/install', { color: COLORS.free })],
   })),
@@ -116,7 +117,7 @@ export const WELCOME_MESSAGES = [
 
 // ──────────────── 本編シナリオ（Day0=無料ステップ・Day1〜6=段階ステップ） ────────────────
 
-// Day0 +30分（旧5通 → 1バブル）
+// Day1 9:00 検索カードリサーチ（旧Day0+30分から移動・2026-08-27 14日化）
 const set1 = flexMsg('【導入した瞬間から、変わります】無料のリサーチ機能がもう動いています', bubble({
   color: COLORS.free,
   label: '無料ステップ 1/3｜導入した瞬間から',
@@ -127,11 +128,20 @@ const set1 = flexMsg('【導入した瞬間から、変わります】無料の�
     bimg(HOWTO_IMG + 'freeFeature_mercari_search_before.png', '2260:1760'),
     captionStrong('▼ 導入後：評価・本人確認・出品日時・SOLDの"売れた日時"が自動で追加'),
     bimg(HOWTO_IMG + 'freeFeature_mercari_search_after.png', '2260:1658'),
-    t('設定も操作もいりません。\n「いつ・何が・どれだけ売れているか」が見えるだけで、仕入れの精度は大きく変わります。', { margin: 'md' }),
-    { type: 'separator', margin: 'md' },
-    t('最後に、30秒だけください。\nあなたに合ったご案内をお届けするため、1問だけアンケートにご協力お願いします👇', { color: '#333333', margin: 'md' }),
+    t('設定も操作もいりません。\n「いつ・何が・どれだけ売れているか」が見えるだけで、仕入れの精度は大きく変わります。\n\nまだ導入がお済みでない方は、下のボタンから1分でどうぞ👇', { margin: 'md' }),
   ],
-  footer: [SURVEY_BTN, INSTALL_BTN],
+  footer: [INSTALL_BTN],
+}));
+
+// Day0 +30分（アンケートのみの軽量カード。リサーチ案内はDay1朝へ移動・2026-08-27 14日化）
+const set0 = flexMsg('30秒だけください。1問だけアンケートにご協力お願いします', bubble({
+  color: COLORS.free,
+  label: 'FurimAuto｜30秒だけください',
+  body: [
+    heading('あなたに合ったご案内を\nお届けするために'),
+    t('改めまして、FurimAutoです。\n\n1問だけアンケートにご協力お願いします（30秒で終わります）👇'),
+  ],
+  footer: [SURVEY_BTN],
 }));
 
 // Day0 +2時間（旧5通 → カルーセル1通＋特典1通）
@@ -257,7 +267,7 @@ const set3b = flexMsg('【FurimAutoが、リサーチを無料で配る理由】
 // Day1 9:00（旧2通 → 1バブル）
 const d1m = flexMsg('おはようございます☀ 今日はまず、この1分動画だけ見てください', bubble({
   color: COLORS.step,
-  label: 'DAY 1｜1分で分かる全自動化',
+  label: 'DAY 7｜1分で分かる全自動化',
   hero: {
     type: 'image', url: 'https://img.youtube.com/vi/uQjheVeAuww/maxresdefault.jpg',
     size: 'full', aspectRatio: '16:9', aspectMode: 'cover',
@@ -278,28 +288,15 @@ const d1n = flexMsg('【15大特典への道 1/6】今日のミッション: 1�
   body: [
     t('FurimAutoです🎁\n\n無料期間中に集められる15大特典、①②のロードマップは受け取りましたか？'),
     hlBox('今日のミッション🎯\n▶ 1問アンケートに回答（30秒）', '#FFF6E5', '#E8730C', 'sm'),
-    t('クリアでもらえる特典\n📘 ③ ロードマップ❸\n📘 ④ ロードマップ❹\n\n物販で稼ぐ道筋の"続き"です。\n今朝の動画とセットでどうぞ。\n\n特典の受け取りは、リッチメニューの「限定特典GET」をタップ👇', { margin: 'md' }),
+    t('クリアでもらえる特典\n📘 ③ ロードマップ❸\n📘 ④ ロードマップ❹\n\n物販で稼ぐ道筋の"続き"です。\n今朝ご案内したリサーチ機能とセットでどうぞ。\n\n特典の受け取りは、リッチメニューの「限定特典GET」をタップ👇', { margin: 'md' }),
   ],
   footer: [SURVEY_BTN],
-}));
-
-// Day1 20:00（旧2通 → 1バブル）
-const d1e = flexMsg('【今夜のうちに、準備だけ】自動化すべき3つのページをご案内します', bubble({
-  color: COLORS.step,
-  label: 'DAY 1｜今夜のうちに、準備だけ',
-  hero: bimg(LINE_IMG + 'pages3_all.png', '1:1'),
-  body: [
-    heading('今夜のうちに、準備だけ'),
-    t('FurimAutoです。\n\nフリマサイトの運用には、"自動化すべきページ"が3つあります。\n\n📋 出品一覧ページ\n　→ 値下げ・再出品・コメント管理 などなど\n\n🔔 お知らせページ\n　→ いいねした人へのセールコメント\n\n💬 取引中ページ\n　→ 取引メッセージの自動送信\n\n明日から1日1ページずつ、この3つの"手作業が消える体験"をご案内していきます。'),
-    t('キーコードの発行がまだの方は、今夜のうちに済ませておくのがおすすめです。\n（発行したキーコードを拡張機能に入力するだけ）\n\n発行済みの方は、明日の朝をお楽しみに😊', { margin: 'md' }),
-  ],
-  footer: [KEYCODE_BTN],
 }));
 
 // Day2 9:00（旧3通 → 1バブル）
 const d2m = flexMsg('【値下げと再出品は、何のためにやるのか】フリマサイト内のSEO対策の話です', bubble({
   color: COLORS.step,
-  label: 'DAY 2｜今日はここ：出品一覧ページ',
+  label: 'DAY 8｜今日はここ：出品一覧ページ',
   hero: bimg(LINE_IMG + 'pages3_day2.png', '1:1'),
   body: [
     heading('値下げと再出品は、何のためにやるのか'),
@@ -326,7 +323,7 @@ const d2n = flexMsg('【15大特典への道 2/6】今日のミッション: キ
 // Day3 9:00（旧3通 → 1バブル）
 const d3m = flexMsg('【売る側は高く、買う側は安くのギャップがチャンス】自動いいね対応の話です', bubble({
   color: COLORS.step,
-  label: 'DAY 3｜今日はここ：お知らせページ',
+  label: 'DAY 9｜今日はここ：お知らせページ',
   hero: bimg(LINE_IMG + 'pages3_day3.png', '1:1'),
   body: [
     heading('売る側は高く、買う側は安くのギャップがチャンス'),
@@ -342,7 +339,7 @@ const d3n = flexMsg('【15大特典への道 3/6】今日のミッション: キ
   color: COLORS.tokuten,
   label: '15大特典への道 3/6',
   body: [
-    t('自動化、もう1つは動かしましたか？'),
+    t('昨日発行したキーコード、もう使ってみましたか？'),
     hlBox('今日のミッション🎯\n▶ 発行したキーコードを拡張機能に入力して\n　自動化を1つ実行する', '#FFF6E5', '#E8730C', 'sm'),
     t('クリアでもらえる特典\n📗 ⑦ 外注化マニュアル 前編\n📗 ⑧ 外注化マニュアル 後編\n\n自分の作業を"人に任せる"仕組み化の教科書。\n自動化と外注化で、稼働はさらに減らせます。\n\n受け取りはリッチメニューの「限定特典GET」をタップ👇', { margin: 'md' }),
   ],
@@ -351,7 +348,7 @@ const d3n = flexMsg('【15大特典への道 3/6】今日のミッション: キ
 // Day4 9:00（旧3通 → 1バブル）
 const d4m = flexMsg('【売れるほど、忙しくなる問題】取引メッセージも自動化できます', bubble({
   color: COLORS.step,
-  label: 'DAY 4｜今日はここ：取引中ページ',
+  label: 'DAY 10｜今日はここ：取引中ページ',
   hero: bimg(LINE_IMG + 'pages3_day4.png', '1:1'),
   body: [
     heading('売れるほど、忙しくなる問題'),
@@ -386,7 +383,7 @@ const d4n2 = flexMsg('コピー出品チケット30枚無料でプレゼント�
 // Day5 9:00（旧2通 → 1バブル）
 const d5m = flexMsg('【1つのサイトで回ったら、次のステージへ】販路拡大はコピー出品で', bubble({
   color: COLORS.step,
-  label: 'DAY 5｜販路拡大',
+  label: 'DAY 11｜販路拡大',
   body: [
     heading('1つのサイトで回ったら、次のステージへ'),
     t('メルカリの運用が自動で回るようになったら、次にやるべきは【販路拡大】です。\n\n同じ商品でも、サイトが違えばお客さんも違う。出す場所を増やすだけで、売れるチャンスは単純に増えます。\n\n「でも、他のサイトに出品し直すのは面倒…」\n\nFurimAutoなら、メルカリの商品データをもとに他のフリマサイトへ一気にコピー出品できます。'),
@@ -402,7 +399,7 @@ const d5n = flexMsg('【15大特典への道 5/6】今日のミッション: You
   label: '15大特典への道 5/6',
   body: [
     hlBox('今日のミッション🎯\n▶ YouTube動画講座を見て、\n　動画内のキーワードをこのLINEに送る', '#FFF6E5', '#E8730C', 'sm'),
-    t('クリアでもらえる特典\n📙 ⑪ コメントセールの手法と効果の解説\n\n先日ご紹介した"セールコメント"を深掘りした資料です。値引き幅の考え方まで分かります。\n\n動画はリッチメニューの「Youtube動画講座」からどうぞ👇', { margin: 'md' }),
+    t('クリアでもらえる特典\n📙 ⑪ コメントセールの手法と効果の解説\n\n商品にいいねした人へ"追いセールコメント"を打つ手法を深掘りした資料です。値引き幅の考え方まで分かります。\n\n動画はリッチメニューの「Youtube動画講座」からどうぞ👇', { margin: 'md' }),
     bimg(GCS_IMG + 'youtube_coupon.png', '16:9', 'md'),
     hlBox('【お得に使えるクーポンをGET!!】\n動画内のキーワードをLINEに送っていただいた方には、\n・友達登録から1週間以内 → 月額半額クーポン\n・それ以外 → 月額20%引きクーポン\nをそれぞれプレゼントいたします！', '#FFF1EC', '#D94A3D', 'sm'),
   ],
@@ -411,12 +408,12 @@ const d5n = flexMsg('【15大特典への道 5/6】今日のミッション: You
 // Day6 9:00（旧2通 → 1バブル）
 const d6m = flexMsg('【最後の壁は、在庫管理】自動併売在庫管理で売り違いは構造的に起きません', bubble({
   color: COLORS.step,
-  label: 'DAY 6｜最後の壁は在庫管理',
+  label: 'DAY 12｜最後の壁は在庫管理',
   body: [
     heading('最後の壁は、在庫管理'),
     t('販路を広げると、最後にぶつかる壁があります。\n\n「メルカリで売れたのに、ラクマにも出したままだった…」\n\n複数サイトでの在庫管理は地味で、そしてミスが命取りです。\n\nFurimAutoの【自動併売在庫管理】は、どこかのサイトで売れたら、他のサイトの同じ商品を自動で取り下げます。'),
     bimg(LINE_IMG + 'inventory_sync.png', '1:1', 'md'),
-    t('売り違いの恐怖から解放されて、あなたがやるのは仕入れて、出品して、発送するだけ。\n\nリサーチ → 出品 → 自動化 → 販路拡大 → 在庫管理。\n\nこの1週間でご案内した階段をのぼり切ると、"片手間なのに、ちゃんと伸びる物販"が完成します。', { margin: 'md' }),
+    t('売り違いの恐怖から解放されて、あなたがやるのは仕入れて、出品して、発送するだけ。\n\nリサーチ → 出品 → 自動化 → 販路拡大 → 在庫管理。\n\nこの2週間でご案内した階段をのぼり切ると、"片手間なのに、ちゃんと伸びる物販"が完成します。', { margin: 'md' }),
     hlBox('その形、このまま続けませんか？\n今夜、継続してご利用になりたい方へ向けたご案内をお送りします😊', '#FFF6E5', '#333333', 'sm'),
   ],
 }));
@@ -434,23 +431,27 @@ const d6n = flexMsg('【15大特典への道 6/6】最終日。いちばん大�
   ],
 }));
 
+// 14日試用の分散スケジュール（2026-08-27 くろさん決定）
+// Week1(Day0-6)=無料機能＋15大特典への道 / Week2(Day7-12)=全自動化教育。
+// クロージングは残日数駆動（14日試用では残5日=Day9夜・残3日=Day11夜・残2日=Day12夜・残1日=Day13夜）
 export const SETS = [
-  { schedule: { offsetDays: 0, offsetMinutes: 30 }, label: 'Day0+30分 導入した瞬間から（統合1通）', messages: [set1] },
-  { schedule: { offsetDays: 0, offsetMinutes: 120 }, label: 'Day0+2時間 リサーチ（カルーセル＋特典）', messages: [set2a, set2b] },
-  { schedule: { offsetDays: 0, offsetMinutes: 360 }, label: 'Day0+6時間 出品もラクに＋5段階', messages: [set3a, set3b] },
-  { schedule: { offsetDays: 1, deliveryTime: '09:00' }, label: 'Day1朝 全自動化1分動画', messages: [d1m] },
+  { schedule: { offsetDays: 0, offsetMinutes: 30 }, label: 'Day0+30分 アンケート', messages: [set0] },
+  { schedule: { offsetDays: 1, deliveryTime: '09:00' }, label: 'Day1朝 検索カードリサーチ', messages: [set1] },
   { schedule: { offsetDays: 1, deliveryTime: '13:00' }, label: 'Day1昼 特典への道1/6', messages: [d1n] },
-  { schedule: { offsetDays: 1, deliveryTime: '20:00' }, label: 'Day1夜 今夜のうちに準備だけ', messages: [d1e] },
-  { schedule: { offsetDays: 2, deliveryTime: '09:00' }, label: 'Day2朝 フリマSEO', messages: [d2m] },
+  { schedule: { offsetDays: 2, deliveryTime: '09:00' }, label: 'Day2朝 リサーチカルーセル＋15大特典', messages: [set2a, set2b] },
   { schedule: { offsetDays: 2, deliveryTime: '13:00' }, label: 'Day2昼 特典への道2/6', messages: [d2n] },
-  { schedule: { offsetDays: 3, deliveryTime: '09:00' }, label: 'Day3朝 価格ギャップ', messages: [d3m] },
+  { schedule: { offsetDays: 3, deliveryTime: '09:00' }, label: 'Day3朝 コピー出品', messages: [set3a] },
   { schedule: { offsetDays: 3, deliveryTime: '13:00' }, label: 'Day3昼 特典への道3/6', messages: [d3n] },
-  { schedule: { offsetDays: 4, deliveryTime: '09:00' }, label: 'Day4朝 取引メッセージの重荷', messages: [d4m] },
+  { schedule: { offsetDays: 4, deliveryTime: '09:00' }, label: 'Day4朝 FurimAutoの5段階', messages: [set3b] },
   { schedule: { offsetDays: 4, deliveryTime: '13:00' }, label: 'Day4昼 特典への道4/6＋チケット', messages: [d4n1, d4n2] },
-  { schedule: { offsetDays: 5, deliveryTime: '09:00' }, label: 'Day5朝 販路拡大', messages: [d5m] },
   { schedule: { offsetDays: 5, deliveryTime: '13:00' }, label: 'Day5昼 特典への道5/6', messages: [d5n] },
-  { schedule: { offsetDays: 6, deliveryTime: '09:00' }, label: 'Day6朝 在庫管理', messages: [d6m] },
   { schedule: { offsetDays: 6, deliveryTime: '13:00' }, label: 'Day6昼 特典への道6/6', messages: [d6n] },
+  { schedule: { offsetDays: 7, deliveryTime: '09:00' }, label: 'Day7朝 全自動化1分動画', messages: [d1m] },
+  { schedule: { offsetDays: 8, deliveryTime: '09:00' }, label: 'Day8朝 フリマSEO', messages: [d2m] },
+  { schedule: { offsetDays: 9, deliveryTime: '09:00' }, label: 'Day9朝 価格ギャップ', messages: [d3m] },
+  { schedule: { offsetDays: 10, deliveryTime: '09:00' }, label: 'Day10朝 取引メッセージの重荷', messages: [d4m] },
+  { schedule: { offsetDays: 11, deliveryTime: '09:00' }, label: 'Day11朝 販路拡大', messages: [d5m] },
+  { schedule: { offsetDays: 12, deliveryTime: '09:00' }, label: 'Day12朝 在庫管理', messages: [d6m] },
 ];
 
 // ──────────────── クロージング（closing_daily・レッド） ────────────────
@@ -539,7 +540,7 @@ export const CLOSING_ACTIONS = [
           heading('本日で無料期間が終了します'),
           t('FurimAutoです。\n\n明日以降、キーコードが無効になり、設定済みの自動化（値下げ・再出品・いいね対応など）は停止します。'),
           hlBox('ただ、ご安心ください。\nリサーチなどの無料機能はこれからも、ずっと使えます。', '#F0FAF4', '#2FA25B', 'sm'),
-          t('そのうえで──\n\nこの1週間で「もう手作業には戻りたくない」と感じたなら、それが答えだと思います。\n\n登録はプラン診断から最短3分。\n割引クーポンがまだの方は、完全解説動画の中で案内されるキーワードを送るだけで受け取れます。\n\n最後にもう一度だけ、背中を押させてください👇', { margin: 'md' }),
+          t('そのうえで──\n\nこの2週間で「もう手作業には戻りたくない」と感じたなら、それが答えだと思います。\n\n登録はプラン診断から最短3分。\n割引クーポンがまだの方は、完全解説動画の中で案内されるキーワードを送るだけで受け取れます。\n\n最後にもう一度だけ、背中を押させてください👇', { margin: 'md' }),
         ],
         footer: [
           uriBtn('完全解説動画を見る', 'https://youtu.be/jhaCPxgE_Sk', { color: '#FF0000' }),
