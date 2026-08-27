@@ -243,7 +243,7 @@ export async function handleFurimAction(
         await lineClient.replyMessage(replyToken, [
           { type: 'text', text: '【youtubeに動画をアップしました!!】\n\nFurimAutoは機能が多く、入門・初級・中級・上級と段階的にFurimAutoがこだわっている"全自動化運用"を理解できる内容となっております😄\n\nhttps://www.youtube.com/playlist?list=PLUhATsy78sfvUHMVmeQpKMyxATlHOCEeF' } as never,
           { type: 'image', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/youtube_coupon.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/youtube_coupon.png' } as never,
-          { type: 'text', text: '【お得に使えるクーポンをGET!!】\n\n動画内のキーワードをLINEに送っていただいた方には、\n\n・友達登録から1週間以内 → 月額半額クーポン\n・それ以外 → 月額20%引きクーポン\n\nをそれぞれプレゼントいたします！' } as never,
+          { type: 'text', text: '【お得に使えるクーポンをGET!!】\n\n動画内のキーワードをLINEに送っていただいた方には、\n\n・友達登録から1週間以内 → 初月半額クーポン\n・それ以外 → 初月20%OFFクーポン\n\nをそれぞれプレゼントいたします！' } as never,
         ]);
         return true;
       case 'クーポンGET':
