@@ -364,18 +364,11 @@ async function actionKeycodeIssue(
     return;
   }
 
+  // キーコードのみ返す（2026-08-27 くろさん指示）。
+  // 旧実装は試用キーコード時に利用方法imagemap＋コピーチケットFlexも同時送信していたが、
+  // 肝心のキーコードが埋もれて分かりづらいため廃止。チケットFlexは特典への道4/6(Day4昼)、
+  // 利用方法はウェルカム動画・リッチメニューで導線が残っている
   const messages: unknown[] = [{ type: 'text', text: data.keyCode }];
-
-  if (data.keyCode.includes('weektrial')) {
-    messages.push({
-      type: 'imagemap',
-      baseUrl: 'https://storage.googleapis.com/furimauto_line/images/howtopage',
-      altText: '利用方法説明ページURL含む画像',
-      baseSize: { width: 1040, height: 585 },
-      actions: [{ type: 'uri', linkUri: 'https://furimauto.com/howto/index.html', area: { x: 0, y: 0, width: 1040, height: 585 } }],
-    });
-    messages.push(copyTicketFlexMessage());
-  }
 
   await replyOrPush(lineClient, replyToken, lineUserId, messages as never[]);
 
