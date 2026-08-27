@@ -93,10 +93,9 @@ export async function handleButtonAction(
 
   if (text.includes('アンケート回答')) {
     const surveyResult = text.split(':')[1];
+    // 2026-08-27 くろさん指示: 旧4通（案内text×2を含む）から動画＋Flexの2通に絞る
     const messages: unknown[] = [
-      { type: 'text', text: `📣ご対応ありがとうございます！\n\nキーコードの準備ができましたので、\nリッチメニューの「キーコード発行」をタップしてください👇\n\n使い方は簡単3ステップ！\n①キーコードを発行\n②PCブラウザにFurimAutoを導入\n③キーコードを入力する\nだけ！✋\n\n初回の導入方法は下の1分動画を参考に最短3分で導入してみてください♪` },
       { type: 'video', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/meet.mp4', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png', trackingId: 'setup' },
-      { type: 'text', text: `📣使い方や設定方法について\n\n💡無料の2週間で全機能フル活用!\n💡全自動化運用を実現して欲しい!\n💡理解することで必ず大きな効果がでます!\n\nリッチメニューの"Youtube動画講座"から\nFurimAutoの基礎から応用まで\n全ての機能を解説しています！\n\n------------------------------------------------------------------------\n\n実際に使う際の細かい設定方法は\n"利用方法説明書"や"簡単解説1分動画"\nを参考にしてください☀️` },
       {
         type: 'flex',
         altText: '1分解説シリーズ',
