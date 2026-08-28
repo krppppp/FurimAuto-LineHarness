@@ -46,6 +46,11 @@ const MULTI_CHANNEL_EXTRA_SITE_PRICE = 1980;
 const MULTI_CHANNEL_SITES = ['メルカリ', 'ラクマ', 'Shops', 'ヤフオク', 'ヤフフリ'];
 const TAX_RATE_PERCENT = 10;
 const MASTER_CACHE_SECONDS = 300;
+// 直近の正データ（last-known-good）の保持期間。GASが落ちても料金表を出し続けるための保険。
+const MASTER_STALE_CACHE_SECONDS = 7 * 24 * 60 * 60;
+// getFeatureMasterは読み取り専用（冪等）。GASのコールドスタートは実測35秒に達するため、
+// 既定の15秒では初回充填が確実に失敗する。この呼び出しだけ長めに待つ。
+const MASTER_GAS_TIMEOUT_MS = 45_000;
 
 const SITE_NAMES: Record<string, string> = {
   mercari: 'メルカリ',
@@ -56,15 +61,12 @@ const SITE_NAMES: Record<string, string> = {
 
 const planBuilder = new Hono<Env>();
 
-// webhook側（plan-apply）からも使うため、Contextに依存しないenvベース実装
-export async function fetchMasterByEnv(gasDeployId: string | undefined): Promise<Master> {
-  const cache = caches.default;
-  const cacheKey = new Request('https://line-harness.internal/__cache/plan-builder-master');
-  const hit = await cache.match(cacheKey);
-  if (hit) return hit.json();
+const MASTER_CACHE_KEY = 'https://line-harness.internal/__cache/plan-builder-master';
+const MASTER_STALE_CACHE_KEY = 'https://line-harness.internal/__cache/plan-builder-master-stale';
 
+async function refreshMaster(gasDeployId: string | undefined): Promise<Master> {
   if (!gasDeployId) throw new Error('GAS_DEPLOY_ID is not configured');
-  const data = (await gasGet(gasDeployId, { method: 'getFeatureMaster' })) as {
+  const data = (await gasGet(gasDeployId, { method: 'getFeatureMaster' }, { timeoutMs: MASTER_GAS_TIMEOUT_MS })) as {
     success: boolean;
     features: Feature[];
     packages: Pkg[];
@@ -74,17 +76,64 @@ export async function fetchMasterByEnv(gasDeployId: string | undefined): Promise
   }
   const master: Master = { features: data.features, packages: data.packages ?? [] };
 
-  await cache.put(
-    cacheKey,
-    new Response(JSON.stringify(master), {
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${MASTER_CACHE_SECONDS}` },
-    }),
-  );
+  const body = JSON.stringify(master);
+  const cache = caches.default;
+  await Promise.all([
+    cache.put(
+      new Request(MASTER_CACHE_KEY),
+      new Response(body, {
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${MASTER_CACHE_SECONDS}` },
+      }),
+    ),
+    cache.put(
+      new Request(MASTER_STALE_CACHE_KEY),
+      new Response(body, {
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${MASTER_STALE_CACHE_SECONDS}` },
+      }),
+    ),
+  ]);
   return master;
 }
 
+// webhook側（plan-apply）からも使うため、Contextに依存しないenvベース実装。
+// 2026-08-28: GASのコールドスタート（実測35秒）で15秒タイムアウトに刺さり、料金シミュレーターが
+// 「料金情報の取得に失敗しました」を出す事象。5分キャッシュが切れた最初の1人が必ず踏む。
+// 対策は stale-while-revalidate: 期限切れでも直近の正データを即返し、更新は裏で走らせる。
+// GASが完全に落ちている間も last-known-good で料金表は出続ける。
+export async function fetchMasterByEnv(
+  gasDeployId: string | undefined,
+  ctx?: { waitUntil(p: Promise<unknown>): void },
+): Promise<Master> {
+  const cache = caches.default;
+  const hit = await cache.match(new Request(MASTER_CACHE_KEY));
+  if (hit) return hit.json();
+
+  const stale = await cache.match(new Request(MASTER_STALE_CACHE_KEY));
+  if (stale && ctx) {
+    ctx.waitUntil(refreshMaster(gasDeployId).catch((e) => console.error('plan-builder: master refresh failed', e)));
+    return stale.json();
+  }
+
+  try {
+    return await refreshMaster(gasDeployId);
+  } catch (e) {
+    if (stale) {
+      console.error('plan-builder: master fetch failed, serving stale', e);
+      return stale.json();
+    }
+    throw e;
+  }
+}
+
 async function fetchMaster(c: Context<Env>): Promise<Master> {
-  return fetchMasterByEnv(c.env.GAS_DEPLOY_ID);
+  // Honoのc.executionCtxは無い環境（テスト等）で例外を投げるため素通しにしない
+  let ctx: { waitUntil(p: Promise<unknown>): void } | undefined;
+  try {
+    ctx = c.executionCtx;
+  } catch {
+    ctx = undefined;
+  }
+  return fetchMasterByEnv(c.env.GAS_DEPLOY_ID, ctx);
 }
 
 // 複数discountスタック（併用割引+キャンペーンクーポン等）はこのバージョン以降でのみ操作可能。
@@ -924,7 +973,7 @@ function calc() {
       if (pkg.plan_type === 'full') nFull++;
       if (pkg.plan_type === 'semi') nSemi++;
       const addons = [...(state.addon[siteId] || [])];
-      if (addons.length && (pkg.plan_type === 'semi' || pkg.plan_type === 'basic') && siteId !== 'mercariShops') {
+      if (addons.length && (pkg.plan_type === 'semi' || pkg.plan_type === 'basic')) {
         const sum = addons.reduce((s, k) => s + Number(featByKey[k].monthly_price), 0);
         auto.parts.push(name + '追加ビュッフェ: ' + addons.map(k => featByKey[k].display_name + '(' + yen(Number(featByKey[k].monthly_price)) + ')').join(' + ') + ' = ' + yen(sum));
         auto.total += sum;
@@ -971,7 +1020,7 @@ function selectionPayload() {
       (state.buffet[siteId] || new Set()).forEach(k => features.add(k));
     } else {
       packages.push(sel);
-      if (siteId !== 'mercariShops') (state.addon[siteId] || new Set()).forEach(k => features.add(k));
+      (state.addon[siteId] || new Set()).forEach(k => features.add(k));
     }
   }
   if (state.inventory) features.add('InventorySheet');
@@ -1037,7 +1086,7 @@ function renderOptions() {
     const features = siteFeatures(siteId);
     if (sel === 'buffet') {
       block.appendChild(buffetList(siteId, features, state.buffet, '機能を選択（複数可）'));
-    } else if (sel && siteId !== 'mercariShops') {
+    } else if (sel) {
       const pkg = PACKAGES.find(p => p.package_key === sel);
       if (pkg && (pkg.plan_type === 'semi' || pkg.plan_type === 'basic')) {
         const included = new Set(pkg.features.split(',').map(s => s.trim()));
