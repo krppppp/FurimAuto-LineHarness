@@ -149,10 +149,15 @@ export async function processStripeEvent(
           const itemsTotal = (sub.items?.data ?? []).reduce((t, it) => t + (it.price?.unit_amount ?? 0) * (it.quantity ?? 1), 0);
           subscriptionPrice = itemsTotal || (sub.plan?.amount ?? 0);
           subMetadata = sub.metadata ?? {};
-          const jstOffset = (9 * 60 + 15) * 60000;
+          // 開始日時は素のJST。以前は旧仕様に合わせて+15分していたが、シートの時刻が
+          // Stripeの実際の更新時刻と一致せず、調査のたびに15分の謎として現れていたため外した
+          // （2026-09-01。当時の登録日時は真の時刻より15分進んで記録されている）
+          const jstOffset = 9 * 60 * 60000;
           // 終了日時のみ+1日バッファ（2026-07-21変更・従来は+15分）:
           // 更新webhookの処理遅延やcron再処理(最大数十分)の間にキーコード照合が走っても
-          // 期限切れ判定にならない猶予。実際の課金サイクルはStripe側が正なのでシートは表示・判定用
+          // 期限切れ判定にならない猶予。実際の課金サイクルはStripe側が正なのでシートは表示・判定用。
+          // このバッファがあるため、決済が正常に行われていれば有効期限が切れることはなく、
+          // プラン変更が無ければ同じキーコードを使い続けられる
           const endJstOffset = (9 * 60 + 24 * 60) * 60000;
           if (sub.current_period_start) subscriptionStartDateTime = new Date(sub.current_period_start * 1000 + jstOffset).toISOString().replace('T', ' ').slice(0, 19);
           if (sub.current_period_end) subscriptionEndDateTime = new Date(sub.current_period_end * 1000 + endJstOffset).toISOString().replace('T', ' ').slice(0, 19);
