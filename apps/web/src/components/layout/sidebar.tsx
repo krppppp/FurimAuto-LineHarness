@@ -244,7 +244,9 @@ export default function Sidebar() {
     }
     fetchCount()
     // 単純 COUNT なので旧・未対応集計より軽い。新着(受信→未読)を早く拾えるよう 60 秒間隔。
-    const id = setInterval(fetchCount, 60_000)
+    // タブ非表示中は休む（チャット一覧・詳細のポーリングと同じ方針）。開きっぱなしの
+    // 裏タブが一日中D1を叩き続けるのを避ける（2026-09-01 D1日次上限超過の再発防止）。
+    const id = setInterval(() => { if (!document.hidden) void fetchCount() }, 60_000)
     const onRefresh = () => { void fetchCount() }
     window.addEventListener(UNANSWERED_REFRESH_EVENT, onRefresh)
     return () => {
