@@ -283,10 +283,6 @@ chats.get('/api/chats', async (c) => {
     //   - content は text のみ先頭 200 文字まで切り詰めて返す (flex/image など raw JSON を
     //     返すと broadcast 後の rows で multi-MB レスポンスになる)。
     //   - lineAccountId 指定時は messages_log スキャンを対象アカの friend に絞る。
-    const accountFilterSql = lineAccountId
-      ? `friend_id IN (SELECT id FROM friends WHERE line_account_id = ?)`
-      : `1=1`;
-
     // unansweredOnly は取得後に unansweredMap と突合して絞るため全件必要。
     // SQLite は LIMIT に負値を渡すと「無制限」になる (documented 挙動)。
     const NO_LIMIT = -1;
@@ -317,10 +313,6 @@ chats.get('/api/chats', async (c) => {
       conditions.push('f.line_account_id = ?');
       conditionBindings.push(lineAccountId);
     }
-    // status / operator filter は chats を参照するので、その時だけ page CTE 側でも
-    // chats を lookup する (無条件時は 全friend × chats lookup を省く)。
-    const pageNeedsChats = Boolean(status || operatorId);
-
     // preview は **最新メッセージ（方向問わず）** を表示する（2026-07-14 LINE公式アプリ準拠に変更。
     // 旧実装は incoming 優先だったが、自動送信後も古いユーザー発言が出続けて
     // 「一覧が更新されない」ように見えるため廃止。要対応の判別は status='unread' と
@@ -331,32 +323,27 @@ chats.get('/api/chats', async (c) => {
     // 値を返す」という SQLite の documented 挙動で argmax として使っている。
     // 集約は page 確定後の friend に絞って実行する (全 friend 分の content を
     // materialize しない)。last_any は並び順決定専用のスリムな全走査 1 回のみ。
+    // 並び順は friends.last_message_at（非正規化列）から引く。
+    // 旧実装は messages_log を GROUP BY friend_id で全走査してから LIMIT で捨てており、
+    // 300件表示するのに毎回2.4万行読んでいた（1日1,380万行＝D1無料枠の276%を単独で消費し、
+    // 2026-09-01に日次上限を超えて管理画面が全面500になった）。
+    // last_message_at は messages_log への AFTER INSERT トリガー
+    // trg_messages_log_touch_friend が維持する（INSERT箇所が10以上あり、
+    // 呼び出し側での更新は必ず漏れるためトリガーに寄せている）。
+    // chats.last_message_at は手動で会話を作った場合などトリガー経路を通らない値が
+    // 入り得るので、従来どおり両者の大きい方を採用する。chats は friend_id にUNIQUE制約が
+    // あるため 1:1 で LEFT JOIN でき、旧実装の相関サブクエリは不要。
     const sql = `
-      WITH last_any AS MATERIALIZED (
-        SELECT friend_id, MAX(created_at) AS last_message_at
-        FROM messages_log
-        WHERE (delivery_type IS NULL OR delivery_type != 'test')
-          AND ${accountFilterSql}
-        GROUP BY friend_id
-      ),
-      deduped AS MATERIALIZED (
-        SELECT friend_id, MAX(last_message_at) AS last_message_at FROM (
-          SELECT friend_id, last_message_at FROM last_any
-          UNION ALL
-          SELECT friend_id, last_message_at FROM chats WHERE ${accountFilterSql}
-        ) GROUP BY friend_id
-      ),
-      page AS MATERIALIZED (
-        SELECT d.friend_id, d.last_message_at
-        FROM deduped d
-        INNER JOIN friends f ON f.id = d.friend_id
-        ${pageNeedsChats ? `LEFT JOIN chats c ON c.id = (
-          SELECT id FROM chats WHERE friend_id = f.id ORDER BY created_at DESC LIMIT 1
-        )` : ''}
-        WHERE 1=1
+      WITH page AS MATERIALIZED (
+        SELECT f.id AS friend_id,
+               MAX(COALESCE(f.last_message_at, ''), COALESCE(c.last_message_at, '')) AS last_message_at
+        FROM friends f
+        LEFT JOIN chats c ON c.friend_id = f.id
+        WHERE (f.last_message_at IS NOT NULL OR c.last_message_at IS NOT NULL)
         ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
-        ${useCursor ? 'AND (d.last_message_at < ? OR (d.last_message_at = ? AND d.friend_id < ?))' : ''}
-        ORDER BY d.last_message_at DESC, d.friend_id DESC
+        ${useCursor ? `AND (MAX(COALESCE(f.last_message_at, ''), COALESCE(c.last_message_at, '')) < ?
+             OR (MAX(COALESCE(f.last_message_at, ''), COALESCE(c.last_message_at, '')) = ? AND f.id < ?))` : ''}
+        ORDER BY last_message_at DESC, f.id DESC
         LIMIT ?
       ),
       any_agg AS (
@@ -398,11 +385,12 @@ chats.get('/api/chats', async (c) => {
       ORDER BY d.last_message_at DESC, d.friend_id DESC
     `;
 
-    // placeholder 順 = SQL 出現順: last_any(account) → deduped 内 chats(account) →
-    // page 条件 → cursor (beforeAt ×2 + beforeId) → LIMIT。
+    // placeholder 順 = SQL 出現順: page 条件 → cursor (beforeAt ×2 + beforeId) → LIMIT。
+    // 旧実装にあった先頭2つの account バインドは、messages_log/chats を走査する
+    // last_any / deduped CTE ごと廃止したため不要になった。
+    // lineAccountId の絞り込みは conditions 側の `f.line_account_id = ?` が担う。
     // any_agg / in_agg は page で friend が確定済みのため account filter 不要。
     const allBindings: unknown[] = [];
-    if (lineAccountId) allBindings.push(lineAccountId, lineAccountId);
     allBindings.push(...conditionBindings);
     if (useCursor) allBindings.push(beforeAt, beforeAt, beforeId);
     allBindings.push(limit);
