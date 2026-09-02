@@ -86,6 +86,7 @@ function getAdParams(): Record<string, string> {
   const map: Record<string, string> = {
     gclid: 'gclid', fbclid: 'fbclid', twclid: 'twclid', ttclid: 'ttclid',
     utm_source: 'utmSource', utm_medium: 'utmMedium', utm_campaign: 'utmCampaign',
+    utm_content: 'utmContent', utm_term: 'utmTerm',
     sid: 'sid',
   };
   for (const [urlKey, bodyKey] of Object.entries(map)) {

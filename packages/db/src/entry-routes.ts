@@ -27,6 +27,8 @@ export interface RefTracking {
   utm_source: string | null;
   utm_medium: string | null;
   utm_campaign: string | null;
+  utm_content: string | null;
+  utm_term: string | null;
   user_agent: string | null;
   ip_address: string | null;
   lp_session_id: string | null;
@@ -232,6 +234,8 @@ export async function recordRefTracking(
     utmSource?: string | null;
     utmMedium?: string | null;
     utmCampaign?: string | null;
+    utmContent?: string | null;
+    utmTerm?: string | null;
     userAgent?: string | null;
     ipAddress?: string | null;
     lpSessionId?: string | null;
@@ -245,8 +249,9 @@ export async function recordRefTracking(
       `INSERT INTO ref_tracking
        (id, ref_code, friend_id, entry_route_id, source_url,
         fbclid, gclid, twclid, ttclid, utm_source, utm_medium, utm_campaign,
+        utm_content, utm_term,
         user_agent, ip_address, lp_session_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -261,6 +266,8 @@ export async function recordRefTracking(
       opts.utmSource ?? null,
       opts.utmMedium ?? null,
       opts.utmCampaign ?? null,
+      opts.utmContent ?? null,
+      opts.utmTerm ?? null,
       opts.userAgent ?? null,
       opts.ipAddress ?? null,
       opts.lpSessionId ?? null,

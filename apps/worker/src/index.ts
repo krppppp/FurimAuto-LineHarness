@@ -357,7 +357,7 @@ app.get('/r/:ref', async (c) => {
   // /auth/line(モバイル)は全クエリをここへ転送してくるが、以前はこの再構築で
   // 落ちていたため、モバイル友だち追加の ref_tracking にクリックIDが入らず
   // オフラインCVが発火しなかった。
-  for (const k of ['gclid', 'fbclid', 'twclid', 'ttclid', 'utm_source', 'utm_medium', 'utm_campaign', 'sid']) {
+  for (const k of ['gclid', 'fbclid', 'twclid', 'ttclid', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'sid']) {
     const v = c.req.query(k);
     if (v) liffParams.set(k, v);
   }

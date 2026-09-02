@@ -49,6 +49,7 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
       hasClickId?: unknown;
       utmCampaign?: unknown;
       utmContent?: unknown;
+      utmTerm?: unknown;
       mobile?: unknown;
       referrer?: unknown;
     };
@@ -67,6 +68,7 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
     const hasClickId = body.hasClickId ? 1 : 0;
     const utmCampaign = clampStr(body.utmCampaign);
     const utmContent = clampStr(body.utmContent);
+    const utmTerm = clampStr(body.utmTerm);
     const isMobile = body.mobile ? 1 : 0;
     const referrer = clampStr(body.referrer);
 
@@ -76,8 +78,8 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
     const stmt = c.env.DB.prepare(
       `INSERT INTO lp_events
        (session_id, page, event_type, max_scroll_pct, ms_on_page,
-        ref, has_click_id, utm_campaign, utm_content, is_mobile, referrer, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ref, has_click_id, utm_campaign, utm_content, utm_term, is_mobile, referrer, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const batch = [];
@@ -97,6 +99,7 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
           hasClickId,
           utmCampaign,
           utmContent,
+          utmTerm,
           isMobile,
           referrer,
           now,

@@ -615,7 +615,7 @@ CREATE TABLE ref_tracking (
   entry_route_id  TEXT REFERENCES entry_routes (id) ON DELETE SET NULL,
   source_url      TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
-, fbclid TEXT, gclid TEXT, twclid TEXT, ttclid TEXT, utm_source TEXT, utm_medium TEXT, utm_campaign TEXT, user_agent TEXT, ip_address TEXT);
+, fbclid TEXT, gclid TEXT, twclid TEXT, ttclid TEXT, utm_source TEXT, utm_medium TEXT, utm_campaign TEXT, user_agent TEXT, ip_address TEXT, utm_content TEXT, utm_term TEXT);
 
 CREATE TABLE reminder_steps (
   id              TEXT PRIMARY KEY,

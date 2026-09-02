@@ -457,6 +457,8 @@ liffRoutes.get('/auth/line', async (c) => {
   const utmSource = c.req.query('utm_source') || '';
   const utmMedium = c.req.query('utm_medium') || '';
   const utmCampaign = c.req.query('utm_campaign') || '';
+  const utmContent = c.req.query('utm_content') || ''; // 広告(クリエイティブ)ID
+  const utmTerm = c.req.query('utm_term') || ''; // 広告グループ(アドセット)ID
   const sid = c.req.query('sid') || ''; // LP行動計測セッションID (lp_events.session_id)
   let accountParam = c.req.query('account') || '';
   const uidParam = c.req.query('uid') || ''; // existing user UUID for cross-account linking
@@ -554,6 +556,8 @@ liffRoutes.get('/auth/line', async (c) => {
   if (utmSource) liffParams.set('utm_source', utmSource);
   if (utmMedium) liffParams.set('utm_medium', utmMedium);
   if (utmCampaign) liffParams.set('utm_campaign', utmCampaign);
+  if (utmContent) liffParams.set('utm_content', utmContent);
+  if (utmTerm) liffParams.set('utm_term', utmTerm);
   if (sid) liffParams.set('sid', sid);
   const liffTarget = liffParams.toString()
     ? `${liffUrl}?${liffParams.toString()}`
@@ -567,7 +571,7 @@ liffRoutes.get('/auth/line', async (c) => {
   // can verify against the correct gate via the correct X Harness instance.
   // Without these, the form falls back to the gateId baked into the form's
   // onSubmitWebhookUrl (which is stale when a form is reused across campaigns).
-  const state = JSON.stringify({ ref, redirect, form: formId, gate: gateParam, xh: xhParam2, gclid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, sid, account: accountParam || poolAccount, uid: uidParam, ig: igParam, iga: igaParam, igan: iganParam });
+  const state = JSON.stringify({ ref, redirect, form: formId, gate: gateParam, xh: xhParam2, gclid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, utmContent, utmTerm, sid, account: accountParam || poolAccount, uid: uidParam, ig: igParam, iga: igaParam, igan: iganParam });
   const encodedState = btoa(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
   loginUrl.searchParams.set('response_type', 'code');
@@ -602,6 +606,8 @@ liffRoutes.get('/auth/line', async (c) => {
   if (utmSource) qrParams.set('utm_source', utmSource);
   if (utmMedium) qrParams.set('utm_medium', utmMedium);
   if (utmCampaign) qrParams.set('utm_campaign', utmCampaign);
+  if (utmContent) qrParams.set('utm_content', utmContent);
+  if (utmTerm) qrParams.set('utm_term', utmTerm);
   if (sid) qrParams.set('sid', sid);
   const qrUrl = qrParams.toString() ? `${liffUrl}?${qrParams.toString()}` : liffUrl;
 
@@ -694,6 +700,8 @@ liffRoutes.get('/auth/oauth', async (c) => {
   const utmSource = c.req.query('utm_source') || '';
   const utmMedium = c.req.query('utm_medium') || '';
   const utmCampaign = c.req.query('utm_campaign') || '';
+  const utmContent = c.req.query('utm_content') || ''; // 広告(クリエイティブ)ID
+  const utmTerm = c.req.query('utm_term') || ''; // 広告グループ(アドセット)ID
   const sid = c.req.query('sid') || ''; // LP行動計測セッションID
   const accountParam = c.req.query('account') || '';
   const uidParam = c.req.query('uid') || '';
@@ -734,7 +742,7 @@ liffRoutes.get('/auth/oauth', async (c) => {
   const state = JSON.stringify({
     ref, redirect, form: formId, gate: gateParam, xh: xhParam,
     gclid, fbclid, twclid, ttclid,
-    utmSource, utmMedium, utmCampaign, sid,
+    utmSource, utmMedium, utmCampaign, utmContent, utmTerm, sid,
     account: accountParam || poolAccount, uid: uidParam, ig: igParam,
     iga: igaParam, igan: iganParam,
   });
@@ -773,6 +781,8 @@ liffRoutes.get('/auth/callback', async (c) => {
   let utmSource = '';
   let utmMedium = '';
   let utmCampaign = '';
+  let utmContent = '';
+  let utmTerm = '';
   let sid = '';
   let accountParam = '';
   let uidParam = '';
@@ -793,6 +803,8 @@ liffRoutes.get('/auth/callback', async (c) => {
     utmSource = parsed.utmSource || '';
     utmMedium = parsed.utmMedium || '';
     utmCampaign = parsed.utmCampaign || '';
+    utmContent = parsed.utmContent || '';
+    utmTerm = parsed.utmTerm || '';
     sid = parsed.sid || '';
     accountParam = parsed.account || '';
     uidParam = parsed.uid || '';
@@ -965,6 +977,8 @@ liffRoutes.get('/auth/callback', async (c) => {
         utmSource: utmSource || null,
         utmMedium: utmMedium || null,
         utmCampaign: utmCampaign || null,
+        utmContent: utmContent || null,
+        utmTerm: utmTerm || null,
         userAgent: c.req.header('User-Agent') || null,
         ipAddress: c.req.header('CF-Connecting-IP') || null,
         lpSessionId: sid || null,
@@ -988,6 +1002,8 @@ liffRoutes.get('/auth/callback', async (c) => {
     if (utmSource) adMeta.utm_source = utmSource;
     if (utmMedium) adMeta.utm_medium = utmMedium;
     if (utmCampaign) adMeta.utm_campaign = utmCampaign;
+    if (utmContent) adMeta.utm_content = utmContent;
+    if (utmTerm) adMeta.utm_term = utmTerm;
 
     if (Object.keys(adMeta).length > 0) {
       const existingMeta = await db
@@ -1343,6 +1359,8 @@ liffRoutes.post('/api/liff/link', async (c) => {
       utmSource?: string;
       utmMedium?: string;
       utmCampaign?: string;
+      utmContent?: string;
+      utmTerm?: string;
       sid?: string;
     }>();
 
@@ -1427,6 +1445,8 @@ liffRoutes.post('/api/liff/link', async (c) => {
             utmSource: body.utmSource || null,
             utmMedium: body.utmMedium || null,
             utmCampaign: body.utmCampaign || null,
+            utmContent: body.utmContent || null,
+            utmTerm: body.utmTerm || null,
             userAgent: c.req.header('User-Agent') || null,
             ipAddress: c.req.header('CF-Connecting-IP') || null,
             lpSessionId: body.sid || null,
@@ -1506,6 +1526,8 @@ liffRoutes.post('/api/liff/link', async (c) => {
           utmSource: body.utmSource || null,
           utmMedium: body.utmMedium || null,
           utmCampaign: body.utmCampaign || null,
+          utmContent: body.utmContent || null,
+          utmTerm: body.utmTerm || null,
           userAgent: c.req.header('User-Agent') || null,
           ipAddress: c.req.header('CF-Connecting-IP') || null,
           lpSessionId: body.sid || null,
