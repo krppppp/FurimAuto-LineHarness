@@ -776,6 +776,13 @@ ${liff ? '<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script
   .buffet-label { display: flex; align-items: center; gap: 6px; font-size: .85rem; padding: 3px 0; cursor: pointer; }
   .buffet-label input { width: 16px; height: 16px; accent-color: #f27d0c; flex-shrink: 0; }
   .buffet-label .p { color: #888; font-size: .8rem; }
+  .included { margin-top: 12px; padding-top: 12px; border-top: 1px dashed #ddd; }
+  .included-title { font-size: .85rem; font-weight: bold; color: #555; margin-bottom: 8px; }
+  .included-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 12px; }
+  @media (max-width: 600px) { .included-list { grid-template-columns: 1fr; } }
+  .included-item { display: flex; align-items: center; gap: 6px; font-size: .85rem; color: #333; padding: 3px 0; }
+  .included-all { display: flex; align-items: flex-start; gap: 6px; font-size: .85rem; color: #333; line-height: 1.6; }
+  .included .ok { color: #00b900; font-weight: bold; flex-shrink: 0; }
   .inv-block { padding: 14px 16px; background: #fff; border-radius: 6px; border: 1px solid #e8e8e8; margin-bottom: 20px; }
   .inv-title { font-weight: bold; font-size: 1rem; margin-bottom: 4px; }
   .inv-note { font-size: .8rem; color: #888; margin-bottom: 8px; }
@@ -1088,14 +1095,47 @@ function renderOptions() {
       block.appendChild(buffetList(siteId, features, state.buffet, '機能を選択（複数可）'));
     } else if (sel) {
       const pkg = PACKAGES.find(p => p.package_key === sel);
-      if (pkg && (pkg.plan_type === 'semi' || pkg.plan_type === 'basic')) {
-        const included = new Set(pkg.features.split(',').map(s => s.trim()));
-        const addable = features.filter(f => !included.has(f.feature_key));
-        if (addable.length) block.appendChild(buffetList(siteId, addable, state.addon, '追加で機能別ビュッフェ式プランから機能を追加（任意）'));
+      if (pkg) {
+        // 何が含まれるか分からないと選べないので、選択したプランの内容を必ず出す
+        block.appendChild(includedList(pkg, features));
+        if (pkg.plan_type === 'semi' || pkg.plan_type === 'basic') {
+          const included = new Set(pkg.features.split(',').map(s => s.trim()));
+          const addable = features.filter(f => !included.has(f.feature_key));
+          if (addable.length) block.appendChild(buffetList(siteId, addable, state.addon, '追加で機能別ビュッフェ式プランから機能を追加（任意）'));
+        }
       }
     }
     root.appendChild(block);
   }
+}
+
+// 選択中のパッケージに含まれる機能を緑チェックで並べる。
+// 全自動化プランは全機能なので、羅列すると冗長なだけ。1行で済ませる
+function includedList(pkg, features) {
+  const wrap = document.createElement('div');
+  wrap.className = 'included';
+
+  // コピー出品はチケット制で billing_type が subscription ではないため featByKey に無く、
+  // ここには出てこない（別途ページ上部で案内している）
+  const included = new Set(pkg.features.split(',').map(s => s.trim()));
+  const items = pkg.features.split(',')
+    .map(k => featByKey[k.trim()])
+    .filter(f => f && f.site === pkg.site);
+
+  // 全自動化プランは全機能なので羅列すると冗長。ただしマスタが変わって
+  // 取りこぼしが出たときに嘘を出さないよう、本当に全部入っているか確かめてから1行にする
+  if (pkg.plan_type === 'full' && features.every(f => included.has(f.feature_key))) {
+    wrap.innerHTML = '<p class="included-title">このプランに含まれる機能</p>' +
+      '<p class="included-all"><span class="ok">✓</span><span>' +
+      SITE_NAMES[pkg.site] + 'の全機能（' + features.length + '機能）が使えます</span></p>';
+    return wrap;
+  }
+
+  wrap.innerHTML = '<p class="included-title">このプランに含まれる機能</p>' +
+    '<div class="included-list">' +
+    items.map(f => '<span class="included-item"><span class="ok">✓</span>' + f.display_name + '</span>').join('') +
+    '</div>';
+  return wrap;
 }
 
 function buffetList(siteId, features, store, title) {
