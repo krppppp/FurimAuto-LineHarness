@@ -66,6 +66,7 @@ const UNAUTHENTICATED_PATTERNS: Array<string | RegExp> = [
   '/webhook',
   /^\/api\/forms\/[^/]+\/submit$/,
   '/api/lp-beacon',
+  '/api/public/media-inquiries',
 ];
 
 function isUnauthenticatedPath(path: string): boolean {

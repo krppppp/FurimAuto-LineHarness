@@ -26,6 +26,8 @@ vi.mock('@line-crm/db', () => ({
   createChat: vi.fn(),
   getFriendById: vi.fn(),
   getLineAccountById: vi.fn(),
+  // upstream v0.24: friend にアカウント未紐付けのときの既定トークン解決 (env のトークンをそのまま返す)
+  resolveDefaultAccessToken: vi.fn(async (_db: unknown, envToken: string) => envToken),
   updateChat: vi.fn().mockResolvedValue(undefined),
   jstNow: vi.fn(() => '2026-07-30T12:00:00.000+09:00'),
 }));

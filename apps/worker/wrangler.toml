@@ -14,6 +14,14 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 account_id = "f2b335f4f9d276383643c76f1e5cc6f9"
 
+# Workers Cache pilot. Enabled only for the private test Worker; production is
+# explicitly disabled below until cache hit rate and auth isolation are proven.
+# Only routes with an explicit public Cache-Control header are eligible because
+# src/middleware/cache-policy.ts marks every other response no-store.
+# FurimAuto: マージ前の挙動を維持するため無効 (upstream の private test Worker 向け設定)
+[cache]
+enabled = false
+
 [assets]
 directory = "dist/client"
 binding = "ASSETS"
@@ -28,6 +36,9 @@ database_id = "2fa9387e-61fb-4f81-9b18-4087837feabd"
 binding = "IMAGES"
 bucket_name = "line-harness-images"
 
+# FurimAuto: upstream の TenantScheduler DO (分足 alarm) は使わない。5分 cron のみで運用する
+# (scheduled.ts の isFiveMinuteTick が 5分足 cron を通す)。DO を足すときは
+# [[durable_objects.bindings]] と [[migrations]] new_sqlite_classes を dev/prod 両方に書くこと。
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 

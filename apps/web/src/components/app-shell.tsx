@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation'
 import Sidebar from './layout/sidebar'
 // FurimAuto: upstreamの「改造を検知」バナーは出さず、フォーク元の新リリース通知のみ表示する独自バナーに差し替え。
 import { UpstreamUpdateBanner } from './furim/upstream-update-banner'
+import { QuotaBanner } from './quota-banner'
 import AuthGuard from './auth-guard'
 import { AccountProvider } from '@/contexts/account-context'
 import { registerServiceWorker, syncAppBadge } from '@/lib/push'
@@ -11,7 +12,7 @@ import { UNANSWERED_REFRESH_EVENT } from '@/lib/events'
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
-  const isLogin = pathname === '/login'
+  const isLogin = pathname === '/login' || pathname === '/ui-preview'
 
   useEffect(() => {
     if (isLogin) return
@@ -33,6 +34,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return <>{children}</>
   }
 
+  // FurimAuto: /chats はフォーク独自のモバイル全画面実装 (chats/page.tsx 側で高さを持つ)。
+  // upstream の isFullBleed レイアウト (ハンバーガーヘッダー前提の pt-[72px]) は使わない。
   return (
     <AuthGuard>
       <AccountProvider>
@@ -41,6 +44,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               admin shell. Renders nothing while loading; one of latest/fork/
               upgrade once /admin/version + manifest resolve. */}
           <UpstreamUpdateBanner />
+          <QuotaBanner />
           <div className="flex flex-1 min-h-0">
             <Sidebar />
             <main className="flex-1 overflow-auto">

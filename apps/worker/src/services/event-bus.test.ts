@@ -78,14 +78,14 @@ vi.mock('@line-crm/db', async () => {
 // pushの挙動をテストから差し替えられるように共有implに委譲する
 // （インスタンスごとのvi.fnは維持するので、mock.results経由の既存アサーションはそのまま動く）
 const lineCtl = vi.hoisted(() => ({
-  pushImpl: (async () => undefined) as (to: string, msgs: unknown[], opts?: { retryKey?: string }) => Promise<unknown>,
+  pushImpl: (async () => undefined) as (to: string, msgs: unknown[], retryKey?: string) => Promise<unknown>,
 }));
 
 vi.mock('@line-crm/line-sdk', () => {
   return {
     LineClient: vi.fn().mockImplementation(() => ({
       replyMessage: vi.fn().mockResolvedValue(undefined),
-      pushMessage: vi.fn((to: string, msgs: unknown[], opts?: { retryKey?: string }) => lineCtl.pushImpl(to, msgs, opts)),
+      pushMessage: vi.fn((to: string, msgs: unknown[], retryKey?: string) => lineCtl.pushImpl(to, msgs, retryKey)),
     })),
   };
 });
@@ -525,8 +525,8 @@ describe('fireEvent — 配信の2段階先記録とX-Line-Retry-Key（2026-08-1
 
     const seenKeys: Array<string | undefined> = [];
     let failFirst = true;
-    lineCtl.pushImpl = async (_to, _msgs, opts) => {
-      seenKeys.push(opts?.retryKey);
+    lineCtl.pushImpl = async (_to, _msgs, retryKey) => {
+      seenKeys.push(retryKey);
       if (failFirst) {
         failFirst = false;
         throw new Error('LINE API error: 500');

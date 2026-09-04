@@ -11,6 +11,7 @@ import {
   createChat,
   getFriendById,
   getLineAccountById,
+  resolveDefaultAccessToken,
   updateChat,
   jstNow,
 } from '@line-crm/db';
@@ -100,23 +101,28 @@ async function resolveOrCreateChat(db: D1Database, id: string): Promise<ChatLike
     .first<ChatLike>())!;
 }
 
+/**
+ * `envAccessToken` は「最後の砦」であって既定値ではない —
+ * `resolveDefaultAccessToken` の doc comment を参照。friend にアカウントが
+ * 紐付いていなくても、テナントに有効なアカウントが1本しか無ければそれを使う。
+ */
 async function resolveFriendAndAccessToken(
   db: D1Database,
   friendId: string,
-  defaultAccessToken: string,
+  envAccessToken: string,
 ) {
   const friend = await getFriendById(db, friendId);
   if (!friend) {
-    return { friend: null, accessToken: defaultAccessToken };
+    return { friend: null, accessToken: await resolveDefaultAccessToken(db, envAccessToken) };
   }
 
   if (!friend.line_account_id) {
-    return { friend, accessToken: defaultAccessToken };
+    return { friend, accessToken: await resolveDefaultAccessToken(db, envAccessToken) };
   }
 
   const account = await getLineAccountById(db, friend.line_account_id);
   if (!account) {
-    return { friend, accessToken: defaultAccessToken };
+    return { friend, accessToken: await resolveDefaultAccessToken(db, envAccessToken) };
   }
 
   return { friend, accessToken: account.channel_access_token };
@@ -319,7 +325,7 @@ chats.get('/api/chats', async (c) => {
     // 未対応インボックスが担う）。
     // text 以外 (flex/image/sticker 等) は content を NULL にして payload size を抑える
     // (フロントは type で 📋 Flex / 📷 画像 等のラベルを出すので content は不要)。
-    // any_agg / in_agg の bare column (content 等) は「単一 MAX() を含む集約は max 行の
+    // any_agg の bare column (content 等) は「単一 MAX() を含む集約は max 行の
     // 値を返す」という SQLite の documented 挙動で argmax として使っている。
     // 集約は page 確定後の friend に絞って実行する (全 friend 分の content を
     // materialize しない)。last_any は並び順決定専用のスリムな全走査 1 回のみ。

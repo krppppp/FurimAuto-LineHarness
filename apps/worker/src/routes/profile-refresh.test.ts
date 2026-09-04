@@ -1,107 +1,85 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, expect, test } from 'vitest';
+import { Hono } from 'hono';
+import { profileRefresh } from './profile-refresh.js';
 
-const getProfile = vi.fn();
-vi.mock('@line-crm/line-sdk', () => ({
-  LineClient: vi.fn().mockImplementation(() => ({ getProfile })),
-}));
+type Row = Record<string, unknown> | null;
 
-import { sweepStalePictureUrls } from './profile-refresh.js';
-
-type Row = { id: string; line_user_id: string; picture_url: string; channel_access_token: string | null };
-
-function makeDb(candidates: Row[]) {
-  const stmt = {
-    bind: vi.fn(),
-    run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
-    all: vi.fn().mockResolvedValue({ results: candidates }),
+/** Minimal D1 stub: routes queries by SQL fingerprint. */
+function makeDb(opts: { broadcast: Row; logCount: number }) {
+  const executed: string[] = [];
+  const db = {
+    prepare(sql: string) {
+      return {
+        bind() { return this; },
+        async first() {
+          executed.push(sql);
+          if (sql.includes('FROM broadcasts')) return opts.broadcast;
+          if (sql.includes('COUNT(*)')) return { cnt: opts.logCount };
+          return null;
+        },
+        async run() {
+          executed.push(sql);
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+    },
   };
-  stmt.bind.mockReturnValue(stmt);
-  return { db: { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database, stmt };
+  return { db: db as unknown as D1Database, executed };
 }
 
-const env = { LINE_CHANNEL_ACCESS_TOKEN: 'default-token' };
-
-beforeEach(() => {
-  vi.clearAllMocks();
-});
-
-describe('sweepStalePictureUrls', () => {
-  test('全員のpicture_urlが200なら getProfile は呼ばれないが picture_checked_at は更新される', async () => {
-    const candidates: Row[] = [
-      { id: 'f1', line_user_id: 'U1', picture_url: 'https://sprofile.line-scdn.net/1', channel_access_token: null },
-      { id: 'f2', line_user_id: 'U2', picture_url: 'https://sprofile.line-scdn.net/2', channel_access_token: null },
-    ];
-    const { db, stmt } = makeDb(candidates);
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200 }));
-
-    const result = await sweepStalePictureUrls(db, env);
-
-    expect(result).toEqual({ checked: 2, stale: 0, updated: 0, notFound: 0, otherErrors: 0 });
-    expect(getProfile).not.toHaveBeenCalled();
-    expect(stmt.bind).toHaveBeenCalledWith('f1');
-    expect(stmt.bind).toHaveBeenCalledWith('f2');
-    vi.unstubAllGlobals();
+function setupApp(db: D1Database) {
+  const app = new Hono<{ Bindings: { DB: D1Database } }>();
+  app.use('*', async (c, next) => {
+    c.env = { DB: db };
+    await next();
   });
+  app.route('/', profileRefresh);
+  return app;
+}
 
-  test('404のfriendだけ getProfile で再取得しUPDATEする(200のfriendもchecked_atは更新)', async () => {
-    const candidates: Row[] = [
-      { id: 'f1', line_user_id: 'U1', picture_url: 'https://sprofile.line-scdn.net/dead', channel_access_token: null },
-      { id: 'f2', line_user_id: 'U2', picture_url: 'https://sprofile.line-scdn.net/alive', channel_access_token: null },
-    ];
-    const { db, stmt } = makeDb(candidates);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockImplementation((url: string) =>
-        Promise.resolve({ status: url.includes('dead') ? 404 : 200 }),
-      ),
-    );
-    getProfile.mockResolvedValue({
-      displayName: 'refreshed',
-      pictureUrl: 'https://sprofile.line-scdn.net/new',
-      statusMessage: null,
+describe('POST /api/admin/broadcasts/:id/reset-to-draft', () => {
+  test('refuses when the broadcast row carries send markers, even with zero messages_log rows (retention-pruned)', async () => {
+    const { db, executed } = makeDb({
+      broadcast: { status: 'sent', success_count: 120, sent_at: '2026-01-01T00:00:00.000', line_request_id: 'req-1', aggregation_unit: null },
+      logCount: 0,
     });
-
-    const result = await sweepStalePictureUrls(db, env);
-
-    expect(result).toEqual({ checked: 2, stale: 1, updated: 1, notFound: 0, otherErrors: 0 });
-    expect(getProfile).toHaveBeenCalledTimes(1);
-    expect(getProfile).toHaveBeenCalledWith('U1');
-    expect(stmt.bind).toHaveBeenCalledWith('refreshed', 'https://sprofile.line-scdn.net/new', null, 'f1');
-    expect(stmt.bind).toHaveBeenCalledWith('f2');
-    vi.unstubAllGlobals();
+    const res = await setupApp(db).request('/api/admin/broadcasts/b1/reset-to-draft', { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(executed.some((s) => s.includes('UPDATE broadcasts'))).toBe(false);
   });
 
-  test('fetch失敗時はpicture_checked_atを更新しない(次回サイクルで再判定)', async () => {
-    const candidates: Row[] = [
-      { id: 'f1', line_user_id: 'U1', picture_url: 'https://sprofile.line-scdn.net/1', channel_access_token: null },
-    ];
-    const { db, stmt } = makeDb(candidates);
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
-
-    const result = await sweepStalePictureUrls(db, env);
-
-    expect(result).toEqual({ checked: 1, stale: 0, updated: 0, notFound: 0, otherErrors: 0 });
-    expect(stmt.run).not.toHaveBeenCalled();
-    vi.unstubAllGlobals();
+  test('refuses when messages_log still has rows', async () => {
+    const { db } = makeDb({
+      broadcast: { status: 'sent', success_count: 0, sent_at: null, line_request_id: null, aggregation_unit: null },
+      logCount: 3,
+    });
+    const res = await setupApp(db).request('/api/admin/broadcasts/b1/reset-to-draft', { method: 'POST' });
+    expect(res.status).toBe(409);
   });
 
-  test('デフォルトのバッチサイズ15でLIMITされ、Freeプランのsubrequest上限内に収まる', async () => {
-    const { db, stmt } = makeDb([]);
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200 }));
-
-    await sweepStalePictureUrls(db, env);
-
-    expect(stmt.bind).toHaveBeenCalledWith(15);
-    vi.unstubAllGlobals();
+  test('refuses when only aggregation_unit is set (crash between marker write and sent_at)', async () => {
+    const { db, executed } = makeDb({
+      broadcast: { status: 'sending', success_count: 0, sent_at: null, line_request_id: null, aggregation_unit: 'agg-1' },
+      logCount: 0,
+    });
+    const res = await setupApp(db).request('/api/admin/broadcasts/b1/reset-to-draft', { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(executed.some((sq) => sq.includes('UPDATE broadcasts'))).toBe(false);
   });
 
-  test('opts.batchSizeでバッチサイズを指定できる', async () => {
-    const { db, stmt } = makeDb([]);
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200 }));
+  test('404s when the broadcast does not exist', async () => {
+    const { db } = makeDb({ broadcast: null, logCount: 0 });
+    const res = await setupApp(db).request('/api/admin/broadcasts/nope/reset-to-draft', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
 
-    await sweepStalePictureUrls(db, env, { batchSize: 5 });
-
-    expect(stmt.bind).toHaveBeenCalledWith(5);
-    vi.unstubAllGlobals();
+  test('resets when there are no send markers and no log rows', async () => {
+    const { db, executed } = makeDb({
+      broadcast: { status: 'sent', success_count: 0, sent_at: null, line_request_id: null, aggregation_unit: null },
+      logCount: 0,
+    });
+    const res = await setupApp(db).request('/api/admin/broadcasts/b1/reset-to-draft', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(executed.some((s) => s.includes('UPDATE broadcasts'))).toBe(true);
   });
 });
