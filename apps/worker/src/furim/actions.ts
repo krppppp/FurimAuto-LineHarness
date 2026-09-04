@@ -520,15 +520,13 @@ async function actionAmbassador(
 
   const introduced = Number(data?.numberIntroduced ?? 0) || 0;
 
-  // 1通目: 制度説明＋紹介URL＋共有方法を1つのFlexに集約。
-  // clipboard は LINE 13.6.0+ 限定のため、body に URL テキストも併記してフォールバック。
+  // 1通目: 制度説明＋共有方法を1つのFlexに集約。紹介URLはボタン（コピー/転送）にだけ持たせる。
   const shareText = `FurimAuto公式LINEの友達紹介URLです！\n下のURLからお友達追加で特典が受け取れます👇\n${refUrl}`;
   const urlSection: unknown[] = refUrl
     ? [
         { type: 'separator', margin: 'lg' },
-        { type: 'text', text: 'あなた専用の紹介URL', weight: 'bold', size: 'md', margin: 'lg' },
-        { type: 'text', text: refUrl, size: 'xs', color: '#1565C0', wrap: true },
-        { type: 'text', text: '【共有方法】\n下の「URLをコピー」でコピーしてお友達に送るか、「お友達に転送する」でLINEからそのまま送れます。\nお友達がURLをタップ→友だち追加するだけで自動で紐付き、紹介が成立します✨', size: 'sm', color: '#666666', wrap: true, margin: 'md' },
+        { type: 'text', text: '共有方法', weight: 'bold', size: 'md', margin: 'lg' },
+        { type: 'text', text: '下の「URLをコピー」であなた専用の紹介URLをコピーしてお友達に送るか、「お友達に転送する」でLINEからそのまま送れます。\nお友達がURLをタップ→友だち追加するだけで自動で紐付き、紹介が成立します✨', size: 'sm', color: '#666666', wrap: true },
       ]
     : [
         { type: 'separator', margin: 'lg' },
@@ -540,7 +538,7 @@ async function actionAmbassador(
         { type: 'button', style: 'secondary', action: { type: 'uri', label: 'お友達に転送する', uri: `https://line.me/R/share?text=${encodeURIComponent(shareText)}` } },
       ]
     : [];
-  footerButtons.push({ type: 'button', style: 'link', action: { type: 'uri', label: '制度の詳細を見る', uri: 'https://furimauto.com/ambassador/index.html' } });
+  footerButtons.push({ type: 'button', style: 'link', action: { type: 'uri', label: '制度についてHPはコチラ', uri: 'https://furimauto.com/ambassador/index.html' } });
 
   const ambassadorFlex = {
     type: 'flex',
