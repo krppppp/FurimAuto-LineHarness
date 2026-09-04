@@ -54,6 +54,39 @@ describe('processReferral 冪等ガード', () => {
 
     expect(result).toEqual({ ok: false, reason: 'already_referred' });
     expect(gasGet).not.toHaveBeenCalled();
+  });
+
+  // 黙って終わると「コードを送ったのに無反応」に見えるため
+  it('適用済みのときは「すでに適用済み」と返す（replyTokenがあればreply）', async () => {
+    const client = makeClient();
+    const db = makeDb({ alreadyReferred: true });
+
+    await processReferral(client as never, 'Uintroduced', 'AMB12345', env, db as never, { replyToken: 'rt' });
+
+    expect(client.replyMessage).toHaveBeenCalledOnce();
+    const [, messages] = client.replyMessage.mock.calls[0];
+    expect(messages[0].text).toContain('すでに適用済み');
+    expect(client.pushMessage).not.toHaveBeenCalled();
+  });
+
+  it('replyTokenが無ければpushで返す（URL経由の再クリック）', async () => {
+    const client = makeClient();
+    const db = makeDb({ alreadyReferred: true });
+
+    await processReferral(client as never, 'Uintroduced', 'AMB12345', env, db as never, {});
+
+    expect(client.pushMessage).toHaveBeenCalledOnce();
+    expect(client.pushMessage.mock.calls[0][0]).toBe('Uintroduced');
+  });
+
+  // cron のリトライ経路。バックグラウンド処理なので通知してはいけない
+  it('silent のときは適用済みでも何も送らない', async () => {
+    const client = makeClient();
+    const db = makeDb({ alreadyReferred: true });
+
+    const result = await processReferral(client as never, 'Uintroduced', 'AMB12345', env, db as never, { silent: true });
+
+    expect(result).toEqual({ ok: false, reason: 'already_referred' });
     expect(client.replyMessage).not.toHaveBeenCalled();
     expect(client.pushMessage).not.toHaveBeenCalled();
   });

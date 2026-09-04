@@ -176,7 +176,15 @@ export async function processReferral(
       const introTag = await targetDb.prepare('SELECT id FROM tags WHERE name = ?').bind('紹介経由').first<{ id: string }>();
       if (introTag) {
         const already = await targetDb.prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(friend.id, introTag.id).first();
-        if (already) return { ok: false, reason: 'already_referred' };
+        if (already) {
+          // 適用済みでも黙って終わると「コードを送ったのに無反応」に見えるので一言返す
+          // （URL経由で成立した直後に本人が手動でコードを送るとここに来る）。
+          // cron のリトライ経路は silent なので通知しない
+          if (!opts.silent) {
+            await notifyIntroduced([{ type: 'text', text: `お友達紹介の特典は、すでに適用済みです😊\n\n無料試用期間の1週間追加も反映されていますので、あらためてコードをお送りいただく必要はありません。\nそのままご利用ください🙌` } as never]);
+          }
+          return { ok: false, reason: 'already_referred' };
+        }
       }
     }
   }
