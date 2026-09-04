@@ -414,14 +414,18 @@ async function maybeProcessAmbassadorReferral(
     const { processReferral } = await import('../furim/keyword-actions.js');
     const { LineClient } = await import('@line-crm/line-sdk');
     const { getLineAccountById: getAcctById } = await import('@line-crm/db');
+    const { withOutgoingLog } = await import('../utils/message-log.js');
     // token解決: friend の所属アカウント → 既定
     let token = c.env.LINE_CHANNEL_ACCESS_TOKEN;
     if (friend.line_account_id) {
       const acct = await getAcctById(db, friend.line_account_id);
       if (acct?.channel_access_token) token = acct.channel_access_token;
     }
+    // URL経由でも被紹介者への通知をチャット履歴に残す。
+    // 素の LineClient のままだと LINE には届くのに messages_log に何も残らず、
+    // 「送ったのか分からない」状態になっていた（2026-09-04 くろさん指摘）
     await processReferral(
-      new LineClient(token),
+      withOutgoingLog(new LineClient(token), db, friend.id),
       lineUserId,
       ambAff.code,
       { GAS_DEPLOY_ID: c.env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: c.env.STRIPE_SECRET_KEY, DB: db },
