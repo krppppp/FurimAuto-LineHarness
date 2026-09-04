@@ -492,7 +492,7 @@ async function actionAmbassador(
   // アンバサダー固有の紹介URLを用意（affiliate.code = ambassadorCode に揃え、
   // URL経由attribution時に手動code方式と同じ processReferral へ載せる）。
   // db未接続 / offer未設定 / friend未取得 / WORKER base未設定 のいずれかなら
-  // refUrl=null となり、従来の手動code方式にフォールバックする。
+  // refUrl=null となり、URLなし（再タップ案内）のFlexを返す。
   let refUrl: string | null = null;
   if (db && ambassadorCode && env.FURIM_AMBASSADOR_OFFER_ID) {
     try {
@@ -514,71 +514,60 @@ async function actionAmbassador(
         }
       }
     } catch (err) {
-      console.error('[furim] Ambassador referral URL build failed (fallback to manual code):', err);
+      console.error('[furim] Ambassador referral URL build failed:', err);
     }
   }
 
-  const messages: unknown[] = [
-    { type: 'image', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ambassador.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ambassador.png' },
-  ];
+  const introduced = Number(data?.numberIntroduced ?? 0) || 0;
 
-  if (refUrl) {
-    // 紹介URL版: コピー(clipboard)＋LINE転送(share)＋説明書発行を1つのFlexに集約。
-    // clipboard は LINE 13.6.0+ 限定のため、body に URL テキストも併記してフォールバック。
-    const shareText = `FurimAuto公式LINEの友達紹介URLです！\n下のURLからお友達追加で特典が受け取れます👇\n${refUrl}`;
-    messages.push({
-      type: 'flex',
-      altText: 'お友達紹介URL',
-      contents: {
-        type: 'bubble',
-        body: {
-          type: 'box',
-          layout: 'vertical',
-          spacing: 'md',
-          contents: [
-            { type: 'text', text: 'お友達紹介URL', weight: 'bold', size: 'lg' },
-            { type: 'text', text: 'このURLをお友達に送るだけで紹介が成立します。お友達がタップ→友だち追加するだけで自動で紐付きます✨', size: 'sm', color: '#666666', wrap: true },
-            { type: 'text', text: refUrl, size: 'xs', color: '#1565C0', wrap: true },
-          ],
-        },
-        footer: {
-          type: 'box',
-          layout: 'vertical',
-          spacing: 'sm',
-          contents: [
-            { type: 'button', style: 'primary', action: { type: 'clipboard', label: 'URLをコピー', clipboardText: refUrl } },
-            { type: 'button', style: 'secondary', action: { type: 'uri', label: 'お友達に転送する', uri: `https://line.me/R/share?text=${encodeURIComponent(shareText)}` } },
-            { type: 'button', style: 'link', action: { type: 'message', label: 'お友達向け説明書の発行', text: '【ボタン】お友達向け説明書の発行' } },
-          ],
-        },
-      },
-    });
-  } else {
-    // フォールバック（従来）: OA登録URLの転送template。
-    messages.push({
-      type: 'template',
-      altText: 'アカウントURL転送ボタン',
-      template: {
-        type: 'buttons',
-        text: 'FurimAuto公式LINEの登録URLをお友達に転送できます📩',
-        actions: [
-          { type: 'uri', label: '転送する', uri: 'https://line.me/R/nv/recommendOA/@997axiep' },
-          { type: 'message', label: 'お友達向け説明書の発行', text: '【ボタン】お友達向け説明書の発行' },
+  // 1通目: 制度説明＋紹介URL＋共有方法を1つのFlexに集約。
+  // clipboard は LINE 13.6.0+ 限定のため、body に URL テキストも併記してフォールバック。
+  const shareText = `FurimAuto公式LINEの友達紹介URLです！\n下のURLからお友達追加で特典が受け取れます👇\n${refUrl}`;
+  const urlSection: unknown[] = refUrl
+    ? [
+        { type: 'separator', margin: 'lg' },
+        { type: 'text', text: 'あなた専用の紹介URL', weight: 'bold', size: 'md', margin: 'lg' },
+        { type: 'text', text: refUrl, size: 'xs', color: '#1565C0', wrap: true },
+        { type: 'text', text: '【共有方法】\n下の「URLをコピー」でコピーしてお友達に送るか、「お友達に転送する」でLINEからそのまま送れます。\nお友達がURLをタップ→友だち追加するだけで自動で紐付き、紹介が成立します✨', size: 'sm', color: '#666666', wrap: true, margin: 'md' },
+      ]
+    : [
+        { type: 'separator', margin: 'lg' },
+        { type: 'text', text: '紹介URLの発行に失敗しました🙇\n時間をおいて、もう一度リッチメニューの「アンバサダー制度」をタップしてください。', size: 'sm', color: '#C62828', wrap: true, margin: 'lg' },
+      ];
+  const footerButtons: unknown[] = refUrl
+    ? [
+        { type: 'button', style: 'primary', action: { type: 'clipboard', label: 'URLをコピー', clipboardText: refUrl } },
+        { type: 'button', style: 'secondary', action: { type: 'uri', label: 'お友達に転送する', uri: `https://line.me/R/share?text=${encodeURIComponent(shareText)}` } },
+      ]
+    : [];
+  footerButtons.push({ type: 'button', style: 'link', action: { type: 'uri', label: '制度の詳細を見る', uri: 'https://furimauto.com/ambassador/index.html' } });
+
+  const ambassadorFlex = {
+    type: 'flex',
+    altText: 'アンバサダー制度のご案内',
+    contents: {
+      type: 'bubble',
+      hero: { type: 'image', url: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ambassador.png', size: 'full', aspectRatio: '16:9', aspectMode: 'cover' },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          { type: 'text', text: 'アンバサダー制度', weight: 'bold', size: 'lg' },
+          { type: 'text', text: 'お友達にFurimAutoを紹介すると、紹介した方にもされた方にも特典があります。', size: 'sm', color: '#666666', wrap: true },
+          { type: 'text', text: '・あなた：ご加入プランに応じた割引クーポン（最大10枚）\n・お友達：無料お試し期間＋1週間＆初月50%OFFクーポン', size: 'sm', wrap: true },
+          ...urlSection,
         ],
       },
-    });
-  }
+      footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: footerButtons },
+    },
+  };
 
-  messages.push(
-    { type: 'text', text: `👇アンバサダー制度についてはコチラから👇\nhttps://furimauto.com/ambassador/index.html\n\nお友達がFurimAuto公式ラインの友達登録が完了したら\n下の友達紹介コードをコピペしてそのまま送信するようにお伝えください。\n\n※注: 【】 ← も含めて送るように必ずお伝えください！！` },
-    { type: 'text', text: `【キーワード】友達紹介コード:${ambassadorCode ?? '取得中...'}` },
-  );
-
-  if (data?.numberIntroduced && Number(data.numberIntroduced) > 0) {
-    messages.push({ type: 'text', text: `【自動送信】\n招待人数確認用メッセージ\n\nあなたは現在までに${data.numberIntroduced}名のお友達をご紹介していただきました🙇` });
-  }
-
-  await lineClient.replyMessage(replyToken, (messages as unknown[]).slice(0, 5) as never[]);
+  // 2通目: 招待人数確認
+  await lineClient.replyMessage(replyToken, [
+    ambassadorFlex,
+    { type: 'text', text: `【自動送信】\n招待人数確認用メッセージ\n\nあなたは現在までに${introduced}名のお友達をご紹介していただきました🙇` },
+  ] as never[]);
 }
 
 async function actionMeetReservation(
