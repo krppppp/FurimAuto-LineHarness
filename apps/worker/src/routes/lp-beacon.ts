@@ -16,8 +16,27 @@ import type { Env } from '../index.js';
 
 const MAX_EVENTS = 20;
 const MAX_STR = 200;
+const MAX_DETAIL = 4000;
 
-const ALLOWED_EVENT_TYPES = new Set(['view', 'summary', 'cta']);
+// view/summary/cta は lp-metrics.js の共通イベント。diag_* は診断LP（/lp/diag/）の操作ログ、
+// click は任意LPのボタン操作ログ（detail に何を押したかを文字列で持つ）。
+const ALLOWED_EVENT_TYPES = new Set([
+  'view', 'summary', 'cta',
+  'click',
+  'diag_start', 'diag_answer', 'diag_back', 'diag_loading', 'diag_result', 'diag_cta', 'diag_retry',
+]);
+
+function clampDetail(v: unknown): string | null {
+  if (v === undefined || v === null) return null;
+  let str: string;
+  try {
+    str = typeof v === 'string' ? v : JSON.stringify(v);
+  } catch {
+    return null;
+  }
+  if (!str) return null;
+  return str.slice(0, MAX_DETAIL);
+}
 
 function allowedPage(page: string): boolean {
   return page.startsWith('/lp/') || page.startsWith('/service/');
@@ -39,7 +58,7 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
   try {
     // sendBeacon は Blob(text/plain) で送るため c.req.json() ではなく text で受ける
     const raw = await c.req.text();
-    if (!raw || raw.length > 10_000) return c.body(null, 204);
+    if (!raw || raw.length > 40_000) return c.body(null, 204);
 
     let body: {
       sid?: unknown;
@@ -78,14 +97,14 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
     const stmt = c.env.DB.prepare(
       `INSERT INTO lp_events
        (session_id, page, event_type, max_scroll_pct, ms_on_page,
-        ref, has_click_id, utm_campaign, utm_content, utm_term, is_mobile, referrer, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ref, has_click_id, utm_campaign, utm_content, utm_term, is_mobile, referrer, created_at, detail)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     const batch = [];
     for (const ev of body.events.slice(0, MAX_EVENTS)) {
       if (typeof ev !== 'object' || ev === null) continue;
-      const e = ev as { type?: unknown; scroll?: unknown; ms?: unknown };
+      const e = ev as { type?: unknown; scroll?: unknown; ms?: unknown; detail?: unknown };
       const type = typeof e.type === 'string' && ALLOWED_EVENT_TYPES.has(e.type) ? e.type : null;
       if (!type) continue;
       batch.push(
@@ -103,6 +122,7 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
           isMobile,
           referrer,
           now,
+          clampDetail(e.detail),
         ),
       );
     }
