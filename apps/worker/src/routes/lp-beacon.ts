@@ -24,6 +24,7 @@ const ALLOWED_EVENT_TYPES = new Set([
   'view', 'summary', 'cta',
   'click',
   'diag_start', 'diag_answer', 'diag_back', 'diag_loading', 'diag_result', 'diag_cta', 'diag_retry',
+  'diag_section',
 ]);
 
 function clampDetail(v: unknown): string | null {
