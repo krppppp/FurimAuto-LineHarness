@@ -44,8 +44,21 @@ function band(color, label) {
     contents: [{ type: 'text', text: label, color: '#FFFFFF', weight: 'bold', size: 'sm', wrap: true }],
   };
 }
+// 可読性ルール（2026-09-06 くろさん決定。文言は変えずレイアウトだけ）:
+// - 全テキストに lineSpacing 6px（既定の行間は詰まりすぎて"ブログ感"が出る）
+// - 本文色は #333333（#555555 は薄い）
+// - 「\n\n」区切りの段落は独立ノードにして段落間を spacing lg で空ける
+//   （1ノードに詰めると空行1行分しか空かない）。listRow 等の flex 指定時は分割しない
 function t(text, opts = {}) {
-  return { type: 'text', text, size: 'sm', color: '#555555', wrap: true, ...opts };
+  const node = { type: 'text', text, size: 'sm', color: '#333333', wrap: true, lineSpacing: '6px', ...opts };
+  if (opts.flex === undefined && text.includes('\n\n')) {
+    const { margin, ...rest } = node;
+    return {
+      type: 'box', layout: 'vertical', spacing: 'lg', ...(margin ? { margin } : {}),
+      contents: text.split('\n\n').map((p) => ({ ...rest, text: p })),
+    };
+  }
+  return node;
 }
 function heading(text) {
   return t(text, { weight: 'bold', size: 'lg', color: '#333333' });
@@ -96,7 +109,7 @@ function bubble({ color, label, hero, body, footer }) {
     type: 'bubble', size: 'mega',
     header: band(color, label),
     ...(hero ? { hero } : {}),
-    body: { type: 'box', layout: 'vertical', spacing: 'md', paddingAll: '16px', contents: body },
+    body: { type: 'box', layout: 'vertical', spacing: 'lg', paddingAll: '20px', contents: body },
     ...(footer ? { footer: { type: 'box', layout: 'vertical', spacing: 'md', contents: footer } } : {}),
   };
 }
