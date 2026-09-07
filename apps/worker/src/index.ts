@@ -453,6 +453,37 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 ${longPressHint}
 <p class="help">うまく開けない方は <a href="${helpUrl}">こちら</a></p>
 </div>
+<script>
+(function(){
+  // 中継ページ(/r/:ref)の計測。LPから引き継いだ sid で lp_events に繋ぐ。
+  // gate_view=表示 / gate_open=「LINEで開く」クリック。CTA→LINE認証の離脱切り分け用。
+  try{
+    var p=new URLSearchParams(location.search);
+    var sid=p.get('sid');
+    if(!sid){ try{ sid=localStorage.getItem('fa_lp_sid'); }catch(e){} }
+    if(!sid) return;
+    var EP='https://line-harness-prod.furimuato.workers.dev/api/lp-beacon';
+    var mob=/iphone|ipad|android|mobile/i.test(navigator.userAgent);
+    function send(type,detail){
+      try{
+        var b=JSON.stringify({sid:sid,page:location.pathname,events:[{type:type,detail:detail}],
+          hasClickId:!!(p.get('gclid')||p.get('fbclid')||p.get('twclid')||p.get('ttclid')),
+          utmCampaign:p.get('utm_campaign'),utmContent:p.get('utm_content'),
+          mobile:mob,referrer:document.referrer||null});
+        if(navigator.sendBeacon){navigator.sendBeacon(EP,b);}else{var x=new XMLHttpRequest();x.open('POST',EP,true);x.send(b);}
+      }catch(e){}
+    }
+    send('gate_view', 'mobile');
+    document.addEventListener('click',function(ev){
+      var el=ev.target;
+      while(el&&el!==document){
+        if(el.tagName==='A'&&el.className&&String(el.className).indexOf('btn')>-1){ send('gate_open', 'mobile'); break; }
+        el=el.parentNode;
+      }
+    },true);
+  }catch(e){}
+})();
+</script>
 </body>
 </html>`);
   }
@@ -489,6 +520,37 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 <p class="hint">LINE アプリのカメラまたは<br>スマートフォンのカメラで読み取れます</p>
 <p class="footer">友だち追加で全機能を無料体験できます</p>
 </div>
+<script>
+(function(){
+  // 中継ページ(/r/:ref)の計測。LPから引き継いだ sid で lp_events に繋ぐ。
+  // gate_view=表示 / gate_open=「LINEで開く」クリック。CTA→LINE認証の離脱切り分け用。
+  try{
+    var p=new URLSearchParams(location.search);
+    var sid=p.get('sid');
+    if(!sid){ try{ sid=localStorage.getItem('fa_lp_sid'); }catch(e){} }
+    if(!sid) return;
+    var EP='https://line-harness-prod.furimuato.workers.dev/api/lp-beacon';
+    var mob=/iphone|ipad|android|mobile/i.test(navigator.userAgent);
+    function send(type,detail){
+      try{
+        var b=JSON.stringify({sid:sid,page:location.pathname,events:[{type:type,detail:detail}],
+          hasClickId:!!(p.get('gclid')||p.get('fbclid')||p.get('twclid')||p.get('ttclid')),
+          utmCampaign:p.get('utm_campaign'),utmContent:p.get('utm_content'),
+          mobile:mob,referrer:document.referrer||null});
+        if(navigator.sendBeacon){navigator.sendBeacon(EP,b);}else{var x=new XMLHttpRequest();x.open('POST',EP,true);x.send(b);}
+      }catch(e){}
+    }
+    send('gate_view', 'pc');
+    document.addEventListener('click',function(ev){
+      var el=ev.target;
+      while(el&&el!==document){
+        if(el.tagName==='A'&&el.className&&String(el.className).indexOf('btn')>-1){ send('gate_open', 'pc'); break; }
+        el=el.parentNode;
+      }
+    },true);
+  }catch(e){}
+})();
+</script>
 </body>
 </html>`);
 });

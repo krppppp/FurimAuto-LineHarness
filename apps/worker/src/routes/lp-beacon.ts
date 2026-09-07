@@ -25,6 +25,9 @@ const ALLOWED_EVENT_TYPES = new Set([
   'click', 'section',
   'diag_start', 'diag_answer', 'diag_back', 'diag_loading', 'diag_result', 'diag_cta', 'diag_retry',
   'diag_section',
+  // gate_view = /r/ 中継ページの表示、gate_open = そこで「LINEで開く」を押した。
+  // CTA→LINE認証の離脱がどこで起きているかを切り分けるために使う。
+  'gate_view', 'gate_open',
 ]);
 
 function clampDetail(v: unknown): string | null {
@@ -40,7 +43,8 @@ function clampDetail(v: unknown): string | null {
 }
 
 function allowedPage(page: string): boolean {
-  return page.startsWith('/lp/') || page.startsWith('/service/');
+  // /r/ は友だち追加の中継ページ（LINEアプリを開かせるワンクッション）。
+  return page.startsWith('/lp/') || page.startsWith('/service/') || page.startsWith('/r/');
 }
 
 function clampStr(v: unknown): string | null {
