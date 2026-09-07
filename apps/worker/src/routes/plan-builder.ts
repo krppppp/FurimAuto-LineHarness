@@ -704,6 +704,22 @@ ${liff ? '<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script
   .sp-only { display: none; }
   @media (max-width: 600px) { .sp-only { display: inline; } }
   .sim-label { font-weight: bold; margin-bottom: 12px; font-size: .95rem; }
+  /* スマホ: LP に埋め込んだとき1画面の情報量を増やす（rem 基準を下げて全体を約12%縮小、余白も詰める） */
+  @media (max-width: 600px) {
+    html { font-size: 14px; }
+    .simulator { padding: 12px 10px 24px; }
+    .sim-title { margin-bottom: 4px; }
+    .sim-lead { line-height: 1.55; margin-bottom: 4px; }
+    .sim-tax-note { margin-bottom: 10px; }
+    .svc-head { margin: 16px 0 10px; padding-bottom: 6px; }
+    .site-grid { gap: 8px; margin-bottom: 12px; }
+    .site-card { padding: 10px 6px; }
+    .option-block, .inv-block, .copy-note { padding: 10px 12px; margin-bottom: 10px; }
+    .option-row { gap: 8px; }
+    .buffet, .included { margin-top: 8px; padding-top: 8px; }
+    .premium-banner, .premium-card { padding: 12px 14px; }
+    .result { padding: 12px 14px; }
+  }
   .svc-head {
     display: flex; align-items: center; gap: 10px; margin: 28px 0 14px;
     padding-bottom: 8px; border-bottom: 2px solid #ff8c03;
