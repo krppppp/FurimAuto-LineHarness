@@ -22,7 +22,7 @@ const MAX_DETAIL = 4000;
 // click は任意LPのボタン操作ログ（detail に何を押したかを文字列で持つ）。
 const ALLOWED_EVENT_TYPES = new Set([
   'view', 'summary', 'cta',
-  'click',
+  'click', 'section',
   'diag_start', 'diag_answer', 'diag_back', 'diag_loading', 'diag_result', 'diag_cta', 'diag_retry',
   'diag_section',
 ]);
