@@ -22,6 +22,9 @@ const MAX_DETAIL = 4000;
 // click は任意LPのボタン操作ログ（detail に何を押したかを文字列で持つ）。
 const ALLOWED_EVENT_TYPES = new Set([
   'view', 'summary', 'cta',
+  // store = Chromeウェブストアへの送客（/install リダイレクト or ストア直リンク）。
+  // 拡張導入→ext_popup 登録の入口なので、cta と並ぶCV地点として扱う。
+  'store',
   'click', 'section',
   'diag_start', 'diag_answer', 'diag_back', 'diag_loading', 'diag_result', 'diag_cta', 'diag_retry',
   'diag_section',
