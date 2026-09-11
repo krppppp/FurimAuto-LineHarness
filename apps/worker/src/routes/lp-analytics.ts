@@ -42,6 +42,7 @@ function sessionCte(f: RangeFilter): string {
         MAX(e.has_click_id) AS has_click_id,
         MAX(e.is_mobile) AS is_mobile,
         MAX(CASE WHEN e.event_type = 'cta' THEN 1 ELSE 0 END) AS cta_clicked,
+        MAX(CASE WHEN e.event_type = 'install' THEN 1 ELSE 0 END) AS installed,
         COALESCE(MAX(CASE WHEN e.event_type = 'summary' THEN e.max_scroll_pct END), 0) AS max_scroll,
         COALESCE(MAX(CASE WHEN e.event_type = 'summary' THEN e.ms_on_page END), 0) AS ms_on_page,
         MAX(e.utm_campaign) AS utm_campaign,
@@ -74,6 +75,7 @@ lpAnalytics.get('/api/analytics/lp-pages', async (c) => {
          SUM(s.has_click_id) AS ad_sessions,
          SUM(s.is_mobile) AS mobile_sessions,
          SUM(s.cta_clicked) AS cta_sessions,
+         SUM(s.installed) AS install_sessions,
          SUM(s.friend_added) AS friend_adds,
          SUM(CASE WHEN s.max_scroll >= 50 THEN 1 ELSE 0 END) AS scroll50,
          SUM(CASE WHEN s.max_scroll >= 90 THEN 1 ELSE 0 END) AS scroll90,
@@ -94,6 +96,7 @@ lpAnalytics.get('/api/analytics/lp-pages', async (c) => {
       adSessions: r.ad_sessions,
       mobileSessions: r.mobile_sessions,
       ctaSessions: r.cta_sessions,
+      installSessions: r.install_sessions,
       friendAdds: r.friend_adds,
       scroll50: r.scroll50,
       scroll90: r.scroll90,
@@ -124,6 +127,7 @@ lpAnalytics.get('/api/analytics/lp-detail', async (c) => {
          SELECT
            COUNT(*) AS sessions,
            SUM(s.cta_clicked) AS cta_sessions,
+           SUM(s.installed) AS install_sessions,
            SUM(s.friend_added) AS friend_adds,
            SUM(CASE WHEN s.max_scroll >= 25 THEN 1 ELSE 0 END) AS reach25,
            SUM(CASE WHEN s.max_scroll >= 50 THEN 1 ELSE 0 END) AS reach50,
@@ -162,6 +166,7 @@ lpAnalytics.get('/api/analytics/lp-detail', async (c) => {
          SELECT date(s.started_at, '+9 hours') AS day,
                 COUNT(*) AS sessions,
                 SUM(s.cta_clicked) AS cta_sessions,
+                SUM(s.installed) AS install_sessions,
                 SUM(s.friend_added) AS friend_adds
          FROM sessions s WHERE s.page = ? ${f.srcCond}
          GROUP BY day ORDER BY day`,
@@ -195,6 +200,7 @@ lpAnalytics.get('/api/analytics/lp-detail', async (c) => {
         totals: {
           sessions: sb?.sessions ?? 0,
           ctaSessions: sb?.cta_sessions ?? 0,
+          installSessions: sb?.install_sessions ?? 0,
           friendAdds: sb?.friend_adds ?? 0,
           adSessions: sb?.ad_sessions ?? 0,
           adFriendAdds: sb?.ad_friend_adds ?? 0,
@@ -220,6 +226,7 @@ lpAnalytics.get('/api/analytics/lp-detail', async (c) => {
           day: r.day,
           sessions: r.sessions,
           ctaSessions: r.cta_sessions,
+          installSessions: r.install_sessions,
           friendAdds: r.friend_adds,
         })),
         variants: (variants.results ?? []).map((r) => ({

@@ -19,6 +19,7 @@ interface LpPageRow {
   adSessions: number
   mobileSessions: number
   ctaSessions: number
+  installSessions: number
   friendAdds: number
   scroll50: number
   scroll90: number
@@ -30,6 +31,7 @@ interface LpPageRow {
 type SortKey =
   | 'sessions'
   | 'ctaRate'
+  | 'installRate'
   | 'addRate'
   | 'scroll50Rate'
   | 'scroll90Rate'
@@ -88,6 +90,7 @@ export default function LpAnalyticsPage() {
       switch (sortKey) {
         case 'sessions': return r.sessions
         case 'ctaRate': return pct(r.ctaSessions, r.sessions)
+        case 'installRate': return pct(r.installSessions, r.sessions)
         case 'addRate': return pct(r.friendAdds, r.sessions)
         case 'scroll50Rate': return pct(r.scroll50, r.sessions)
         case 'scroll90Rate': return pct(r.scroll90, r.sessions)
@@ -200,7 +203,7 @@ export default function LpAnalyticsPage() {
         </div>
       ) : (
         <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
-          <table className="w-full min-w-[1080px]">
+          <table className="w-full min-w-[1160px]">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
@@ -208,6 +211,7 @@ export default function LpAnalyticsPage() {
                 </th>
                 {th('セッション', 'sessions')}
                 {th('CTA率', 'ctaRate', 'LINE CTAをクリックしたセッションの割合')}
+                {th('インストール', 'installRate', '拡張インストール直後の /welcome/ から install イベントが届いたセッション数（1セッション1回）')}
                 {th('追加率', 'addRate', 'LINE友だち追加まで到達したセッションの割合')}
                 {th('50%到達', 'scroll50Rate', 'ページの50%以上スクロールした割合')}
                 {th('完読', 'scroll90Rate', 'ページの90%以上スクロールした割合')}
@@ -234,6 +238,9 @@ export default function LpAnalyticsPage() {
                   </td>
                   <td className="px-4 py-3 text-sm text-right text-blue-600 font-semibold">
                     {pct(r.ctaSessions, r.sessions)}%
+                  </td>
+                  <td className="px-4 py-3 text-sm text-right text-orange-600 font-semibold">
+                    {r.installSessions > 0 ? r.installSessions : '—'}
                   </td>
                   <td className="px-4 py-3 text-sm text-right text-green-600 font-semibold">
                     {pct(r.friendAdds, r.sessions)}%

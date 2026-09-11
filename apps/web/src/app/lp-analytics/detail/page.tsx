@@ -20,6 +20,7 @@ interface LpDetailData {
   totals: {
     sessions: number
     ctaSessions: number
+    installSessions: number
     friendAdds: number
     adSessions: number
     adFriendAdds: number
@@ -41,7 +42,7 @@ interface LpDetailData {
     under60s: number
     over60s: number
   }
-  daily: Array<{ day: string; sessions: number; ctaSessions: number; friendAdds: number }>
+  daily: Array<{ day: string; sessions: number; ctaSessions: number; installSessions: number; friendAdds: number }>
   variants: Array<{
     utmCampaign: string
     utmContent: string
@@ -233,6 +234,7 @@ function LpDetailInner() {
                 <Bar label="50%到達" value={sf!.reach50} total={sessions} color="bg-blue-400" />
                 <Bar label="75%到達" value={sf!.reach75} total={sessions} color="bg-blue-500" />
                 <Bar label="完読(90%)" value={sf!.reach90} total={sessions} color="bg-blue-600" />
+                <Bar label="インストール" value={t!.installSessions} total={sessions} color="bg-orange-500" />
                 <Bar label="CTA" value={t!.ctaSessions} total={sessions} color="bg-emerald-500" />
                 <Bar label="友だち追加" value={t!.friendAdds} total={sessions} color="bg-green-600" />
               </div>
@@ -266,6 +268,7 @@ function LpDetailInner() {
                   <th className="px-6 py-2 text-left text-xs font-medium text-gray-500 uppercase">日付</th>
                   <th className="px-6 py-2 text-right text-xs font-medium text-gray-500 uppercase">セッション</th>
                   <th className="px-6 py-2 text-right text-xs font-medium text-gray-500 uppercase">CTA</th>
+                  <th className="px-6 py-2 text-right text-xs font-medium text-gray-500 uppercase">インストール</th>
                   <th className="px-6 py-2 text-right text-xs font-medium text-gray-500 uppercase">追加</th>
                   <th className="px-6 py-2 text-left text-xs font-medium text-gray-500 uppercase w-1/3">推移</th>
                 </tr>
@@ -278,6 +281,7 @@ function LpDetailInner() {
                       <td className="px-6 py-2 text-sm text-gray-700">{d.day}</td>
                       <td className="px-6 py-2 text-sm text-right text-gray-900">{d.sessions}</td>
                       <td className="px-6 py-2 text-sm text-right text-blue-600">{d.ctaSessions}</td>
+                      <td className="px-6 py-2 text-sm text-right text-orange-600">{d.installSessions}</td>
                       <td className="px-6 py-2 text-sm text-right text-green-600">{d.friendAdds}</td>
                       <td className="px-6 py-2">
                         <div className="bg-gray-100 rounded h-3 overflow-hidden">

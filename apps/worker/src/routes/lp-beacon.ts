@@ -25,6 +25,9 @@ const ALLOWED_EVENT_TYPES = new Set([
   // store = Chromeウェブストアへの送客（/install リダイレクト or ストア直リンク）。
   // 拡張導入→ext_popup 登録の入口なので、cta と並ぶCV地点として扱う。
   'store',
+  // install = 拡張インストール直後に自動で開く /welcome/?src=install からの「入れた」通知。
+  // cta・store と並ぶCV地点。1セッション(sid)につき1回だけ保存する（下の dedup 参照）。
+  'install',
   'click', 'section',
   'diag_start', 'diag_answer', 'diag_back', 'diag_loading', 'diag_result', 'diag_cta', 'diag_retry',
   'diag_section',
@@ -47,7 +50,8 @@ function clampDetail(v: unknown): string | null {
 
 function allowedPage(page: string): boolean {
   // /r/ は友だち追加の中継ページ（LINEアプリを開かせるワンクッション）。
-  return page.startsWith('/lp/') || page.startsWith('/service/') || page.startsWith('/r/');
+  // /welcome/ は拡張インストール直後に開くオンボーディング（Capsec #187）。
+  return page.startsWith('/lp/') || page.startsWith('/service/') || page.startsWith('/r/') || page.startsWith('/welcome/');
 }
 
 function clampStr(v: unknown): string | null {
@@ -115,6 +119,14 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
       const e = ev as { type?: unknown; scroll?: unknown; ms?: unknown; detail?: unknown };
       const type = typeof e.type === 'string' && ALLOWED_EVENT_TYPES.has(e.type) ? e.type : null;
       if (!type) continue;
+      // install は1セッション1回。ページ側も1回しか送らないが、再送・二重タブに備えてサーバ側でも弾く
+      if (type === 'install') {
+        const dup = await c.env.DB
+          .prepare('SELECT 1 FROM lp_events WHERE session_id = ? AND event_type = ? LIMIT 1')
+          .bind(sid, 'install')
+          .first();
+        if (dup) continue;
+      }
       batch.push(
         stmt.bind(
           sid,
