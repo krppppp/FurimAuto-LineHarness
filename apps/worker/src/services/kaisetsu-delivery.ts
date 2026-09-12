@@ -30,7 +30,11 @@ async function syncClosingTargets(db: D1Database, gasDeployId: string): Promise<
   const gasError = getGasErrorFromResponse(res);
   if (gasError) throw new Error(`listActiveTrials: ${gasError}`);
 
-  const trials = ((res as { trials?: ActiveTrial[] })?.trials ?? []).filter((t) => t?.lineUserId && t?.trialEnd);
+  // trials が配列で返らない = GAS 側の異常。空配列として扱うと下の突き合わせで
+  // closing=true を全員分クリアしてしまうので、ここで throw して呼び出し元の catch に回す
+  const rawTrials = (res as { trials?: ActiveTrial[] })?.trials;
+  if (!Array.isArray(rawTrials)) throw new Error('listActiveTrials: trials が配列で返りませんでした');
+  const trials = rawTrials.filter((t) => t?.lineUserId && t?.trialEnd);
   let updated = 0;
 
   for (const trial of trials) {
@@ -54,7 +58,33 @@ async function syncClosingTargets(db: D1Database, gasDeployId: string): Promise<
     updated++;
   }
 
-  console.log(`[kaisetsu] closing targets synced: ${trials.length} trials, ${updated} updated`);
+  // 対象から外れた人の closing を落とす。GAS の一覧が「いまクロージングを送ってよい人」の正なので、
+  // そこに居ない人のフラグは消す。これが無いと一度立った closing=true が trial_end を過ぎるまで残り、
+  // 解約した人にクロージング配信が届き続ける
+  // （2026-09-12 EYさん: 9/8 に解約済みなのに 9/10・9/11・9/12 の「無料期間が終了します」が着弾）
+  const eligible = new Set(trials.map((t) => t.lineUserId));
+  const flagged = await db
+    .prepare(
+      `SELECT id, line_user_id, metadata FROM friends
+       WHERE is_following = 1 AND json_extract(metadata, '$.closing') = 1`,
+    )
+    .all<{ id: string; line_user_id: string; metadata: string }>();
+
+  let cleared = 0;
+  for (const f of flagged.results) {
+    if (eligible.has(f.line_user_id)) continue;
+    const meta = JSON.parse(f.metadata || '{}') as KaisetsuMeta;
+    // 解説見た組は独自の延長日で動き、上のループでも上書きしていないのでここでも触らない
+    if (meta.kaisetsu) continue;
+    meta.closing = false;
+    await db
+      .prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
+      .bind(JSON.stringify(meta), f.id)
+      .run();
+    cleared++;
+  }
+
+  console.log(`[kaisetsu] closing targets synced: ${trials.length} trials, ${updated} updated, ${cleared} cleared`);
 }
 
 function todayJst(): string {
@@ -99,6 +129,20 @@ export async function processKaisetsuDeliveries(
     try {
       const meta = JSON.parse(friend.metadata || '{}') as KaisetsuMeta;
       if ((!meta.kaisetsu && !meta.closing) || !meta.trial_end) continue;
+
+      // 解約済み・月額会員には送らない。フラグの取り込みは1日1回なので、取り込みから配信までの間に
+      // 状態が変わった人を取りこぼす。ステップ配信の scenario-switch と同じ門番をここにも置く
+      const excluded = await db
+        .prepare(
+          `SELECT 1 FROM friend_tags ft JOIN tags t ON ft.tag_id = t.id
+           WHERE ft.friend_id = ? AND t.name IN ('キャンセル済み', '月額会員') LIMIT 1`,
+        )
+        .bind(friend.id)
+        .first();
+      if (excluded) {
+        console.log(`[kaisetsu] skip ${friend.line_user_id} (キャンセル済み/月額会員)`);
+        continue;
+      }
 
       const remaining = getRemainingDays(meta.trial_end);
 
