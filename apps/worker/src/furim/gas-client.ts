@@ -1,3 +1,7 @@
+// Google は User-Agent 無しのリクエストに対して断続的に 404 の HTML（独語ページ）を返すことがある
+// （2026-08-25 ヘルス巡回・2026-09-13 あおいさん事案: checkout 直前の照合が 404 で落ち Stripe顧客が分裂）。
+// Workers の fetch は既定で UA を送らないため明示する
+const GAS_USER_AGENT = 'Mozilla/5.0 (compatible; LineHarness/1.0; +https://furimauto.com)';
 const GAS_BASE = 'https://script.google.com/macros/s';
 
 // 1回のGAS呼び出しの上限。webhookの処理は waitUntil で走り約30秒で打ち切られるため、
@@ -40,7 +44,7 @@ export async function gasGet(deployId: string, params: Record<string, string>, o
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, v);
   }
-  const res = await fetchGasOnce(url.toString(), { redirect: 'follow' }, opts?.timeoutMs);
+  const res = await fetchGasOnce(url.toString(), { redirect: 'follow', headers: { 'User-Agent': GAS_USER_AGENT } }, opts?.timeoutMs);
   if (!res.ok) throw new Error(`GAS GET ${res.status}: ${await res.text()}`);
   const text = await res.text();
   try { return JSON.parse(text); } catch { return text; }
@@ -66,7 +70,7 @@ export async function gasPost(deployId: string, body: Record<string, unknown>, o
   const res = await fetchGasOnce(`${GAS_BASE}/${deployId}/exec`, {
     method: 'POST',
     redirect: 'follow',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'User-Agent': GAS_USER_AGENT },
     body: JSON.stringify(body),
   }, opts?.timeoutMs);
   if (!res.ok) throw new Error(`GAS POST ${res.status}: ${await res.text()}`);
