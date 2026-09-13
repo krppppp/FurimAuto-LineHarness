@@ -13,11 +13,19 @@ const worker = (await import('../index.js')).default;
 
 type Stmt = { sql: string; args: unknown[] };
 
-function makeDb(opts: { firstRows?: Array<Record<string, unknown> | null>; allRows?: Record<string, unknown>[][]; batchThrows?: string } = {}) {
+function makeDb(
+  opts: {
+    firstRows?: Array<Record<string, unknown> | null>;
+    allRows?: Record<string, unknown>[][];
+    batchRows?: Record<string, unknown>[][];
+    batchThrows?: string;
+  } = {},
+) {
   const statements: Stmt[] = [];
   const batches: Stmt[][] = [];
   const firstRows = [...(opts.firstRows ?? [])];
   const allRows = [...(opts.allRows ?? [])];
+  const batchRows = [...(opts.batchRows ?? [])];
   const db = {
     prepare(sql: string) {
       return {
@@ -36,7 +44,7 @@ function makeDb(opts: { firstRows?: Array<Record<string, unknown> | null>; allRo
     batch: async (stmts: Stmt[]) => {
       batches.push(stmts);
       if (opts.batchThrows) throw new Error(opts.batchThrows);
-      return [];
+      return stmts.map(() => ({ results: batchRows.shift() ?? [] }));
     },
   } as unknown as D1Database;
   return { db, statements, batches };
@@ -103,6 +111,25 @@ describe('GET /api/furim/admin/tables', () => {
     expect(customers.columns.find((c) => c.name === 'key_code')!.editable).toBe(true);
   });
 
+  it('071 のログ系テーブルは読み取り専用で入り、keys を持つ', async () => {
+    const { db } = makeDb();
+    const res = await req(db, 'GET', '/api/furim/admin/tables');
+    const body = (await res.json()) as {
+      data: Array<{ name: string; columns: Array<{ editable: boolean }>; keys: Array<{ column: string; kind: string }> }>;
+    };
+    for (const name of ['furim_execution_logs', 'furim_ext_errors', 'furim_free_accounts', 'furim_manual_copy_logs', 'furim_shop_research_logs']) {
+      const t = body.data.find((x) => x.name === name)!;
+      expect(t, name).toBeDefined();
+      expect(t.columns.every((c) => !c.editable), name).toBe(true);
+      expect(t.keys.length, name).toBeGreaterThan(0);
+    }
+    expect(body.data.find((x) => x.name === 'furim_referrals')!.keys).toEqual([
+      { column: 'introduced_friend_id', kind: 'friend_id' },
+      { column: 'ambassador_friend_id', kind: 'friend_id' },
+    ]);
+    expect(body.data.find((x) => x.name === 'furim_coupons')!.keys).toEqual([]);
+  });
+
   it('認証なしは 401', async () => {
     const { db } = makeDb();
     const res = await worker.fetch(
@@ -139,6 +166,149 @@ describe('GET /api/furim/admin/:table', () => {
     expect(select.sql).toContain('ORDER BY updated_at DESC');
     expect(select.args).toContain('%cus_%');
     expect(select.args.slice(-2)).toEqual([3, 0]);
+  });
+});
+
+describe('_display_name の付与', () => {
+  it('line_user_id 列から friends を 1 回の IN クエリで引き、解決できない行は null', async () => {
+    const { db, statements } = makeDb({
+      firstRows: [{ n: 2 }],
+      allRows: [
+        [{ id: 't1', line_user_id: 'U1' }, { id: 't2', line_user_id: 'U2' }, { id: 't3', line_user_id: null }],
+        [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_ticket_ledger');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<{ id: string; _display_name: string | null }> };
+    expect(body.data.map((r) => r._display_name)).toEqual(['たろう', null, null]);
+    const friends = statements.filter((s) => s.sql.includes('FROM friends'));
+    expect(friends).toHaveLength(1);
+    expect(friends[0].sql).toBe('SELECT id, line_user_id, display_name FROM friends WHERE line_user_id IN (?,?)');
+    expect(friends[0].args).toEqual(['U1', 'U2']);
+    expect(statements.some((s) => s.sql.includes('FROM furim_customers'))).toBe(false);
+  });
+
+  it('key_code しか無いテーブルは furim_customers → friends の順で解決する', async () => {
+    const { db, statements } = makeDb({
+      firstRows: [{ n: 1 }],
+      allRows: [
+        [{ install_id: 'i1', key_code: 'KEY1' }, { install_id: 'i2', key_code: 'KEY2' }],
+        [{ line_user_id: 'U1', stripe_customer_id: 'cus_1', key_code: 'KEY1' }],
+        [{ id: 'f1', line_user_id: 'U1', display_name: 'はなこ' }],
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_free_accounts');
+    const body = (await res.json()) as { data: Array<{ _display_name: string | null }> };
+    expect(body.data.map((r) => r._display_name)).toEqual(['はなこ', null]);
+    const customers = statements.find((s) => s.sql.includes('FROM furim_customers WHERE key_code IN'))!;
+    expect(customers.args).toEqual(['KEY1', 'KEY2']);
+    const friends = statements.find((s) => s.sql.includes('FROM friends'))!;
+    expect(friends.sql).toContain('WHERE line_user_id IN (?)');
+    expect(friends.args).toEqual(['U1']);
+  });
+
+  it('friend_id（affiliates.friend_id）は friends.id で直接引く', async () => {
+    const { db, statements } = makeDb({
+      firstRows: [{ n: 1 }],
+      allRows: [[{ id: 'a1', code: 'AAA', friend_id: 'f9' }], [{ id: 'f9', line_user_id: 'U9', display_name: 'アンバ' }]],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/affiliates');
+    const body = (await res.json()) as { data: Array<{ _display_name: string | null }> };
+    expect(body.data[0]._display_name).toBe('アンバ');
+    const friends = statements.find((s) => s.sql.includes('FROM friends'))!;
+    expect(friends.sql).toContain('WHERE id IN (?)');
+    expect(friends.args).toEqual(['f9']);
+  });
+
+  it('1 行取得にも付く', async () => {
+    const { db } = makeDb({ firstRows: [CUSTOMER], allRows: [[{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }]] });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_customers/U1');
+    const body = (await res.json()) as { data: { _display_name: string | null } };
+    expect(body.data._display_name).toBe('たろう');
+  });
+});
+
+describe('GET /api/furim/admin/:table/:id/related', () => {
+  it('顧客行から本人を特定し、keys のある全テーブルを batch 1 回で数える（自分の行は除外）', async () => {
+    const { db, batches, statements } = makeDb({
+      firstRows: [CUSTOMER, { id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
+      batchRows: [
+        [{ n: 0 }], [],                                   // furim_customers（自分以外）
+        [{ n: 2 }], [{ invoice_id: 'in_1', line_user_id: 'U1' }, { invoice_id: 'in_2', line_user_id: 'U1' }], // furim_payments
+      ],
+      allRows: [[{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }]],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_customers/U1/related');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: {
+        identity: Record<string, string | null>;
+        related: Array<{ table: { name: string }; total: number; rows: Array<Record<string, unknown>>; q: string }>;
+      };
+    };
+    expect(body.data.identity).toEqual({ line_user_id: 'U1', friend_id: 'f1', display_name: 'たろう', stripe_customer_id: 'cus_1', key_code: 'ABC' });
+
+    const names = body.data.related.map((r) => r.table.name);
+    expect(names).toEqual([
+      'furim_customers', 'furim_payments', 'furim_ticket_ledger', 'furim_cancellations', 'furim_referrals', 'affiliates',
+      'furim_execution_logs', 'furim_ext_errors', 'furim_free_accounts', 'furim_manual_copy_logs', 'furim_shop_research_logs',
+    ]);
+    const payments = body.data.related[1];
+    expect(payments.total).toBe(2);
+    expect(payments.rows).toHaveLength(2);
+    expect(payments.rows[0]._display_name).toBe('たろう');
+    expect(payments.q).toBe('U1');
+    expect(body.data.related[0].total).toBe(0);
+    expect(body.data.related.find((r) => r.table.name === 'furim_free_accounts')!.q).toBe('ABC');
+
+    expect(batches).toHaveLength(1);
+    const stmts = batches[0];
+    expect(stmts).toHaveLength(22);
+    expect(stmts[0].sql).toBe('SELECT COUNT(*) AS n FROM furim_customers WHERE (line_user_id = ? OR stripe_customer_id = ? OR key_code = ?) AND line_user_id != ?');
+    expect(stmts[0].args).toEqual(['U1', 'cus_1', 'ABC', 'U1']);
+    expect(stmts[3].sql).toBe('SELECT * FROM furim_payments WHERE (line_user_id = ? OR stripe_customer_id = ?) ORDER BY paid_at DESC, invoice_id LIMIT ?');
+    expect(stmts[3].args).toEqual(['U1', 'cus_1', 20]);
+    const referrals = stmts.find((s) => s.sql.startsWith('SELECT COUNT(*) AS n FROM furim_referrals'))!;
+    expect(referrals.sql).toContain('(introduced_friend_id = ? OR ambassador_friend_id = ?)');
+    expect(referrals.args).toEqual(['f1', 'f1']);
+    expect(stmts.some((s) => s.sql.includes('furim_coupons'))).toBe(false);
+    // furim_customers 自身なので顧客の再取得はしない
+    expect(statements.filter((s) => s.sql.includes('FROM furim_customers WHERE line_user_id = ?'))).toHaveLength(1);
+  });
+
+  it('key_code だけの行（無料アカウント台帳）は furim_customers → friends で本人を補完する', async () => {
+    const { db, statements } = makeDb({
+      firstRows: [
+        { install_id: 'i1', key_code: 'KEY1' },
+        { line_user_id: 'U1', stripe_customer_id: 'cus_1', key_code: 'KEY1' },
+        { id: 'f1', line_user_id: 'U1', display_name: 'たろう' },
+        { line_user_id: 'U1', stripe_customer_id: 'cus_1', key_code: 'KEY1' },
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_free_accounts/i1/related');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { identity: Record<string, string | null>; related: Array<{ table: { name: string } }> } };
+    expect(body.data.identity).toEqual({ line_user_id: 'U1', friend_id: 'f1', display_name: 'たろう', stripe_customer_id: 'cus_1', key_code: 'KEY1' });
+    expect(statements[1].sql).toContain('FROM furim_customers WHERE stripe_customer_id = ? OR key_code = ?');
+    expect(statements[1].args).toEqual(['', 'KEY1']);
+    expect(body.data.related.map((r) => r.table.name)).toContain('furim_customers');
+  });
+
+  it('本人を特定できない行（クーポン）は related が空', async () => {
+    const { db, batches } = makeDb({ firstRows: [{ name: 'c1', coupon_id: 'x', is_active: 1 }] });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_coupons/c1/related');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { identity: Record<string, string | null>; related: unknown[] } };
+    expect(body.data.identity.line_user_id).toBeNull();
+    expect(body.data.related).toEqual([]);
+    expect(batches).toHaveLength(0);
+  });
+
+  it('行が無ければ 404、未許可テーブルは 404', async () => {
+    const { db } = makeDb({ firstRows: [null] });
+    expect((await req(db, 'GET', '/api/furim/admin/furim_customers/U9/related')).status).toBe(404);
+    expect((await req(db, 'GET', '/api/furim/admin/staff/U9/related')).status).toBe(404);
   });
 });
 

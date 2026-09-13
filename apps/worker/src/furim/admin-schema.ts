@@ -7,6 +7,13 @@ export interface AdminColumn {
   searchable?: boolean;
 }
 
+export type AdminKeyKind = 'line_user_id' | 'friend_id' | 'stripe_customer_id' | 'key_code';
+
+export interface AdminKey {
+  column: string;
+  kind: AdminKeyKind;
+}
+
 export interface AdminTable {
   name: string;
   label: string;
@@ -14,11 +21,14 @@ export interface AdminTable {
   orderBy: string;
   touchUpdatedAt: boolean;
   columns: AdminColumn[];
+  keys: AdminKey[];
 }
 
 const t = (name: string, editable = true, searchable = false): AdminColumn => ({ name, type: 'text', editable, searchable });
 const i = (name: string, editable = true): AdminColumn => ({ name, type: 'integer', editable });
 const ro = (name: string, searchable = false): AdminColumn => ({ name, type: 'text', editable: false, searchable });
+const roi = (name: string): AdminColumn => ({ name, type: 'integer', editable: false });
+const k = (column: string, kind: AdminKeyKind): AdminKey => ({ column, kind });
 
 export const ADMIN_TABLES: AdminTable[] = [
   {
@@ -57,6 +67,7 @@ export const ADMIN_TABLES: AdminTable[] = [
       ro('created_at'),
       ro('updated_at'),
     ],
+    keys: [k('line_user_id', 'line_user_id'), k('stripe_customer_id', 'stripe_customer_id'), k('key_code', 'key_code')],
   },
   {
     name: 'furim_payments',
@@ -81,6 +92,7 @@ export const ADMIN_TABLES: AdminTable[] = [
       t('paid_at'),
       ro('created_at'),
     ],
+    keys: [k('line_user_id', 'line_user_id'), k('stripe_customer_id', 'stripe_customer_id')],
   },
   {
     name: 'furim_ticket_ledger',
@@ -100,6 +112,7 @@ export const ADMIN_TABLES: AdminTable[] = [
       t('currency'),
       ro('created_at'),
     ],
+    keys: [k('line_user_id', 'line_user_id')],
   },
   {
     name: 'furim_cancellations',
@@ -116,6 +129,7 @@ export const ADMIN_TABLES: AdminTable[] = [
       t('mercari_url', true, true),
       t('canceled_at'),
     ],
+    keys: [k('line_user_id', 'line_user_id')],
   },
   {
     name: 'furim_referrals',
@@ -138,6 +152,7 @@ export const ADMIN_TABLES: AdminTable[] = [
       i('trial_extended_days'),
       ro('created_at'),
     ],
+    keys: [k('introduced_friend_id', 'friend_id'), k('ambassador_friend_id', 'friend_id')],
   },
   {
     name: 'affiliates',
@@ -154,6 +169,7 @@ export const ADMIN_TABLES: AdminTable[] = [
       t('friend_id', true, true),
       ro('created_at'),
     ],
+    keys: [k('friend_id', 'friend_id')],
   },
   {
     name: 'furim_coupons',
@@ -166,6 +182,109 @@ export const ADMIN_TABLES: AdminTable[] = [
       t('coupon_id', true, true),
       i('is_active'),
     ],
+    keys: [],
+  },
+  {
+    name: 'furim_execution_logs',
+    label: '自動化処理履歴',
+    pk: 'id',
+    orderBy: 'created_at DESC',
+    touchUpdatedAt: false,
+    columns: [
+      ro('id'),
+      ro('line_user_id', true),
+      ro('key_code', true),
+      ro('service', true),
+      ro('account_url', true),
+      ro('mypage_info_updated_date'),
+      ro('count_rating'),
+      ro('sales_amount'),
+      ro('total_target_count'),
+      ro('options'),
+      ro('client'),
+      ro('payload'),
+      ro('created_at'),
+    ],
+    keys: [k('line_user_id', 'line_user_id'), k('key_code', 'key_code')],
+  },
+  {
+    name: 'furim_ext_errors',
+    label: '拡張エラー',
+    pk: 'id',
+    orderBy: 'created_at DESC',
+    touchUpdatedAt: false,
+    columns: [
+      ro('id'),
+      ro('line_user_id', true),
+      ro('key_code', true),
+      ro('method', true),
+      ro('error', true),
+      ro('mercari_url', true),
+      ro('discrimination_code'),
+      ro('client'),
+      ro('created_at'),
+    ],
+    keys: [k('line_user_id', 'line_user_id'), k('key_code', 'key_code')],
+  },
+  {
+    name: 'furim_free_accounts',
+    label: '無料アカウント台帳',
+    pk: 'install_id',
+    orderBy: 'updated_at DESC',
+    touchUpdatedAt: false,
+    columns: [
+      ro('install_id', true),
+      ro('mercari_url', true),
+      ro('rakuma_url', true),
+      ro('yahoo_flea_url', true),
+      ro('yahoo_auction_url', true),
+      ro('shops_url', true),
+      ro('key_code', true),
+      ro('created_at'),
+      ro('updated_at'),
+    ],
+    keys: [k('key_code', 'key_code')],
+  },
+  {
+    name: 'furim_manual_copy_logs',
+    label: '手動コピー出品履歴',
+    pk: 'id',
+    orderBy: 'started_at DESC',
+    touchUpdatedAt: false,
+    columns: [
+      ro('id'),
+      ro('install_id', true),
+      ro('key_code', true),
+      ro('line_user_id', true),
+      ro('item_id', true),
+      ro('item_name', true),
+      ro('target'),
+      ro('status'),
+      ro('target_url'),
+      ro('source_url'),
+      ro('started_at'),
+      ro('completed_at'),
+      ro('created_at'),
+    ],
+    keys: [k('line_user_id', 'line_user_id'), k('key_code', 'key_code')],
+  },
+  {
+    name: 'furim_shop_research_logs',
+    label: 'ショップ調査履歴',
+    pk: 'id',
+    orderBy: 'created_at DESC',
+    touchUpdatedAt: false,
+    columns: [
+      ro('id'),
+      ro('install_id', true),
+      ro('key_code', true),
+      ro('line_user_id', true),
+      ro('my_mercari_url', true),
+      ro('target_url', true),
+      roi('is_free'),
+      ro('created_at'),
+    ],
+    keys: [k('line_user_id', 'line_user_id'), k('key_code', 'key_code')],
   },
 ];
 

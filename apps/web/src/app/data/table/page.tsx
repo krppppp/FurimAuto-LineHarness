@@ -2,10 +2,10 @@
 
 import { Suspense, useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Header from '@/components/layout/header'
 import { fetchApi, getCsrfToken } from '@/lib/api'
-import type { AdminTableMeta } from '../types'
+import { DISPLAY_NAME_COLUMN, type AdminTableMeta } from '../types'
 
 type Row = Record<string, unknown>
 
@@ -27,6 +27,18 @@ type AuditRow = {
   created_at: string
 }
 
+type Identity = {
+  line_user_id: string | null
+  friend_id: string | null
+  display_name: string | null
+  stripe_customer_id: string | null
+  key_code: string | null
+}
+
+type RelatedEntry = { table: AdminTableMeta; total: number; rows: Row[]; q: string }
+
+type RelatedResponse = { success: boolean; error?: string; data: { identity: Identity; related: RelatedEntry[] } }
+
 const LIMIT = 50
 
 // fetchApi は 4xx を例外にして本文を捨てるので、PATCH のエラー文（列の型違い・UNIQUE 制約など）を出すために本文を読む
@@ -45,6 +57,153 @@ function cell(v: unknown): string {
   return typeof v === 'string' ? v : String(v)
 }
 
+function tableHref(name: string, params: Record<string, string>): string {
+  const sp = new URLSearchParams({ name, ...params })
+  return `/data/table?${sp.toString()}`
+}
+
+function DisplayName({ row }: { row: Row }) {
+  const v = cell(row[DISPLAY_NAME_COLUMN])
+  return v ? <span className="font-medium text-gray-900">{v}</span> : <span className="text-gray-300">—</span>
+}
+
+function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
+  const id = cell(row[table.pk])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [identity, setIdentity] = useState<Identity | null>(null)
+  const [related, setRelated] = useState<RelatedEntry[]>([])
+
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      setLoading(true)
+      setError('')
+      try {
+        const res = await fetchApi<RelatedResponse>(`/api/furim/admin/${table.name}/${encodeURIComponent(id)}/related`)
+        if (!alive) return
+        if (res.success) {
+          setIdentity(res.data.identity)
+          setRelated(res.data.related)
+        } else {
+          setError(res.error ?? '関連データの取得に失敗しました')
+        }
+      } catch (e) {
+        if (alive) setError(e instanceof Error ? e.message : '関連データの取得に失敗しました')
+      } finally {
+        if (alive) setLoading(false)
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [table.name, id])
+
+  if (loading) return <div className="px-5 py-4 text-sm text-gray-400">読み込み中...</div>
+  if (error) return <div className="m-5 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>
+
+  const idEntries: Array<[string, string | null]> = identity
+    ? [
+        ['LINE 表示名', identity.display_name],
+        ['line_user_id', identity.line_user_id],
+        ['friend_id', identity.friend_id],
+        ['stripe_customer_id', identity.stripe_customer_id],
+        ['key_code', identity.key_code],
+      ]
+    : []
+  const nonEmpty = related.filter((r) => r.total > 0)
+  const empty = related.filter((r) => r.total === 0)
+
+  return (
+    <div className="px-5 py-4 space-y-5">
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">本人</div>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+          {idEntries.map(([k, v]) => (
+            <div key={k} className="contents">
+              <dt className="font-mono text-gray-500">{k}</dt>
+              <dd className="break-all text-gray-800">{v ? v : <span className="text-gray-300">—</span>}</dd>
+            </div>
+          ))}
+        </dl>
+        {identity && !identity.line_user_id && (
+          <div className="mt-2 text-xs text-gray-500">この行から LINE ユーザーを特定できませんでした</div>
+        )}
+      </div>
+
+      {nonEmpty.length === 0 && <div className="text-sm text-gray-400">紐づくデータはありません</div>}
+
+      {nonEmpty.map((r) => (
+        <div key={r.table.name}>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-sm font-semibold text-gray-900">
+              {r.table.label}
+              <span className="ml-2 text-xs font-normal text-gray-500">{r.total} 件</span>
+              <span className="ml-2 text-xs font-mono font-normal text-gray-400">{r.table.name}</span>
+            </div>
+            <Link href={tableHref(r.table.name, { q: r.q })} className="text-xs text-green-700 hover:underline">
+              もっと見る →
+            </Link>
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-gray-200">
+            <table className="min-w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-200">
+                  <th className="px-2 py-1.5 text-left font-semibold text-gray-500 whitespace-nowrap">LINE 表示名</th>
+                  {r.table.columns.map((c) => (
+                    <th key={c.name} className="px-2 py-1.5 text-left font-semibold text-gray-500 whitespace-nowrap font-mono">
+                      {c.name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {r.rows.map((x) => {
+                  const pk = cell(x[r.table.pk])
+                  return (
+                    <tr key={pk} className="hover:bg-green-50">
+                      <td className="px-2 py-1.5 whitespace-nowrap">
+                        <Link href={tableHref(r.table.name, { open: pk })} className="hover:underline">
+                          <DisplayName row={x} />
+                        </Link>
+                      </td>
+                      {r.table.columns.map((c) => {
+                        const v = cell(x[c.name])
+                        return (
+                          <td key={c.name} className="px-2 py-1.5 whitespace-nowrap max-w-[16rem] truncate text-gray-800" title={v}>
+                            {c.name === r.table.pk ? (
+                              <Link href={tableHref(r.table.name, { open: pk })} className="font-mono text-green-700 hover:underline">
+                                {v}
+                              </Link>
+                            ) : v === '' ? (
+                              <span className="text-gray-300">—</span>
+                            ) : (
+                              v
+                            )}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          {r.total > r.rows.length && (
+            <div className="mt-1 text-xs text-gray-400">最新 {r.rows.length} 件を表示。残りは「もっと見る」で</div>
+          )}
+        </div>
+      ))}
+
+      {empty.length > 0 && (
+        <div className="text-xs text-gray-400">
+          0 件: {empty.map((r) => r.table.label).join('・')}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RowEditor({
   table,
   row,
@@ -57,6 +216,7 @@ function RowEditor({
   onSaved: (row: Row) => void
 }) {
   const id = cell(row[table.pk])
+  const [tab, setTab] = useState<'edit' | 'related'>('edit')
   const [draft, setDraft] = useState<Record<string, string>>(() =>
     Object.fromEntries(table.columns.map((c) => [c.name, cell(row[c.name])])),
   )
@@ -86,6 +246,7 @@ function RowEditor({
     if (draft[c.name] !== cell(row[c.name])) changes[c.name] = draft[c.name]
   }
   const changedCount = Object.keys(changes).length
+  const editable = table.columns.some((c) => c.editable)
 
   const handleSave = async () => {
     if (changedCount === 0) return
@@ -96,7 +257,7 @@ function RowEditor({
       const res = await patchRow(`/api/furim/admin/${table.name}/${encodeURIComponent(id)}`, changes)
       if (res.success) {
         setNotice(`保存しました（${(res.meta?.changed ?? []).join(', ') || '変更なし'}）`)
-        onSaved(res.data)
+        onSaved({ ...res.data, [DISPLAY_NAME_COLUMN]: row[DISPLAY_NAME_COLUMN] })
         setDraft(Object.fromEntries(table.columns.map((c) => [c.name, cell(res.data[c.name])])))
         await loadAudit()
       } else {
@@ -109,82 +270,114 @@ function RowEditor({
     }
   }
 
+  const displayName = cell(row[DISPLAY_NAME_COLUMN])
+
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/30" onClick={onClose}>
       <div
-        className="h-full w-full max-w-xl overflow-y-auto bg-white shadow-xl"
+        className="h-full w-full max-w-3xl overflow-y-auto bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-200 bg-white px-5 py-3">
-          <div>
-            <div className="text-sm font-semibold text-gray-900">{table.label} の行を編集</div>
-            <div className="text-xs font-mono text-gray-500 break-all">{table.pk} = {id}</div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleSave}
-              disabled={saving || changedCount === 0}
-              className="px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity hover:opacity-90"
-              style={{ backgroundColor: '#06C755' }}
-            >
-              {saving ? '保存中...' : `保存${changedCount ? `（${changedCount}）` : ''}`}
-            </button>
-            <button
-              onClick={onClose}
-              className="px-3 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-            >
-              閉じる
-            </button>
-          </div>
-        </div>
-
-        <div className="px-5 py-4 space-y-3">
-          {error && <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>}
-          {notice && <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">{notice}</div>}
-          {table.columns.map((c) => {
-            const changed = c.editable && draft[c.name] !== cell(row[c.name])
-            return (
-              <div key={c.name}>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  <span className="font-mono">{c.name}</span>
-                  <span className="ml-2 text-gray-400">{c.type}{c.editable ? '' : '・読み取り専用'}</span>
-                </label>
-                <input
-                  type="text"
-                  value={draft[c.name] ?? ''}
-                  readOnly={!c.editable}
-                  onChange={(e) => setDraft((d) => ({ ...d, [c.name]: e.target.value }))}
-                  className={`w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 ${
-                    c.editable
-                      ? changed
-                        ? 'border-yellow-400 bg-yellow-50'
-                        : 'border-gray-300'
-                      : 'border-gray-200 bg-gray-50 text-gray-500'
-                  }`}
-                />
+        <div className="sticky top-0 z-10 border-b border-gray-200 bg-white">
+          <div className="flex items-center justify-between px-5 py-3">
+            <div>
+              <div className="text-sm font-semibold text-gray-900">
+                {displayName ? `${displayName} ・ ` : ''}{table.label}
               </div>
-            )
-          })}
+              <div className="text-xs font-mono text-gray-500 break-all">{table.pk} = {id}</div>
+            </div>
+            <div className="flex items-center gap-2">
+              {tab === 'edit' && editable && (
+                <button
+                  onClick={handleSave}
+                  disabled={saving || changedCount === 0}
+                  className="px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity hover:opacity-90"
+                  style={{ backgroundColor: '#06C755' }}
+                >
+                  {saving ? '保存中...' : `保存${changedCount ? `（${changedCount}）` : ''}`}
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                className="px-3 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+          <div className="flex gap-1 px-5">
+            {(
+              [
+                ['edit', editable ? '編集' : '内容'],
+                ['related', '関連データ'],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={`px-3 py-2 text-sm border-b-2 -mb-px transition-colors ${
+                  tab === key ? 'border-green-500 text-gray-900 font-medium' : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <div className="border-t border-gray-200 px-5 py-4">
-          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">変更履歴</div>
-          {audit.length === 0 ? (
-            <div className="text-xs text-gray-400">まだ変更はありません</div>
-          ) : (
-            <ul className="space-y-1.5 text-xs text-gray-700">
-              {audit.map((a) => (
-                <li key={a.id} className="flex flex-wrap gap-x-2">
-                  <span className="text-gray-400">{a.created_at.replace('T', ' ').slice(0, 19)}</span>
-                  <span>{a.staff_name}</span>
-                  <span className="font-mono">{a.column_name}</span>
-                  <span className="text-gray-400 line-through break-all">{a.old_value ?? '(空)'}</span>
-                  <span className="break-all">→ {a.new_value ?? '(空)'}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+        {tab === 'related' ? (
+          <RelatedPanel table={table} row={row} />
+        ) : (
+          <>
+            <div className="px-5 py-4 space-y-3">
+              {error && <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>}
+              {notice && <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">{notice}</div>}
+              {table.columns.map((c) => {
+                const changed = c.editable && draft[c.name] !== cell(row[c.name])
+                return (
+                  <div key={c.name}>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      <span className="font-mono">{c.name}</span>
+                      <span className="ml-2 text-gray-400">{c.type}{c.editable ? '' : '・読み取り専用'}</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={draft[c.name] ?? ''}
+                      readOnly={!c.editable}
+                      onChange={(e) => setDraft((d) => ({ ...d, [c.name]: e.target.value }))}
+                      className={`w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                        c.editable
+                          ? changed
+                            ? 'border-yellow-400 bg-yellow-50'
+                            : 'border-gray-300'
+                          : 'border-gray-200 bg-gray-50 text-gray-500'
+                      }`}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="border-t border-gray-200 px-5 py-4">
+              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">変更履歴</div>
+              {audit.length === 0 ? (
+                <div className="text-xs text-gray-400">まだ変更はありません</div>
+              ) : (
+                <ul className="space-y-1.5 text-xs text-gray-700">
+                  {audit.map((a) => (
+                    <li key={a.id} className="flex flex-wrap gap-x-2">
+                      <span className="text-gray-400">{a.created_at.replace('T', ' ').slice(0, 19)}</span>
+                      <span>{a.staff_name}</span>
+                      <span className="font-mono">{a.column_name}</span>
+                      <span className="text-gray-400 line-through break-all">{a.old_value ?? '(空)'}</span>
+                      <span className="break-all">→ {a.new_value ?? '(空)'}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   )
@@ -192,15 +385,18 @@ function RowEditor({
 
 function DataTableInner() {
   const searchParams = useSearchParams()
+  const router = useRouter()
   const name = searchParams.get('name') ?? ''
+  const initialQ = searchParams.get('q') ?? ''
+  const openId = searchParams.get('open') ?? ''
 
   const [table, setTable] = useState<AdminTableMeta | null>(null)
   const [rows, setRows] = useState<Row[]>([])
   const [total, setTotal] = useState(0)
   const [cursor, setCursor] = useState('0')
   const [nextCursor, setNextCursor] = useState<string | null>(null)
-  const [q, setQ] = useState('')
-  const [query, setQuery] = useState('')
+  const [q, setQ] = useState(initialQ)
+  const [query, setQuery] = useState(initialQ)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<Row | null>(null)
@@ -230,8 +426,40 @@ function DataTableInner() {
   }, [name])
 
   useEffect(() => {
-    load('0', '')
-  }, [load])
+    setQ(initialQ)
+    setQuery(initialQ)
+    load('0', initialQ)
+  }, [load, initialQ])
+
+  // ?open=<主キー> で来たら（関連データからの遷移）その行を取ってドロワーを開く
+  useEffect(() => {
+    if (!name || !openId) return
+    let alive = true
+    ;(async () => {
+      try {
+        const res = await fetchApi<RowResponse & { meta?: { table?: AdminTableMeta } }>(
+          `/api/furim/admin/${encodeURIComponent(name)}/${encodeURIComponent(openId)}`,
+        )
+        if (!alive) return
+        if (res.success) {
+          if (res.meta?.table) setTable((t) => t ?? res.meta!.table!)
+          setEditing(res.data)
+        } else {
+          setError(res.error ?? '行が見つかりません')
+        }
+      } catch (e) {
+        if (alive) setError(e instanceof Error ? e.message : '行が見つかりません')
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [name, openId])
+
+  const closeEditor = () => {
+    setEditing(null)
+    if (openId) router.replace(tableHref(name, query ? { q: query } : {}))
+  }
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
@@ -251,7 +479,7 @@ function DataTableInner() {
     <div>
       <Header
         title={table ? `${table.label}` : name}
-        description={table ? `${table.name}・主キー ${table.pk}・行をクリックで編集` : undefined}
+        description={table ? `${table.name}・主キー ${table.pk}・行をクリックで開く` : undefined}
         action={
           <Link href="/data" className="text-sm text-gray-500 hover:text-gray-700">
             ← テーブル一覧
@@ -320,6 +548,9 @@ function DataTableInner() {
           <table className="min-w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 whitespace-nowrap sticky left-0 bg-gray-50" title="friends.display_name">
+                  LINE 表示名
+                </th>
                 {table.columns.map((c) => (
                   <th
                     key={c.name}
@@ -334,7 +565,7 @@ function DataTableInner() {
             <tbody className="divide-y divide-gray-100">
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={table.columns.length} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={table.columns.length + 1} className="px-4 py-8 text-center text-gray-400">
                     行がありません
                   </td>
                 </tr>
@@ -343,8 +574,11 @@ function DataTableInner() {
                   <tr
                     key={cell(r[table.pk])}
                     onClick={() => setEditing(r)}
-                    className="cursor-pointer hover:bg-green-50 transition-colors"
+                    className="cursor-pointer hover:bg-green-50 transition-colors group"
                   >
+                    <td className="px-3 py-2 whitespace-nowrap max-w-xs truncate sticky left-0 bg-white group-hover:bg-green-50">
+                      <DisplayName row={r} />
+                    </td>
                     {table.columns.map((c) => {
                       const v = cell(r[c.name])
                       return (
@@ -365,7 +599,7 @@ function DataTableInner() {
         <RowEditor
           table={table}
           row={editing}
-          onClose={() => setEditing(null)}
+          onClose={closeEditor}
           onSaved={(updated) => {
             setEditing(updated)
             setRows((rs) => rs.map((r) => (cell(r[table.pk]) === cell(updated[table.pk]) ? updated : r)))
