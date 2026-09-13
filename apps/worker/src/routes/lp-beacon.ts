@@ -51,7 +51,10 @@ function clampDetail(v: unknown): string | null {
 function allowedPage(page: string): boolean {
   // /r/ は友だち追加の中継ページ（LINEアプリを開かせるワンクッション）。
   // /welcome/ は拡張インストール直後に開くオンボーディング（Capsec #187）。
-  return page.startsWith('/lp/') || page.startsWith('/service/') || page.startsWith('/r/') || page.startsWith('/welcome/');
+  // /YYYY/MM/DD/slug/ は WordPress 記事。StaticHP の Worker が lp-metrics.js を差し込む（Capsec #248）。
+  //   日本語 slug は percent-encode されたまま届く。
+  return page.startsWith('/lp/') || page.startsWith('/service/') || page.startsWith('/r/') || page.startsWith('/welcome/')
+    || /^\/20\d\d\/\d\d\/\d\d\//.test(page);
 }
 
 function clampStr(v: unknown): string | null {
