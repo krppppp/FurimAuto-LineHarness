@@ -176,13 +176,29 @@ const app = new Hono<Env>();
 // same-origin requests and origins on the ADMIN_ORIGIN allowlist; everything
 // else gets no Access-Control-Allow-Origin header (browser blocks it). Bearer
 // SDK/MCP callers send no Origin header and are unaffected.
-app.use('*', cors({
+const adminCors = cors({
   origin: (origin, c) => resolveCorsOrigin(c.env, origin, c.req.url),
   credentials: true,
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token', 'x-admin-api-key'],
   maxAge: 600,
-}));
+});
+
+// Chrome 拡張の認証・ログ API（/api/ext/v1・Capsec #245）専用の CORS。拡張の origin は
+// chrome-extension://<拡張ID>（本番・STG・dev で ID が違う）で管理画面の allowlist には載らないので、
+// chrome-extension:// で始まる origin だけ反射する。Cookie は使わないので credentials なし。
+// プリフライト（OPTIONS）はここで 204 を返し、rateLimit / auth / X-FurimAuto-Client 検査には届かない。
+const extCors = cors({
+  origin: (origin) => (origin.startsWith('chrome-extension://') ? origin : null),
+  credentials: false,
+  allowMethods: ['GET', 'POST', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'X-FurimAuto-Client'],
+  maxAge: 600,
+});
+
+app.use('*', (c, next) =>
+  new URL(c.req.url).pathname.startsWith('/api/ext/v1/') ? extCors(c, next) : adminCors(c, next),
+);
 
 // Rate limiting — runs before auth to block abuse early
 app.use('*', rateLimitMiddleware);

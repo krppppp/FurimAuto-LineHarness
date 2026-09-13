@@ -531,3 +531,79 @@ describe('流量制限', () => {
     expect(await last?.json()).toMatchObject({ success: false, error: 'rate_limited' });
   });
 });
+
+describe('CORS（Chrome 拡張の origin）', () => {
+  const EXT_ORIGIN = 'chrome-extension://ijadldonnopnaalnlmoomdnjhbogjjhf';
+
+  function preflight(path: string, origin: string, requestHeaders = 'x-furimauto-client,content-type') {
+    const { db } = makeDb();
+    return worker.fetch(
+      new Request(`https://worker.example.com${path}`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: origin,
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': requestHeaders,
+          'cf-connecting-ip': '203.0.113.10',
+        },
+      }),
+      envWith(db),
+      { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext,
+    );
+  }
+
+  it('プリフライトは 204 で拡張の origin を反射し、X-FurimAuto-Client を許可する（auth / ヘッダ検査に届かない）', async () => {
+    const res = await preflight('/api/ext/v1/key-code-set', EXT_ORIGIN);
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe(EXT_ORIGIN);
+    expect(res.headers.get('Access-Control-Allow-Headers')?.toLowerCase()).toContain('x-furimauto-client');
+    expect(res.headers.get('Access-Control-Allow-Methods')).toBe('GET,POST,OPTIONS');
+    expect(res.headers.get('Access-Control-Allow-Credentials')).toBeNull();
+    expect(res.headers.get('Access-Control-Max-Age')).toBe('600');
+  });
+
+  it('本番・dev など別の拡張 ID も反射する。chrome-extension 以外は反射しない', async () => {
+    for (const id of ['ieogmhpajeapjjikkdbkkkapgjfkhign', 'abcdefghijklmnopabcdefghijklmnop']) {
+      const res = await preflight('/api/ext/v1/execution-log', `chrome-extension://${id}`);
+      expect(res.status).toBe(204);
+      expect(res.headers.get('Access-Control-Allow-Origin')).toBe(`chrome-extension://${id}`);
+    }
+    const res = await preflight('/api/ext/v1/execution-log', 'https://evil.example.com');
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBeNull();
+  });
+
+  it('実リクエストのレスポンスにも拡張の origin が付く（不正キーでも 200 JSON）', async () => {
+    const { db } = makeDb();
+    const res = await worker.fetch(
+      new Request('https://worker.example.com/api/ext/v1/key-code-set', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-FurimAuto-Client': CLIENT,
+          Origin: EXT_ORIGIN,
+          'cf-connecting-ip': '203.0.113.10',
+        },
+        body: JSON.stringify({ keyCode: 'nope' }),
+      }),
+      envWith(db),
+      { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe(EXT_ORIGIN);
+    expect(res.headers.get('Access-Control-Allow-Credentials')).toBeNull();
+    expect(res.headers.get('Content-Type')).toContain('application/json');
+  });
+
+  it('管理 API の CORS は従来のまま（同一 origin を反射・credentials あり・拡張の origin は反射しない）', async () => {
+    const same = await preflight('/api/friends', 'https://worker.example.com', 'content-type,x-csrf-token');
+    expect(same.status).toBe(204);
+    expect(same.headers.get('Access-Control-Allow-Origin')).toBe('https://worker.example.com');
+    expect(same.headers.get('Access-Control-Allow-Credentials')).toBe('true');
+    expect(same.headers.get('Access-Control-Allow-Headers')).toContain('X-CSRF-Token');
+    expect(same.headers.get('Access-Control-Allow-Headers')?.toLowerCase()).not.toContain('x-furimauto-client');
+
+    const ext = await preflight('/api/friends', EXT_ORIGIN);
+    expect(ext.headers.get('Access-Control-Allow-Origin')).toBeNull();
+  });
+});
