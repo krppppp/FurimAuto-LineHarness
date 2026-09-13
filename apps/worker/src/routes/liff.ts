@@ -404,7 +404,7 @@ async function maybeProcessAmbassadorReferral(
   lineUserId: string,
 ): Promise<void> {
   if (!ref || ref.startsWith('xh:')) return;
-  if (!c.env.GAS_DEPLOY_ID || !c.env.FURIM_AMBASSADOR_OFFER_ID) return;
+  if (!c.env.FURIM_AMBASSADOR_OFFER_ID) return;
   const db = c.env.DB;
   try {
     const ambLink = await getAffiliateLinkByRefCode(db, ref);
@@ -428,9 +428,9 @@ async function maybeProcessAmbassadorReferral(
       withOutgoingLog(new LineClient(token), db, friend.id),
       lineUserId,
       ambAff.code,
-      { GAS_DEPLOY_ID: c.env.GAS_DEPLOY_ID, STRIPE_SECRET_KEY: c.env.STRIPE_SECRET_KEY, DB: db },
+      { GAS_DEPLOY_ID: c.env.GAS_DEPLOY_ID ?? '', STRIPE_SECRET_KEY: c.env.STRIPE_SECRET_KEY, DB: db },
       db,
-      {},
+      { refCode: ref },
     );
   } catch (err) {
     console.error('[furim] Ambassador referral URL processing error (non-blocking):', err);

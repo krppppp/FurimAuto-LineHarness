@@ -116,7 +116,7 @@ describe('deriveGiftStatus (GAS getLimitedGiftStatus と同じ派生式)', () =>
       line_user_id: 'U1', stripe_customer_id: null, key_code: 'pb_x', key_code_issued: 1, device_activated: 1,
       survey_answer: 'サブアカウント', free30_ticket: 1, youtube_coupon: ' ', extend_keyword: '対象外',
       sheet_synced_at: null, created_at: '', updated_at: '',
-    };
+    } as unknown as import('./customer-store.js').FurimCustomer;
     const s = deriveGiftStatus(base);
     expect(s).toEqual({
       hasCompletedSurvey: false,

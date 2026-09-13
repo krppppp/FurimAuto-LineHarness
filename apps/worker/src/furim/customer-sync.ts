@@ -9,7 +9,7 @@
 import { jstNow } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, getGasErrorFromResponse } from './gas-client.js';
-import { buildUpsertStatement, type FurimCustomer, type FurimCustomerPatch } from './customer-store.js';
+import { buildUpsertStatement, formatJstDateTime, parseJstDateTime, type FurimCustomer, type FurimCustomerPatch } from './customer-store.js';
 import { notifyStaff } from './staff-notify.js';
 import type { PushEnv } from '../services/push-notify.js';
 
@@ -46,6 +46,19 @@ function bool01(v: unknown): number {
   return s === 'TRUE' || s === '1' ? 1 : 0;
 }
 
+function jstText(v: unknown): string | null {
+  const s = str(v);
+  if (!s) return null;
+  const t = parseJstDateTime(s);
+  return t == null ? s : formatJstDateTime(t);
+}
+
+function int(v: unknown): number | null {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
 /** シート 1 行 → furim_customers の列。派生式は GAS getLimitedGiftStatus.js と同じ */
 export function sheetRowToPatch(row: SheetRow): FurimCustomerPatch {
   return {
@@ -57,8 +70,20 @@ export function sheetRowToPatch(row: SheetRow): FurimCustomerPatch {
     free30_ticket: bool01(row['Free30チケット']),
     youtube_coupon: str(row['Youtubeクーポン']),
     extend_keyword: str(row['延長キーワード']),
+    // 段階2（migration 069）: サブスク・拡張が読む値
+    subscription_id: str(row['サブスクID']),
+    subscription_start_at: jstText(row['サブスク登録日時']),
+    subscription_end_at: jstText(row['サブスク終了日時']),
+    subscription_price: int(row['サブスク価格']),
+    plan_label: str(row['プラン名']),
+    copy_tickets: int(row['コピー出品チケット']),
+    mercari_url: str(row['メルカリURL']),
+    customer_email: str(row['Email']),
   };
 }
+
+// 段階2 でもシートが正の列（拡張が GAS 経由で書く）: 差分検知 cron が D1 に取り込む
+const SHEET_OWNED_FIELDS = ['device_activated', 'copy_tickets', 'mercari_url'] as const;
 
 // LINE ユーザーID の形式（U + 32 桁 hex）。getData はヘッダーより上のテンプレ行・型注記行
 // （LINE_ID="String"）も返すので、形式で弾く
@@ -197,10 +222,18 @@ export async function reconcileFurimCustomers(
       observed.push({ lineUserId, field: 'row_missing_in_d1', d1Value: null, sheetValue: patch.key_code ?? '(row)' });
       continue;
     }
-    // 1. シートが正の列を取り込む（端末判定文字列は拡張が GAS 経由で書く。段階3 で Worker に移る）
-    if ((patch.device_activated ?? 0) !== cur.device_activated) {
-      stmts.push(buildUpsertStatement(db, lineUserId, { device_activated: patch.device_activated, sheet_synced_at: nowJst }));
-      pulled++;
+    // 1. シートが正の列を取り込む（端末判定文字列・チケット残数・メルカリURL は拡張が GAS 経由で書く。段階3 で Worker に移る）
+    {
+      const pull: FurimCustomerPatch = {};
+      for (const f of SHEET_OWNED_FIELDS) {
+        const sheetVal = patch[f] ?? null;
+        const d1Val = cur[f] ?? null;
+        if (String(sheetVal ?? '') !== String(d1Val ?? '')) (pull as Record<string, unknown>)[f] = sheetVal;
+      }
+      if (Object.keys(pull).length) {
+        stmts.push(buildUpsertStatement(db, lineUserId, { ...pull, sheet_synced_at: nowJst }));
+        pulled++;
+      }
     }
     // 2. D1 が正の列のズレ
     observed.push(...diffCustomerRow(lineUserId, patch, cur));

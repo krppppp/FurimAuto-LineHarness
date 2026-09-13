@@ -20,6 +20,23 @@ export type FurimCustomer = {
   youtube_coupon: string | null;
   extend_keyword: string | null;
   sheet_synced_at: string | null;
+  // 段階2（migration 069）
+  subscription_id: string | null;
+  subscription_start_at: string | null;
+  subscription_end_at: string | null;   // JST 'YYYY-MM-DD HH:MM:SS'（拡張の期限判定・+24h バッファ込み）
+  subscription_price: number | null;
+  plan_label: string | null;
+  plan_label_legacy: string | null;
+  packages: string | null;
+  features: string | null;
+  multi_channel_sites: string | null;
+  subscription_source: string | null;
+  subscription_status: string | null;
+  copy_tickets: number | null;
+  mercari_url: string | null;
+  customer_email: string | null;
+  last_invoice_id: string | null;
+  canceled_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -36,7 +53,52 @@ const PATCHABLE = [
   'youtube_coupon',
   'extend_keyword',
   'sheet_synced_at',
+  'subscription_id',
+  'subscription_start_at',
+  'subscription_end_at',
+  'subscription_price',
+  'plan_label',
+  'plan_label_legacy',
+  'packages',
+  'features',
+  'multi_channel_sites',
+  'subscription_source',
+  'subscription_status',
+  'copy_tickets',
+  'mercari_url',
+  'customer_email',
+  'last_invoice_id',
+  'canceled_at',
 ] as const;
+
+/** 'YYYY-MM-DD HH:MM:SS'（JST）。シートに書く形式・stripe-processor の subscriptionEndDateTime と同じ */
+export function formatJstDateTime(ms: number): string {
+  return new Date(ms + 9 * 60 * 60_000).toISOString().replace('T', ' ').slice(0, 19);
+}
+
+/** JST の 'YYYY-MM-DD HH:MM:SS' / ISO(Z, +09:00) を epoch ms に。解釈できなければ null */
+export function parseJstDateTime(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const hasTz = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s);
+  const iso = s.includes('T') ? s : s.replace(' ', 'T');
+  const t = Date.parse(hasTz ? iso : `${iso}+09:00`);
+  return Number.isNaN(t) ? null : t;
+}
+
+/**
+ * 無料試用の期限を days 日延ばす（紹介成立の +7 日。GAS stackLINEIntroductionInfo と同じ「現在の終了日時 + 日数」）。
+ * 期限が無い行は延ばさず null を返す。返り値はシートへ鏡写しする文字列
+ */
+export async function extendSubscriptionEnd(db: D1Database, lineUserId: string, days: number): Promise<string | null> {
+  const c = await getFurimCustomer(db, lineUserId);
+  const base = parseJstDateTime(c?.subscription_end_at);
+  if (base == null) return null;
+  const next = formatJstDateTime(base + days * 24 * 60 * 60_000);
+  await upsertFurimCustomer(db, lineUserId, { subscription_end_at: next });
+  return next;
+}
 
 // 試用キーコードの接頭語。GAS プラン一覧「友達登録2週間トライアルプラン」の「キーコード接頭語」と同値
 // （setKeyCode.js が接頭語の前方一致で「同一プラン」を判定するため、必ず一致させる）

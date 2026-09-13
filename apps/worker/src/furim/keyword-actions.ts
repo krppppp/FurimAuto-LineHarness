@@ -2,7 +2,19 @@ import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
 import { enqueueGasRetryJob, buildKeycodeResetMessages, fetchCurrentKeyCode } from './gas-retry-queue.js';
 import { copyTicketFlexMessage } from './messages.js';
-import { absorbGasKeyCode, upsertFurimCustomer } from './customer-store.js';
+import { absorbGasKeyCode, upsertFurimCustomer, resolveStripeCustomerId, extendSubscriptionEnd } from './customer-store.js';
+import { mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
+import { isPaidPlan } from './ticket-checkout.js';
+import {
+  INTRODUCED_COUPON_NAME,
+  REWARD_COUPON_LIMIT,
+  getCouponId,
+  countReferrals,
+  recordReferral,
+  findReferralByIntroduced,
+  findUnappliedReward,
+  markRewardApplied,
+} from './referral-store.js';
 import { getFriendByLineUserId, getFriendById, getAffiliateByCode, completeFriendActiveScenarios, getScenarioByName, enrollFriendInScenario } from '@line-crm/db';
 
 // seed-furimauto-all-scenarios.mjs v2 の命名と一致させること（旧統合7本命名だと見つからず切替が空振りする）
@@ -31,8 +43,8 @@ async function resolveAmbassadorCouponName(ambassadorCode: string, env: KeywordA
     if (!affiliate?.friend_id) return null;
     const friend = await getFriendById(db, affiliate.friend_id);
     if (!friend?.line_user_id) return null;
-    const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getStripeIDwithLINEID', lineUserId: friend.line_user_id }) as Record<string, string>;
-    const customerId = gasData?.customer_stripe_id;
+    // Stripe顧客ID は D1（furim_customers → friends.metadata）から（Capsec #244。GAS getStripeIDwithLINEID は呼ばない）
+    const customerId = await resolveStripeCustomerId(db, friend.line_user_id);
     if (!customerId) return null;
     const res = await fetch(`https://api.stripe.com/v1/subscriptions?customer=${customerId}&status=active&limit=1`, {
       headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
@@ -170,7 +182,7 @@ export async function processReferral(
   ambassadorCode: string,
   env: KeywordActionsEnv,
   db?: D1Database,
-  opts: { replyToken?: string; silent?: boolean } = {},
+  opts: { replyToken?: string; silent?: boolean; refCode?: string | null } = {},
 ): Promise<{ ok: boolean; reason?: string }> {
   const targetDb = db ?? env.DB;
 
@@ -179,83 +191,138 @@ export async function processReferral(
       ? lineClient.replyMessage(opts.replyToken, messages)
       : lineClient.pushMessage(introducedLineUserId, messages);
 
-  // 冪等ガード: 被紹介者に既に「紹介経由」タグがあれば GAS/Stripe を呼ばず即return。
-  // 手動↔URLの経路跨ぎ・re-click・別アンバサダー2回目を1点で防ぐ。
-  if (targetDb) {
-    const friend = await getFriendByLineUserId(targetDb, introducedLineUserId);
-    if (friend) {
-      const introTag = await targetDb.prepare('SELECT id FROM tags WHERE name = ?').bind('紹介経由').first<{ id: string }>();
-      if (introTag) {
-        const already = await targetDb.prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(friend.id, introTag.id).first();
-        if (already) {
-          // 適用済みでも黙って終わると「コードを送ったのに無反応」に見えるので一言返す
-          // （URL経由で成立した直後に本人が手動でコードを送るとここに来る）。
-          // cron のリトライ経路は silent なので通知しない
-          if (!opts.silent) {
-            await notifyIntroduced([{ type: 'text', text: `お友達紹介の特典は、すでに適用済みです😊\n\n無料試用期間の1週間追加も反映されていますので、あらためてコードをお送りいただく必要はありません。\nそのままご利用ください🙌` } as never]);
-          }
-          return { ok: false, reason: 'already_referred' };
-        }
-      }
-    }
+  // 段階2（Capsec #244）: 紹介は D1 だけで完結する。GAS の stackLINEIntroductionInfo /
+  // updateIntroductionCoupon / getAmbassadorInfo は呼ばない（今夜の「アンバサダー制度」エラー＝GAS 見切り）。
+  if (!targetDb) {
+    console.error('[furim] processReferral: D1 が無いため処理できません');
+    return { ok: false, reason: 'no_db' };
   }
 
-  // アンバサダー報酬クーポン額は、アンバサダーの現サブスク月額(Stripe実額)で決める。
-  // 解決できた場合のみ GAS へ渡し、GAS側のプラン名突合を回避する（プラン改名に非依存）。
-  const ambassadorCouponName = await resolveAmbassadorCouponName(ambassadorCode, env, db);
-
-  const data = await gasGet(env.GAS_DEPLOY_ID, {
-    method: 'stackLINEIntroductionInfo',
-    lineUserId: introducedLineUserId,
-    ambassadorCode,
-    ...(ambassadorCouponName ? { ambassadorCouponName } : {}),
-  }) as Record<string, string>;
-
-  // 被紹介者がまだマスター未登録（友だち追加直後のレース）→ 保留。エラー通知は出さず静かに終了。
-  // 手動code経路なら実質発生しない（送信時点で登録済み）。URL経路のみ後続の再試行に委ねる。
-  if (data?.res === 'introduced_not_registered') {
+  const introducedFriend = await getFriendByLineUserId(targetDb, introducedLineUserId);
+  // 被紹介者がまだ登録されていない（友だち追加直後のレース）→ 保留。URL経路のみ後続の再試行に委ねる
+  if (!introducedFriend) {
     return { ok: false, reason: 'introduced_not_registered' };
   }
 
-  // 被紹介者が既に有料会員 → 紹介特典の対象外である旨を返答（GAS側でプラン判定）
-  if (data?.res === 'ineligible_paid_member') {
+  // 冪等ガード: 「紹介経由」タグ、または紹介台帳に被紹介者が居れば即return。
+  // 手動↔URLの経路跨ぎ・re-click・別アンバサダー2回目を1点で防ぐ。
+  {
+    const introTag = await targetDb.prepare('SELECT id FROM tags WHERE name = ?').bind('紹介経由').first<{ id: string }>();
+    const tagged = introTag
+      ? await targetDb.prepare('SELECT 1 FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(introducedFriend.id, introTag.id).first()
+      : null;
+    const recorded = tagged ? null : await findReferralByIntroduced(targetDb, introducedFriend.id);
+    if (tagged || recorded) {
+      // 適用済みでも黙って終わると「コードを送ったのに無反応」に見えるので一言返す
+      // （URL経由で成立した直後に本人が手動でコードを送るとここに来る）。
+      // cron のリトライ経路は silent なので通知しない
+      if (!opts.silent) {
+        await notifyIntroduced([{ type: 'text', text: `お友達紹介の特典は、すでに適用済みです😊\n\n無料試用期間の1週間追加も反映されていますので、あらためてコードをお送りいただく必要はありません。\nそのままご利用ください🙌` } as never]);
+      }
+      return { ok: false, reason: 'already_referred' };
+    }
+  }
+
+  // アンバサダー（affiliates.code＝アンバサダーコード）
+  const affiliate = await getAffiliateByCode(targetDb, ambassadorCode);
+  const ambassadorFriend = affiliate?.friend_id ? await getFriendById(targetDb, affiliate.friend_id) : null;
+  if (!affiliate || !ambassadorFriend?.line_user_id || !env.STRIPE_SECRET_KEY) {
+    if (!opts.silent) await notifyIntroduced([{ type: 'text', text: `友達紹介コードが有効ではないようです。\n確認後、弊アカウントからご連絡差し上げます。` } as never]);
+    return { ok: false, reason: 'invalid_code' };
+  }
+  const ambassadorLineUserId = ambassadorFriend.line_user_id;
+
+  // 自己紹介除外（アンバサダー自身が自分のURL/codeで登録した場合）
+  if (ambassadorLineUserId === introducedLineUserId) {
+    return { ok: false, reason: 'self_referral' };
+  }
+
+  // 被紹介者が既に有料会員 → 紹介特典の対象外（GAS はプラン名に「プラン」を含むかで判定していた）
+  if (isPaidPlan((introducedFriend as { plan_name?: string | null }).plan_name)) {
     if (!opts.silent) await notifyIntroduced([{ type: 'text', text: `恐れ入りますが、既に月額プランをご利用中のため、お友達紹介特典（無料期間の延長・初月半額クーポン）の対象外となります🙇` } as never]);
     return { ok: false, reason: 'paid_member' };
   }
 
-  if (!data?.introducedCouponID || !env.STRIPE_SECRET_KEY) {
+  const introducedStripeID = await resolveStripeCustomerId(targetDb, introducedLineUserId);
+  const ambassadorStripeID = await resolveStripeCustomerId(targetDb, ambassadorLineUserId);
+  // 被紹介者の Stripe 顧客はフォロー時の automation が作る。まだ無ければ保留（cron が拾う）
+  if (!introducedStripeID) {
+    return { ok: false, reason: 'introduced_not_registered' };
+  }
+  const introducedCouponID = await getCouponId(targetDb, INTRODUCED_COUPON_NAME);
+  if (!introducedCouponID) {
+    console.error('[furim] processReferral: furim_coupons に被紹介者クーポンが無い');
     if (!opts.silent) await notifyIntroduced([{ type: 'text', text: `友達紹介コードが有効ではないようです。\n確認後、弊アカウントからご連絡差し上げます。` } as never]);
     return { ok: false, reason: 'invalid_code' };
   }
 
-  // 自己紹介除外（アンバサダー自身が自分のURL/codeで登録した場合）
-  if (data.ambassadorLineID === introducedLineUserId) {
-    return { ok: false, reason: 'self_referral' };
+  // アンバサダー報酬クーポン: 10 枚まで。額はアンバサダーの現サブスク月額（Stripe 実額）で決める
+  const counts = await countReferrals(targetDb, affiliate.id);
+  let ambassadorCouponName: string | null = null;
+  let ambassadorCouponId: string | null = null;
+  if (counts.rewarded < REWARD_COUPON_LIMIT) {
+    ambassadorCouponName = await resolveAmbassadorCouponName(ambassadorCode, env, targetDb);
+    ambassadorCouponId = ambassadorCouponName ? await getCouponId(targetDb, ambassadorCouponName) : null;
+    if (!ambassadorCouponId) ambassadorCouponName = null;
   }
 
-  await fetch(`https://api.stripe.com/v1/customers/${data.introducedStripeID}`, {
+  // 台帳に記録（introduced_friend_id UNIQUE。ここで弾かれたら同時送信の 2 回目）
+  const referralId = await recordReferral(targetDb, {
+    affiliateId: affiliate.id,
+    ambassadorFriendId: ambassadorFriend.id,
+    introducedFriendId: introducedFriend.id,
+    refCode: opts.refCode ?? null,
+    source: opts.silent ? 'retry' : opts.replyToken ? 'keyword' : 'url',
+    ambassadorPlanName: (ambassadorFriend as { plan_name?: string | null }).plan_name ?? null,
+    rewardCouponName: ambassadorCouponName,
+    rewardCouponId: ambassadorCouponId,
+    introducedCouponId: introducedCouponID,
+    trialExtendedDays: 7,
+  });
+  if (!referralId) {
+    return { ok: false, reason: 'already_referred' };
+  }
+
+  await fetch(`https://api.stripe.com/v1/customers/${introducedStripeID}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ coupon: data.introducedCouponID, 'metadata[ambassadorStripeID]': data.ambassadorStripeID, 'metadata[isIntroduced]': 'true', 'metadata[isFirstSubscription]': 'true' }).toString(),
+    body: new URLSearchParams({ coupon: introducedCouponID, 'metadata[ambassadorStripeID]': ambassadorStripeID ?? '', 'metadata[isIntroduced]': 'true', 'metadata[isFirstSubscription]': 'true' }).toString(),
   });
+
+  // 無料試用 +7 日: D1 の期限を延ばし、シート（段階3 まで拡張が読む）へ鏡写し
+  try {
+    const newEnd = await extendSubscriptionEnd(targetDb, introducedLineUserId, 7);
+    if (newEnd && env.GAS_DEPLOY_ID) {
+      await mirrorCustomerFieldsToGas(targetDb, env.GAS_DEPLOY_ID, introducedLineUserId, { 'サブスク終了日時': newEnd });
+    }
+  } catch (e) {
+    console.error('[furim] processReferral: 期限延長に失敗', introducedLineUserId, e);
+  }
 
   await notifyIntroduced([{ type: 'text', text: `友達紹介コードの確認が取れました😆\n\n無料試用期間を1週間追加して、友達登録から3週間ご利用いただけます。\n\n更に月額プランにご登録の際に、初月の利用料が半額になるクーポンを付与させていただきました♪\n\nそれではキーコードを発行して、3週間存分に使いまわして売り上げUPさせてください⭐️` } as never]);
 
-  let pushText = `【お友達の${data.introducedLineDisplayName}様があなたの友達紹介コードを入力しました】\n\n`;
-  if (data.ambassadorCouponName) {
-    const ambassadorRes = await fetch(`https://api.stripe.com/v1/customers/${data.ambassadorStripeID}`, {
+  const introducedLineDisplayName = introducedFriend.display_name ?? '';
+  let pushText = `【お友達の${introducedLineDisplayName}様があなたの友達紹介コードを入力しました】\n\n`;
+  if (ambassadorCouponName && ambassadorStripeID) {
+    const ambassadorRes = await fetch(`https://api.stripe.com/v1/customers/${ambassadorStripeID}`, {
       headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
     }).then(r => r.json()) as { discount?: unknown };
 
     if (!ambassadorRes.discount) {
-      const updateRes = await gasGet(env.GAS_DEPLOY_ID, { method: 'updateIntroductionCoupon', lineID: data.ambassadorLineID }) as Record<string, string>;
-      if (updateRes?.ambassadorCouponID) {
-        await fetch(`https://api.stripe.com/v1/customers/${data.ambassadorStripeID}`, {
+      // 未適用の報酬クーポン（今回分を含む古い順の 1 枚）を Stripe に適用してから適用済みにする
+      const pending = await findUnappliedReward(targetDb, ambassadorFriend.id);
+      if (pending) {
+        const applyRes = await fetch(`https://api.stripe.com/v1/customers/${ambassadorStripeID}`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ coupon: updateRes.ambassadorCouponID }).toString(),
+          body: new URLSearchParams({ coupon: pending.reward_coupon_id }).toString(),
         });
-        pushText += `それに伴い${updateRes.ambassadorCouponName}を付与いたしましたので、次回以降のお支払い時に自動で適用されます。\n\nリッチメニューの月額会員ページから、次回の支払額についてクーポン値引きが適用されているのを確認してください。`;
+        if (applyRes.ok) {
+          await markRewardApplied(targetDb, pending.id);
+          pushText += `それに伴い${pending.reward_coupon_name}を付与いたしましたので、次回以降のお支払い時に自動で適用されます。\n\nリッチメニューの月額会員ページから、次回の支払額についてクーポン値引きが適用されているのを確認してください。`;
+        } else {
+          console.error('[furim] processReferral: 報酬クーポンの Stripe 適用失敗', await applyRes.text());
+        }
       }
     } else {
       pushText += 'すでに以前のクーポンを次回の支払いに適用しているので、今回分のクーポンは未来の支払いに充当されます。';
@@ -263,13 +330,13 @@ export async function processReferral(
   } else {
     pushText += '数多くのご紹介のご協力、誠に感謝いたします。';
   }
-  await lineClient.pushMessage(data.ambassadorLineID, [{ type: 'text', text: pushText } as never]);
+  await lineClient.pushMessage(ambassadorLineUserId, [{ type: 'text', text: pushText } as never]);
 
   // シナリオ切り替え: 通常シナリオを完了させ、Referralシナリオに登録
   if (targetDb) {
     try {
-      const friend = await getFriendByLineUserId(targetDb, introducedLineUserId);
-      if (friend) {
+      const friend = introducedFriend;
+      {
         await completeFriendActiveScenarios(targetDb, friend.id);
         const referralScenario = await getScenarioByName(targetDb, REFERRAL_SCENARIO_NAME);
         if (referralScenario?.is_active) {
@@ -282,12 +349,10 @@ export async function processReferral(
         if (introTag) await targetDb.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friend.id, introTag.id).run();
       }
 
-      // アンバサダーLvタグ更新（アンバサダー本人）
-      if (data.ambassadorLineID) {
-        const ambassadorFriend = await getFriendByLineUserId(targetDb, data.ambassadorLineID);
-        if (ambassadorFriend) {
-          const ambassadorInfo = await gasGet(env.GAS_DEPLOY_ID, { method: 'getAmbassadorInfo', lineUserId: data.ambassadorLineID }) as { numberIntroduced?: number };
-          const count = ambassadorInfo?.numberIntroduced ?? 0;
+      // アンバサダーLvタグ更新（アンバサダー本人）。紹介数は D1 の台帳の件数
+      {
+        {
+          const count = (await countReferrals(targetDb, affiliate.id)).total;
 
           // 既存アンバサダーLvタグを全削除
           for (const lv of ['アンバサダーLv.1', 'アンバサダーLv.5', 'アンバサダーLv.10']) {
@@ -300,7 +365,7 @@ export async function processReferral(
           if (newLv) {
             const newLvTag = await targetDb.prepare('SELECT id FROM tags WHERE name = ?').bind(newLv).first<{ id: string }>();
             if (newLvTag) await targetDb.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(ambassadorFriend.id, newLvTag.id).run();
-            console.log(`[furim] Ambassador ${data.ambassadorLineID} → ${newLv} (count=${count})`);
+            console.log(`[furim] Ambassador ${ambassadorLineUserId} → ${newLv} (count=${count})`);
           }
         }
       }
@@ -326,7 +391,7 @@ export async function retryPendingAmbassadorReferrals(
   env: { GAS_DEPLOY_ID?: string; STRIPE_SECRET_KEY?: string; DB?: D1Database; FURIM_AMBASSADOR_OFFER_ID?: string; LINE_CHANNEL_ACCESS_TOKEN: string },
   db: D1Database,
 ): Promise<void> {
-  if (!env.FURIM_AMBASSADOR_OFFER_ID || !env.GAS_DEPLOY_ID) return;
+  if (!env.FURIM_AMBASSADOR_OFFER_ID) return;
   // 2時間前(JST)の閾値。friends.created_at は JST ISO(+09:00)。
   const cutoff = new Date(Date.now() - 2 * 60 * 60_000 + 9 * 60 * 60_000).toISOString().slice(0, -1) + '+09:00';
   const rows = await db.prepare(

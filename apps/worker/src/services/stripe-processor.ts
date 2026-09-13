@@ -359,17 +359,22 @@ export async function processStripeEvent(
     // 先に立ててから」IDを返すため、fetchがハングしてGAS側だけ完走するとシート上は適用済み・
     // Stripe未適用のまま翌月以降も拾えず割引がロストする。GAS非改修方針のためWorker側では
     // 塞げない。発生時はクーポン適用履歴とStripe側discountを突き合わせて手動適用する
+    // 段階2（Capsec #244）: 未適用の報酬クーポンは D1 furim_referrals から 1 枚取り、
+    // Stripe 適用に成功してから reward_applied_at を立てる（GAS 版の「先にフラグ→ハングで割引ロスト」を解消）
     let ambassadorCouponApplied = false;
-    if (!isNewSubscription && resolvedLineUserId && env.GAS_DEPLOY_ID && stripeCustomerId) {
+    if (!isNewSubscription && resolvedLineUserId && stripeCustomerId && env.STRIPE_SECRET_KEY) {
       try {
-        const couponData = await gasGet(env.GAS_DEPLOY_ID, { method: 'updateIntroductionCoupon', lineID: resolvedLineUserId }) as Record<string, string> | null;
-        const ambassadorCouponId = couponData?.ambassadorCouponID ?? null;
-        if (ambassadorCouponId && env.STRIPE_SECRET_KEY) {
+        const { findUnappliedReward, markRewardApplied } = await import('../furim/referral-store.js');
+        const ambFriend = await getFriendByLineUserId(db, resolvedLineUserId);
+        const pending = ambFriend ? await findUnappliedReward(db, ambFriend.id) : null;
+        const ambassadorCouponId = pending?.reward_coupon_id ?? null;
+        if (pending && ambassadorCouponId) {
           if (subscriptionId) {
             const { getSubDiscounts, stripeCall, STRIPE_STACK_VERSION } = await import('../routes/plan-builder.js');
             const existingDiscounts = await getSubDiscounts(env.STRIPE_SECRET_KEY, subscriptionId);
             if (existingDiscounts.some((d) => d.couponId === ambassadorCouponId)) {
               console.log('[stripe/invoice] ambassador coupon already stacked:', ambassadorCouponId);
+              await markRewardApplied(db, pending.id);
             } else {
               const stackParams: Record<string, string> = {};
               existingDiscounts.forEach((d, i) => {
@@ -377,17 +382,21 @@ export async function processStripeEvent(
               });
               stackParams[`discounts[${existingDiscounts.length}][coupon]`] = ambassadorCouponId;
               await stripeCall(env.STRIPE_SECRET_KEY, `subscriptions/${subscriptionId}`, stackParams, 'POST', STRIPE_STACK_VERSION);
+              await markRewardApplied(db, pending.id);
               ambassadorCouponApplied = true;
               console.log('[stripe/invoice] ambassador coupon stacked:', ambassadorCouponId, 'onto', subscriptionId);
             }
           } else {
             // サブスクIDが取れない場合のフォールバック（従来動作: 顧客レベル適用）
-            await fetch(`https://api.stripe.com/v1/customers/${stripeCustomerId}`, {
+            const res = await fetch(`https://api.stripe.com/v1/customers/${stripeCustomerId}`, {
               method: 'POST',
               headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
               body: new URLSearchParams({ coupon: ambassadorCouponId }).toString(),
             });
-            ambassadorCouponApplied = true;
+            if (res.ok) {
+              await markRewardApplied(db, pending.id);
+              ambassadorCouponApplied = true;
+            }
           }
         }
       } catch (e) { console.error('[stripe/invoice] ambassador coupon failed:', e); }

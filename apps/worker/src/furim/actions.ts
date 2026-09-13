@@ -9,10 +9,9 @@ import {
   copyTicketFlexMessage,
   surveyButton,
 } from './messages.js';
+import { getOrCreateAmbassadorAffiliate, countReferrals } from './referral-store.js';
 import {
   getFriendByLineUserId,
-  getAffiliateByFriendId,
-  createAffiliate,
   enrollAffiliateInOffer,
 } from '@line-crm/db';
 
@@ -486,28 +485,19 @@ async function actionAmbassador(
   env: ResolvedEnv,
   db?: D1Database,
 ) {
-  const data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getAmbassadorInfo', lineUserId }) as Record<string, unknown>;
-  const ambassadorCode = data?.ambassadorCode ? String(data.ambassadorCode) : null;
-
-  // アンバサダー固有の紹介URLを用意（affiliate.code = ambassadorCode に揃え、
-  // URL経由attribution時に手動code方式と同じ processReferral へ載せる）。
-  // db未接続 / offer未設定 / friend未取得 / WORKER base未設定 のいずれかなら
-  // refUrl=null となり、URLなし（再タップ案内）のFlexを返す。
+  // 段階2（Capsec #244）: アンバサダーコードと紹介数は D1（affiliates.code / furim_referrals）。GAS は呼ばない
+  // （2026-09-13 実機で GAS getAmbassadorInfo の 15 秒見切りが「エラーが発生しました」になった）。
+  // アンバサダー固有の紹介URLを用意し、URL経由attribution時に手動code方式と同じ processReferral へ載せる。
+  // db未接続 / offer未設定 / friend未取得 / WORKER base未設定 のいずれかなら refUrl=null となり、URLなし（再タップ案内）のFlexを返す。
   let refUrl: string | null = null;
-  if (db && ambassadorCode && env.FURIM_AMBASSADOR_OFFER_ID) {
+  let introduced = 0;
+  if (db) {
     try {
       const friend = await getFriendByLineUserId(db, lineUserId);
       if (friend) {
-        let affiliate = await getAffiliateByFriendId(db, friend.id);
-        if (!affiliate) {
-          try {
-            affiliate = await createAffiliate(db, { name: `Ambassador ${ambassadorCode}`, code: ambassadorCode, friendId: friend.id });
-          } catch {
-            // 同時押し等のrace（friend_id / code のUNIQUE衝突）→ 既存を引き直す
-            affiliate = await getAffiliateByFriendId(db, friend.id);
-          }
-        }
-        if (affiliate) {
+        const affiliate = await getOrCreateAmbassadorAffiliate(db, friend.id, friend.display_name ?? null);
+        introduced = (await countReferrals(db, affiliate.id)).total;
+        if (env.FURIM_AMBASSADOR_OFFER_ID) {
           const { link } = await enrollAffiliateInOffer(db, { affiliateId: affiliate.id, offerId: env.FURIM_AMBASSADOR_OFFER_ID });
           const base = env.WORKER_PUBLIC_URL ?? env.WORKER_URL;
           if (base) refUrl = `${base}/auth/line?ref=${link.ref_code}`;
@@ -517,8 +507,6 @@ async function actionAmbassador(
       console.error('[furim] Ambassador referral URL build failed:', err);
     }
   }
-
-  const introduced = Number(data?.numberIntroduced ?? 0) || 0;
 
   // 1通目: 制度説明＋共有方法を1つのFlexに集約。紹介URLはボタン（コピー/転送）にだけ持たせる。
   const shareText = `FurimAuto公式LINEの友達紹介URLです！\n下のURLからお友達追加で特典が受け取れます👇\n${refUrl}`;
