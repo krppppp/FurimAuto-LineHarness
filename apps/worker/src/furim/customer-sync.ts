@@ -116,15 +116,51 @@ export function sheetRowToFeatureFlags(row: SheetRow): Record<string, string> {
   return out;
 }
 
-function buildFeatureFlagUpserts(db: D1Database, lineUserId: string, flags: Record<string, string>, now: string): D1PreparedStatement[] {
+function buildFeatureFlagUpserts(db: D1Database, lineUserId: string, flags: Record<string, string>, now: string, source = 'sheet'): D1PreparedStatement[] {
   return Object.entries(flags).map(([key, value]) =>
     db
       .prepare(
-        `INSERT INTO furim_feature_flags (line_user_id, feature_key, value, source, updated_at) VALUES (?, ?, ?, 'sheet', ?)
+        `INSERT INTO furim_feature_flags (line_user_id, feature_key, value, source, updated_at) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(line_user_id, feature_key) DO UPDATE SET value = excluded.value, source = excluded.source, updated_at = excluded.updated_at`,
       )
-      .bind(lineUserId, key, value, now),
+      .bind(lineUserId, key, value, source, now),
   );
+}
+
+/** Worker が値を決めて書く機能フラグ（在庫管理シート無料お試しなど）。GAS がシートに書く値と同じものを D1 に先に置く */
+export async function upsertFeatureFlags(db: D1Database, lineUserId: string, flags: Record<string, string>, source = 'worker'): Promise<void> {
+  await runBatches(db, buildFeatureFlagUpserts(db, lineUserId, flags, jstNow(), source));
+}
+
+const FLAG_PULL_TIMEOUT_MS = 8_000;
+
+/**
+ * 1 顧客分の機能フラグをシートから取り込む（段階3・Capsec #245）。
+ * GAS の syncFeaturesFromSubscription / enableInventorySheet が機能列を書いた直後に呼び、拡張の認証（D1 読み）に
+ * 30 分待たせない。失敗しても投げない（30 分毎の差分検知 cron が保険）
+ */
+export async function pullFeatureFlagsFromSheet(db: D1Database, gasDeployId: string | undefined, lineUserId: string | null | undefined): Promise<boolean> {
+  if (!gasDeployId || !lineUserId) return false;
+  try {
+    const res = await gasGet(
+      gasDeployId,
+      { method: 'getData', sheet: MASTER_SHEET, headerRow: '3', filterCol: 'LINE_ID', filterVal: lineUserId },
+      { timeoutMs: FLAG_PULL_TIMEOUT_MS },
+    );
+    const failure = getGasErrorFromResponse(res);
+    if (failure) throw new Error(failure);
+    const rows = (res as { rows?: SheetRow[] })?.rows;
+    const row = Array.isArray(rows) ? rows.find((r) => sheetRowLineUserId(r) === lineUserId) : undefined;
+    if (!row) return false;
+    const flags = sheetRowToFeatureFlags(row);
+    if (!Object.keys(flags).length) return false;
+    await runBatches(db, buildFeatureFlagUpserts(db, lineUserId, flags, jstNow()));
+    console.log('[furim/customer-sync] feature flags pulled:', lineUserId, Object.keys(flags).length);
+    return true;
+  } catch (e) {
+    console.warn('[furim/customer-sync] pullFeatureFlagsFromSheet failed (cron が取り込む):', lineUserId, String(e));
+    return false;
+  }
 }
 
 // 旧拡張（GAS 経路）の間だけシートが正の列: 差分検知 cron が D1 に取り込む。

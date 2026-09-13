@@ -15,6 +15,7 @@ import { gasGet, gasPost, getGasErrorFromResponse } from '../furim/gas-client.js
 import { enqueueGasRetryJob } from '../furim/gas-retry-queue.js';
 import { keycodeReissuedMessages } from '../furim/messages.js';
 import { absorbGasKeyCode, upsertFurimCustomer, clearFurimCustomerKeyCode, getFurimCustomerByStripeId } from '../furim/customer-store.js';
+import { pullFeatureFlagsFromSheet } from '../furim/customer-sync.js';
 import { fireEvent } from './event-bus.js';
 import { logOutgoing } from '../utils/message-log.js';
 import type { Env } from '../index.js';
@@ -227,6 +228,8 @@ export async function processStripeEvent(
           if (!planName) planName = syncRes?.planLabel || pbLabel;
           // pb_ キーコードの発行/再発行を D1 furim_customers に取り込む（Capsec #243）
           await absorbGasKeyCode(db, syncGasArgs.lineUserId || resolvedLineUserId, syncRes);
+          // GAS が書いた機能フラグ列を D1 furim_feature_flags に取り込む（拡張の認証は D1 を読む。Capsec #245）
+          await pullFeatureFlagsFromSheet(db, env.GAS_DEPLOY_ID, syncGasArgs.lineUserId || resolvedLineUserId);
 
           // キーコードが再発行された場合は新キーコードをユーザーへ通知する。
           // - subscription_cycle: ダウングレード予約の切替日・移行顧客の初回更新（ラベル変化で再発行）
@@ -628,6 +631,8 @@ export async function processStripeEvent(
         const result = await gasPost(env.GAS_DEPLOY_ID, { method: 'syncFeaturesFromSubscription', ...clearArgs });
         const failure = getGasErrorFromResponse(result);
         if (failure) throw new Error(failure);
+        // 全 OFF になった機能フラグ列を D1 に取り込む（Capsec #245）
+        await pullFeatureFlagsFromSheet(db, env.GAS_DEPLOY_ID, clearArgs.lineUserId);
       } catch (e) {
         // 従来は握りつぶしで「解約したのに機能フラグが残る」が無言で起きていた。
         // 再実行キューに退避してcronが完遂させる（clearAllは冪等なのでdoneCheck不要）

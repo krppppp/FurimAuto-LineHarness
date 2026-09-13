@@ -293,6 +293,15 @@ export async function handleButtonAction(
   // 該当ユーザーのマスターシート行を GAS が書き換える。拡張は次回 getKeyCodeSet 取得で有効判定する。
   if (text.includes('在庫管理シート無料お試し')) {
     await gasPost(env.GAS_DEPLOY_ID, { method: 'enableInventorySheet', lineUserId });
+    // 拡張の認証（段階3・Capsec #245）は D1 furim_feature_flags を読むので、GAS がシートに書く値と同じものを D1 にも置く
+    if (db) {
+      try {
+        const { upsertFeatureFlags } = await import('./customer-sync.js');
+        await upsertFeatureFlags(db, lineUserId, { InventorySheet: '1', AutoMultiChannel: 'メルカリ/Shops/ラクマ/ヤフオク/ヤフフリ' }, 'promo');
+      } catch (e) {
+        console.error('[furim] 在庫管理シート無料お試し: furim_feature_flags 更新失敗（cron が取り込む）', lineUserId, e);
+      }
+    }
     // 手順①のバージョン更新を最初に置く: 旧バージョン(4.2.1以前)のままシートを作成すると
     // 旧型シートが生成されるため（4.2.2側に後付けマイグレーションはあるが）、
     // 先に更新へ誘導して新形式で作らせる（2026-08-17 くろさん指示）

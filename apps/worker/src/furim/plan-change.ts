@@ -275,6 +275,9 @@ export async function handlePlanChangeMessage(
         // 再発行結果を D1 furim_customers に取り込む（Capsec #243）
         const { absorbGasKeyCode } = await import('./customer-store.js');
         await absorbGasKeyCode(db, lineUserId, sync);
+        // GAS が書いた機能フラグ列を D1 に取り込む（拡張の認証は D1 を読む。Capsec #245）
+        const { pullFeatureFlagsFromSheet } = await import('./customer-sync.js');
+        await pullFeatureFlagsFromSheet(db, env.GAS_DEPLOY_ID, lineUserId);
       } catch (e) {
         console.error('[plan-change] syncFeatures failed:', e);
         await setStage(db, code, 'sync_failed', String(e));

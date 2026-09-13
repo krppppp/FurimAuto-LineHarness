@@ -281,3 +281,26 @@ describe('backfillFurimExtColumns', () => {
     expect(writes).toHaveLength(0);
   });
 });
+
+const { pullFeatureFlagsFromSheet } = await import('./customer-sync.js');
+
+describe('pullFeatureFlagsFromSheet', () => {
+
+  it('LINE_ID で 1 行だけ getData し、機能フラグを upsert する', async () => {
+    gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ 'メルカリ値下げ機能\n(mChangePrice)': true, '自動併売\n(AutoMultiChannel)': '' })] });
+    const { db, writes } = makeDb();
+    expect(await pullFeatureFlagsFromSheet(db, 'dep-1', uid('1'))).toBe(true);
+    expect(gasGet).toHaveBeenCalledWith('dep-1', expect.objectContaining({ method: 'getData', filterCol: 'LINE_ID', filterVal: uid('1') }), expect.anything());
+    const flags = writes.filter((w) => /INSERT INTO furim_feature_flags/.test(w.sql));
+    expect(flags.map((w) => [w.args[1], w.args[2]])).toEqual([['mChangePrice', '1'], ['AutoMultiChannel', '']]);
+  });
+
+  it('GAS が落ちても投げず false（cron が取り込む）。deploy ID / lineUserId が無ければ何もしない', async () => {
+    gasGet.mockRejectedValueOnce(new Error('GAS down'));
+    const { db, writes } = makeDb();
+    expect(await pullFeatureFlagsFromSheet(db, 'dep-1', uid('1'))).toBe(false);
+    expect(writes).toHaveLength(0);
+    expect(await pullFeatureFlagsFromSheet(db, undefined, uid('1'))).toBe(false);
+    expect(await pullFeatureFlagsFromSheet(db, 'dep-1', null)).toBe(false);
+  });
+});

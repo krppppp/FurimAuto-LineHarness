@@ -337,6 +337,9 @@ export async function sweepGasRetryJobs(
           if (params.__notifyKeycodeReissue === '1' && r?.keyCodeIssued && r.keyCode) {
             await notifyUser(lineClient, job.line_user_id, job.reply_token, keycodeReissuedMessages(r.keyCode) as never[]);
           }
+          // 再実行で GAS が書いた機能フラグ列を D1 に取り込む（Capsec #245）
+          const { pullFeatureFlagsFromSheet } = await import('./customer-sync.js');
+          await pullFeatureFlagsFromSheet(db, env.GAS_DEPLOY_ID, job.line_user_id);
         } else if (job.notify_message) {
           await notifyUser(lineClient, job.line_user_id, job.reply_token, [{ type: 'text', text: job.notify_message }] as never[]);
         }
