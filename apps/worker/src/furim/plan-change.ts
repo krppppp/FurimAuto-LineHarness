@@ -6,6 +6,35 @@ import {
   type PlanCheckoutEnv,
 } from '../routes/plan-builder.js';
 
+// 失敗通知の宛先（くろさん）。webhook.ts の X口コミ通知と同じ宛先
+const STAFF_LINE_USER_ID = 'U5d35c3e6b2be0a6ec699b2a1de2aba93';
+
+// 処理段階を plan_builder_intents に残す（Capsec #240）。9/11 PB-CF0DAF は途中で落ちて
+// used_at も返信も残らず、どこで止まったか追えなかった。段階と失敗理由を D1 に書き、
+// 検知 cron（plan-change-watch）と人の目で追えるようにする。記録の失敗は本処理を止めない。
+async function setStage(db: D1Database, code: string | null, stage: string, error?: string): Promise<void> {
+  if (!code) return;
+  try {
+    await db
+      .prepare('UPDATE plan_builder_intents SET stage = ?, error = COALESCE(?, error), updated_at = ? WHERE id = ?')
+      .bind(stage, error ? error.slice(0, 500) : null, jstNow(), code)
+      .run();
+  } catch (e) {
+    console.error('[plan-change] setStage failed:', code, stage, e);
+  }
+}
+
+// reply が使えない（replyToken 失効・二重使用）ときは push で届ける。
+// 「予約したのに通知が来ない」を無くす
+async function replyOrPush(lineClient: LineClient, replyToken: string, lineUserId: string, messages: unknown[]): Promise<void> {
+  try {
+    await lineClient.replyMessage(replyToken, messages as never[]);
+  } catch (e) {
+    console.error('[plan-change] reply failed, fallback to push:', e);
+    await lineClient.pushMessage(lineUserId, messages as never[]);
+  }
+}
+
 // LIFFの申込ボタン（既存契約者）→「【プラン変更】PB-XXXXXX」を処理する。
 // 新規Checkoutは作らず、既存サブスクをin-place更新して残り期間の差額を日割りで即時決済する。
 // プラン構成が変わるためキーコードは再発行され（syncFeaturesFromSubscription側の判定）、
@@ -18,10 +47,11 @@ export async function handlePlanChangeMessage(
   text: string,
   env: PlanCheckoutEnv,
 ): Promise<void> {
+  let code: string | null = null;
   try {
     const m = text.match(/PB-[A-Z0-9]{6}/);
     if (!m) throw new Error('変更コードがメッセージに見つかりません');
-    const code = m[0];
+    code = m[0];
 
     const row = await db
       .prepare('SELECT payload, used_at, created_at FROM plan_builder_intents WHERE id = ? AND line_user_id = ?')
@@ -44,6 +74,7 @@ export async function handlePlanChangeMessage(
     };
     if (payload.type !== 'change') throw new Error(`not a change intent: ${code}`);
     if (!env.STRIPE_SECRET_KEY) throw new Error('STRIPE_SECRET_KEY not configured');
+    await setStage(db, code, 'loaded');
 
     const { stripeCall, ensureComboCoupon, getSubDiscounts, STRIPE_STACK_VERSION } = await import('../routes/plan-builder.js');
     const sel = await resolvePlanSelection(env.GAS_DEPLOY_ID, { ...payload, lineUserId });
@@ -60,6 +91,7 @@ export async function handlePlanChangeMessage(
       items: { data: Array<{ id: string; price: { id: string }; quantity?: number }> };
     };
     if (sub.status !== 'active') throw new Error(`subscription not active: ${sub.status}`);
+    await setStage(db, code, 'stripe_sub');
 
     // 現在の全discount（併用割引+付与済みキャンペーンクーポン等）。combo系は付け替え、それ以外は保持する。
     // once（1回限りクーポン）は差額invoiceに食われて価値ゼロで消滅しうるため、
@@ -84,6 +116,7 @@ export async function handlePlanChangeMessage(
       const schedule = (await stripeCall(env.STRIPE_SECRET_KEY, 'subscription_schedules', {
         from_subscription: sub.id,
       })) as unknown as { id: string; phases: Array<{ start_date: number; end_date: number }> };
+      await setStage(db, code, 'schedule_created');
 
       const params: Record<string, string> = { end_behavior: 'release' };
       // phase0 = 現契約を期末までそのまま維持
@@ -122,13 +155,26 @@ export async function handlePlanChangeMessage(
       if (sub.metadata?.migratedFrom) meta.migratedFrom = sub.metadata.migratedFrom;
       for (const [k, v] of Object.entries(meta)) params[`phases[1][metadata][${k}]`] = v;
 
-      await stripeCall(env.STRIPE_SECRET_KEY, `subscription_schedules/${schedule.id}`, params, 'POST', STRIPE_STACK_VERSION);
+      try {
+        await stripeCall(env.STRIPE_SECRET_KEY, `subscription_schedules/${schedule.id}`, params, 'POST', STRIPE_STACK_VERSION);
+      } catch (e) {
+        // 併用割引付きの phase0 discounts を Stripe が弾く可能性がある（9/11 PB-CF0DAF は
+        // 割引付き3itemで落ちた疑い。応答は残っていない）。phase0 は「現状維持」なので
+        // discounts を外しても Stripe 側で既存 discount は引き継がれる。1回だけ外して再試行する
+        const phase0DiscountKeys = Object.keys(params).filter((k) => k.startsWith('phases[0][discounts]'));
+        if (phase0DiscountKeys.length === 0) throw e;
+        for (const k of phase0DiscountKeys) delete params[k];
+        await setStage(db, code, 'schedule_retry_no_phase0_discounts', String(e));
+        await stripeCall(env.STRIPE_SECRET_KEY, `subscription_schedules/${schedule.id}`, params, 'POST', STRIPE_STACK_VERSION);
+      }
+      await setStage(db, code, 'schedule_updated');
       await db.prepare('UPDATE plan_builder_intents SET used_at = ? WHERE id = ?').bind(jstNow(), code).run();
+      await setStage(db, code, 'used');
 
       const effText = payload.effectiveDate
         ? new Date(payload.effectiveDate * 1000 + 9 * 3600000).toISOString().slice(5, 10).replace('-', '/')
         : '次回更新日';
-      await lineClient.replyMessage(replyToken, [
+      await replyOrPush(lineClient, replyToken, lineUserId, [
         {
           type: 'flex',
           altText: 'プラン変更を予約しました',
@@ -157,6 +203,7 @@ export async function handlePlanChangeMessage(
           },
         } as never,
       ]);
+      await setStage(db, code, 'replied');
       return;
     }
 
@@ -185,6 +232,7 @@ export async function handlePlanChangeMessage(
     params['metadata[multiChannelSites]'] = (payload.multiChannelSites ?? []).join('/');
     params['metadata[lineUserId]'] = lineUserId;
     await stripeCall(env.STRIPE_SECRET_KEY, `subscriptions/${sub.id}`, params, 'POST', STRIPE_STACK_VERSION);
+    await setStage(db, code, 'items_updated');
 
     // once系クーポンを付け直す（差額invoiceには効かせず、次回請求で満額効かせる）
     if (keepOnce.length > 0) {
@@ -203,6 +251,7 @@ export async function handlePlanChangeMessage(
     }
 
     await db.prepare('UPDATE plan_builder_intents SET used_at = ? WHERE id = ?').bind(jstNow(), code).run();
+    await setStage(db, code, 'used');
 
     // スプシ同期を即時実行（プラン構成変更→キーコード再発行を含む）。
     // 数秒後のinvoice webhookでも同じ同期が走るが、ラベル一致のためキーコードは安定（冪等）
@@ -225,6 +274,7 @@ export async function handlePlanChangeMessage(
         keyCodeIssued = sync?.keyCodeIssued === true;
       } catch (e) {
         console.error('[plan-change] syncFeatures failed:', e);
+        await setStage(db, code, 'sync_failed', String(e));
       }
     }
 
@@ -266,18 +316,39 @@ export async function handlePlanChangeMessage(
       });
       messages.push({ type: 'text', text: newKeyCode });
     }
-    await lineClient.replyMessage(replyToken, messages as never[]);
+    await replyOrPush(lineClient, replyToken, lineUserId, messages);
+    await setStage(db, code, 'replied');
   } catch (err) {
-    console.error('[plan-change] error:', err);
+    console.error('[plan-change] error:', code, err);
+    // 失敗理由を intent に残す（stage は最後に通過した段階のまま）
+    let lastStage = 'unknown';
     try {
-      await lineClient.replyMessage(replyToken, [
+      const row = code
+        ? await db.prepare('SELECT stage FROM plan_builder_intents WHERE id = ?').bind(code).first<{ stage: string | null }>()
+        : null;
+      lastStage = row?.stage ?? 'before_loaded';
+      await setStage(db, code, lastStage, String(err));
+    } catch (e) {
+      console.error('[plan-change] error record failed:', e);
+    }
+    try {
+      await replyOrPush(lineClient, replyToken, lineUserId, [
         {
           type: 'text',
           text: 'プラン変更内容の確認に失敗しました。お手数ですが、リッチメニューの「プラン診断」からもう一度お手続きください。',
-        } as never,
+        },
       ]);
     } catch (e) {
       console.error('[plan-change] error reply failed:', e);
+    }
+    // くろさんへ通知（本人は失敗を知らないまま待ち続けるのを防ぐ）
+    try {
+      await lineClient.pushMessage(STAFF_LINE_USER_ID, [{
+        type: 'text',
+        text: `⚠️ プラン変更の処理が失敗しました\ncode: ${code ?? '(不明)'}\nline: ${lineUserId}\nstage: ${lastStage}\nerror: ${String(err).slice(0, 300)}`,
+      } as never]);
+    } catch (e) {
+      console.error('[plan-change] staff notify failed:', e);
     }
   }
 }

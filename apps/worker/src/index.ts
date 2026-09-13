@@ -73,6 +73,7 @@ import { processKaisetsuDeliveries } from './services/kaisetsu-delivery.js';
 import { syncSegmentsFromGas } from './services/segment-sync.js';
 import { sweepPendingStripeEvents } from './services/stripe-processor.js';
 import { sweepGasRetryJobs } from './furim/gas-retry-queue.js';
+import { watchPlanChangeIntents } from './furim/plan-change-watch.js';
 import { forms } from './routes/forms.js';
 import { adPlatforms } from './routes/ad-platforms.js';
 import { staff } from './routes/staff.js';
@@ -1101,6 +1102,9 @@ async function scheduled(
   // 完遂できなかった場合にここが完遂させ、完了をユーザーへpushする
   // （2026-08-13 GASフェッチのハング対策。積み側は keyword-actions）
   jobs.push(sweepGasRetryJobs(env.DB, defaultLineClient, env));
+  // プラン変更（PB-…）の未反映検知: LINE でコード送信済みなのに 30分経っても used_at が無い、
+  // または used なのに Stripe に反映が無いものを1回だけ通知する（Capsec #240）
+  jobs.push(watchPlanChangeIntents(env.DB, defaultLineClient, env));
 
   await Promise.allSettled(jobs);
 

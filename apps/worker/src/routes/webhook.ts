@@ -473,11 +473,16 @@ async function handleEvent(
     // 既存サブスクをin-place更新し、残り期間の差額を日割りで即時決済する
     if (incomingText.startsWith('【プラン変更】') && env?.STRIPE_SECRET_KEY && env?.GAS_DEPLOY_ID) {
       const { handlePlanChangeMessage } = await import('../furim/plan-change.js');
-      await handlePlanChangeMessage(db, loggingClient, userId, event.replyToken, incomingText, {
-        STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
-        GAS_DEPLOY_ID: env.GAS_DEPLOY_ID,
-        WORKER_PUBLIC_URL: workerUrl,
-      });
+      // handler 自身も失敗を記録・通知するが、その外側（import や record）で落ちた場合も
+      // 本人に push が届くように runHandlerSafely で包む（Capsec #240）
+      const stripeKey = env.STRIPE_SECRET_KEY;
+      const gasDeployId = env.GAS_DEPLOY_ID;
+      await runHandlerSafely('handlePlanChangeMessage', loggingClient, userId, 'リッチメニューの「プラン診断」からもう一度お手続きください', () =>
+        handlePlanChangeMessage(db, loggingClient, userId, event.replyToken, incomingText, {
+          STRIPE_SECRET_KEY: stripeKey,
+          GAS_DEPLOY_ID: gasDeployId,
+          WORKER_PUBLIC_URL: workerUrl,
+        }));
       return;
     }
 
