@@ -290,6 +290,7 @@ describe('GET /api/furim/admin/:table/:id/related', () => {
     expect(names).toEqual([
       'furim_customers', 'furim_payments', 'furim_ticket_ledger', 'furim_cancellations', 'furim_referrals', 'affiliates',
       'furim_execution_logs', 'furim_ext_errors', 'furim_free_accounts', 'furim_manual_copy_logs', 'furim_shop_research_logs',
+      'furim_auto_copy_logs', 'furim_survey_answers', 'furim_coupon_applications', 'furim_referral_cashbacks',
     ]);
     const payments = body.data.related[1];
     expect(payments.total).toBe(2);
@@ -301,7 +302,7 @@ describe('GET /api/furim/admin/:table/:id/related', () => {
 
     expect(batches).toHaveLength(1);
     const stmts = batches[0];
-    expect(stmts).toHaveLength(22);
+    expect(stmts).toHaveLength(30);
     expect(stmts[0].sql).toBe('SELECT COUNT(*) AS n FROM furim_customers WHERE (line_user_id = ? OR stripe_customer_id = ? OR key_code = ?) AND line_user_id != ?');
     expect(stmts[0].args).toEqual(['U1', 'cus_1', 'ABC', 'U1']);
     expect(stmts[3].sql).toBe('SELECT * FROM furim_payments WHERE (line_user_id = ? OR stripe_customer_id = ?) ORDER BY paid_at DESC, invoice_id LIMIT ?');
