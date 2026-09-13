@@ -352,6 +352,47 @@ export async function processStripeEvent(
     const actualPaidAmount = obj.amount_paid ?? 0;
     const priceExclTax = actualPaidAmount - taxAmount;
 
+    // 段階2（Capsec #244）: D1 先行。サブスク現況・決済台帳・金額帯タグ（1 人 1 帯 #241）を
+    // automation（GAS 鏡写し）より先に確定させる。失敗しても webhook 本体は止めない
+    if (resolvedLineUserId) {
+      try {
+        await upsertFurimCustomer(db, resolvedLineUserId, {
+          subscription_id: subscriptionId || undefined,
+          subscription_start_at: subscriptionStartDateTime || undefined,
+          subscription_end_at: subscriptionEndDateTime || undefined,
+          subscription_price: subscriptionPrice || undefined,
+          plan_label: planName || undefined,
+          packages: isPlanBuilder ? (subMetadata.packages ?? '') : undefined,
+          features: isPlanBuilder ? (subMetadata.features ?? '') : undefined,
+          multi_channel_sites: isPlanBuilder ? (subMetadata.multiChannelSites ?? '') : undefined,
+          subscription_source: isPlanBuilder ? 'plan-builder' : 'legacy',
+          subscription_status: 'active',
+          customer_email: obj.customer_email || undefined,
+          last_invoice_id: obj.id,
+          canceled_at: null,
+        });
+        await db
+          .prepare(
+            `INSERT OR IGNORE INTO furim_payments (invoice_id, stripe_event_id, line_user_id, stripe_customer_id, subscription_id, plan_name, billing_reason,
+               subscription_price, discount_amount, price_excl_tax, tax_amount, actual_paid_amount, customer_email, paid_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .bind(
+            obj.id, body.id, resolvedLineUserId, stripeCustomerId, subscriptionId || null, planName || null, billingReason,
+            subscriptionPrice, discountAmount, priceExclTax, taxAmount, actualPaidAmount, obj.customer_email ?? null, jstNow(), jstNow(),
+          )
+          .run();
+        const tierFriend = await getFriendByLineUserId(db, resolvedLineUserId);
+        if (tierFriend) {
+          const { replaceTierTag } = await import('../furim/tier-tags.js');
+          const r = await replaceTierTag(db, tierFriend.id, planTier);
+          if (r.removed.length) console.log(`[stripe/invoice] tier tag replaced: -${r.removed.join(',')} +${r.added}`);
+        }
+      } catch (e) {
+        console.error('[stripe/invoice] D1 first write failed:', e);
+      }
+    }
+
     // ambassador coupon: GASで紹介クーポン確認 → Stripeクーポン適用（code_managed相当・継続課金時のみ）
     // アンバサダー紹介クーポン: 従来の顧客レベル適用は、サブスク側discount（併用割引）を
     // 持つ顧客には一切効かない（サブスク側優先のため不発）。サブスクへのスタック追加に変更（2026-07-14）
@@ -466,6 +507,13 @@ export async function processStripeEvent(
 
     const stripeCustomerId = obj.customer ?? '';
     let resolvedLineUserId = lineUserId;
+    if (!resolvedLineUserId && stripeCustomerId) {
+      try {
+        resolvedLineUserId = (await getFurimCustomerByStripeId(db, stripeCustomerId))?.line_user_id ?? null;
+      } catch (e) {
+        console.error('[stripe/payment_failed] furim_customers lookup failed:', e);
+      }
+    }
     if (!resolvedLineUserId && stripeCustomerId && env.GAS_DEPLOY_ID) {
       try {
         const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
@@ -537,9 +585,24 @@ export async function processStripeEvent(
     // プラン名を「キャンセル済み」にする（チケット単価の有料判定・キーコード発行の結果を GAS と揃える）
     if (resolvedLineUserId) {
       try {
+        const before = await getFurimCustomerByStripeId(db, stripeCustomerId).catch(() => null);
         await clearFurimCustomerKeyCode(db, resolvedLineUserId);
-        if (stripeCustomerId) await upsertFurimCustomer(db, resolvedLineUserId, { stripe_customer_id: stripeCustomerId });
+        await upsertFurimCustomer(db, resolvedLineUserId, {
+          ...(stripeCustomerId ? { stripe_customer_id: stripeCustomerId } : {}),
+          subscription_status: 'canceled',
+          canceled_at: jstNow(),
+          subscription_price: 0,
+          plan_label: 'キャンセル済み',
+        });
         await updateFriendPlanName(db, resolvedLineUserId, 'キャンセル済み');
+        // 解約履歴（キャンセル一覧の置き換え）。stripe_event_id UNIQUE で再処理しても 1 行
+        await db
+          .prepare(
+            `INSERT OR IGNORE INTO furim_cancellations (id, line_user_id, stripe_event_id, subscription_id, plan_name, mercari_url, canceled_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .bind(crypto.randomUUID(), resolvedLineUserId, body.id, obj.id, before?.plan_label ?? null, before?.mercari_url ?? null, jstNow())
+          .run();
       } catch (e) {
         console.error('[stripe/subscription.deleted] D1 clear failed:', e);
       }
@@ -596,12 +659,25 @@ export async function processStripeEvent(
       const quantity = parseInt(obj.metadata?.quantity ?? '0', 10);
       if (ticketLineUserId && quantity > 0) {
         const ticketFriend = await getFriendByLineUserId(db, ticketLineUserId);
-        if (obj.customer) {
-          try {
-            await upsertFurimCustomer(db, ticketLineUserId, { stripe_customer_id: obj.customer });
-          } catch (e) {
-            console.error('[stripe/payment_intent] furim_customers upsert failed:', e);
+        try {
+          if (obj.customer) await upsertFurimCustomer(db, ticketLineUserId, { stripe_customer_id: obj.customer });
+          // チケット台帳（段階2）。idempotency_key で二重付与を防ぎ、残数はここで加算する
+          // （段階3 まで拡張の消費はシート側なので、残数は差分検知 cron がシートから取り込み直す）
+          const ins = await db
+            .prepare(
+              `INSERT OR IGNORE INTO furim_ticket_ledger (id, line_user_id, delta, reason, idempotency_key, payment_intent_id, amount, currency, created_at)
+               VALUES (?, ?, ?, 'purchase', ?, ?, ?, ?, ?)`,
+            )
+            .bind(crypto.randomUUID(), ticketLineUserId, quantity, `purchase:${obj.id}`, obj.id, obj.amount ?? 0, obj.currency ?? 'jpy', jstNow())
+            .run();
+          if ((ins.meta?.changes ?? 0) > 0) {
+            await db
+              .prepare('UPDATE furim_customers SET copy_tickets = COALESCE(copy_tickets, 0) + ?, updated_at = ? WHERE line_user_id = ?')
+              .bind(quantity, jstNow(), ticketLineUserId)
+              .run();
           }
+        } catch (e) {
+          console.error('[stripe/payment_intent] D1 ticket write failed:', e);
         }
         // チケット付与(枚数加算=非冪等)含むため action単位でbody.idを冪等キーに厳密1回実行。
         const ticketOk = await fireEvent(db, 'stripe_ticket_purchased', {

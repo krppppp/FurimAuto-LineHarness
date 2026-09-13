@@ -210,24 +210,41 @@ export async function ensureComboCoupon(secretKey: string, nFull: number, nSemi:
 }
 
 // 顧客レベルのクーポン（「Furimanです」キーワードで付与される旧来フロー）を確認する。
+// Stripe顧客ID の解決: D1（furim_customers → friends.metadata）を先に、無ければ GAS getStripeIDwithLINEID（段階2 の移行期のみ）
+async function resolveCustomerIdD1First(db: D1Database | undefined, gasDeployId: string | undefined, lineUserId: string): Promise<string | null> {
+  if (db) {
+    try {
+      const { resolveStripeCustomerId } = await import('../furim/customer-store.js');
+      const id = await resolveStripeCustomerId(db, lineUserId);
+      if (id) return id;
+    } catch (e) {
+      console.error('[plan-builder] D1 customer id lookup failed:', e);
+    }
+  }
+  if (!gasDeployId) return null;
+  const { gasGet } = await import('../furim/gas-client.js');
+  const r = (await gasGet(gasDeployId, { method: 'getStripeIDwithLINEID', lineUserId })) as { customer_stripe_id?: string | null };
+  return r?.customer_stripe_id ?? null;
+}
+
 // クーポンの付与はキーワード（actionFurimanCoupon）だけが行う。plan-builder側は
 // 「既に付いているか」を見るだけ（LIFFバナー表示と、checkoutでcombo割引に潰されない制御に使う）
 async function getCustomerCoupon(
   secretKey: string,
   gasDeployId: string,
   lineUserId: string,
+  db?: D1Database,
 ): Promise<{ exists: boolean; customerId?: string; couponName?: string; percent?: number | null }> {
   try {
-    const r = (await gasGet(gasDeployId, { method: 'getStripeIDwithLINEID', lineUserId })) as {
-      customer_stripe_id?: string | null;
-    };
-    if (!r?.customer_stripe_id) return { exists: false };
-    const cust = (await stripeCall(secretKey, `customers/${r.customer_stripe_id}`, undefined, 'GET')) as {
+    // Stripe顧客ID は D1（furim_customers → friends.metadata）を先に見る（段階2・Capsec #244）。無ければ GAS
+    const customerId = await resolveCustomerIdD1First(db, gasDeployId, lineUserId);
+    if (!customerId) return { exists: false };
+    const cust = (await stripeCall(secretKey, `customers/${customerId}`, undefined, 'GET')) as {
       discount?: { coupon?: { name?: string; percent_off?: number | null } };
     };
     const cp = cust?.discount?.coupon;
-    if (cp) return { exists: true, customerId: r.customer_stripe_id, couponName: cp.name ?? 'クーポン', percent: cp.percent_off ?? null };
-    return { exists: false, customerId: r.customer_stripe_id };
+    if (cp) return { exists: true, customerId, couponName: cp.name ?? 'クーポン', percent: cp.percent_off ?? null };
+    return { exists: false, customerId };
   } catch (e) {
     console.log('plan-builder: customer coupon check skipped', e);
     return { exists: false };
@@ -249,7 +266,7 @@ planBuilder.get('/plan-builder/features', async (c) => {
 planBuilder.get('/plan-builder/coupon-status', async (c) => {
   const lineUserId = c.req.query('lineUserId') ?? '';
   if (!lineUserId || !c.env.GAS_DEPLOY_ID || !c.env.STRIPE_SECRET_KEY) return c.json({ success: true, eligible: false });
-  const s = await getCustomerCoupon(c.env.STRIPE_SECRET_KEY, c.env.GAS_DEPLOY_ID, lineUserId);
+  const s = await getCustomerCoupon(c.env.STRIPE_SECRET_KEY, c.env.GAS_DEPLOY_ID, lineUserId, c.env.DB);
   return c.json({ success: true, eligible: s.exists, couponName: s.couponName ?? null, percent: s.percent ?? null });
 });
 
@@ -446,14 +463,12 @@ planBuilder.post('/plan-builder/checkout', async (c) => {
 // lineUserIdからアクティブなStripeサブスクを引く（プラン変更フロー用）。
 // スプシでStripe顧客IDを逆引き→activeサブスクの先頭を返す。無ければnull
 export async function getActiveSubscriptionForLine(
-  env: { GAS_DEPLOY_ID?: string; STRIPE_SECRET_KEY?: string },
+  env: { GAS_DEPLOY_ID?: string; STRIPE_SECRET_KEY?: string; DB?: D1Database },
   lineUserId: string,
 ): Promise<{ customerId: string; sub: Record<string, unknown> } | null> {
-  if (!env.GAS_DEPLOY_ID || !env.STRIPE_SECRET_KEY) return null;
+  if (!env.STRIPE_SECRET_KEY) return null;
   try {
-    const { gasGet } = await import('../furim/gas-client.js');
-    const r = (await gasGet(env.GAS_DEPLOY_ID, { method: 'getStripeIDwithLINEID', lineUserId })) as { customer_stripe_id?: string };
-    const customerId = r?.customer_stripe_id ?? '';
+    const customerId = (await resolveCustomerIdD1First(env.DB, env.GAS_DEPLOY_ID, lineUserId)) ?? '';
     if (!customerId || !customerId.startsWith('cus_')) return null;
     const list = (await stripeCall(env.STRIPE_SECRET_KEY, 'subscriptions', { customer: customerId, status: 'active', limit: '3' }, 'GET')) as unknown as { data: Array<Record<string, unknown>> };
     const sub = list.data?.[0];
