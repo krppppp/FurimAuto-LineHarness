@@ -1,8 +1,9 @@
 import type { LineClient } from '@line-crm/line-sdk';
-import { gasGet, gasPost } from './gas-client.js';
+import { jstNow } from '@line-crm/db';
 import { mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
 import { getSentGiftBatches, setSentGiftBatches } from './firebase-client.js';
-import { getFurimCustomer, upsertFurimCustomer, resolveStripeCustomerId, deriveGiftStatus } from './customer-store.js';
+import { getFurimCustomer, upsertFurimCustomer, resolveStripeCustomerId, deriveGiftStatus, parseJstDateTime, formatJstDateTime } from './customer-store.js';
+import type { ExtCache } from './ext-auth.js';
 import {
   carouselTemplate,
   ticketOrderTemplate,
@@ -234,7 +235,7 @@ export async function handleFurimAction(
         await actionAmbassador(lineClient, lineUserId, replyToken, resolvedEnv, db);
         return true;
       case 'Meet予約':
-        await actionMeetReservation(lineClient, lineUserId, replyToken, resolvedEnv);
+        await actionMeetReservation(lineClient, lineUserId, replyToken, resolvedEnv, db);
         return true;
       case '簡単解説1分動画':
         await lineClient.replyMessage(replyToken, [carouselTemplate as never]);
@@ -560,10 +561,12 @@ async function actionMeetReservation(
   lineClient: LineClient,
   lineUserId: string,
   replyToken: string,
-  env: ResolvedEnv,
+  _env: ResolvedEnv,
+  db?: D1Database,
 ) {
-  const result = await gasPost(env.GAS_DEPLOY_ID, { method: 'checkExtendKeyword', lineUserId }) as Record<string, unknown>;
-  const hasWatchedVideo = result?.success === true && result?.used === true;
+  // 延長キーワード送信済みか（旧 GAS checkExtendKeyword。段階2.5・Capsec #250 で D1 furim_customers.extend_keyword を見る）
+  const customer = db ? await getFurimCustomer(db, lineUserId) : null;
+  const hasWatchedVideo = (customer?.extend_keyword ?? '').trim() !== '';
 
   const text = hasWatchedVideo
     ? `「直接話を聞いてから決めたい！」\n「動画を見ても疑問が残った」\n\nという方はMeet説明会にご参加ください🎥\n\n説明会では動画の補足説明＋質疑応答をお受けします。\n所要時間は15〜30分程度です🕰️\n\n▼予約はこちら📓\nhttps://x.gd/FA_reservation\n(顔出し不要です！)`
@@ -583,12 +586,13 @@ export async function actionFurimanCoupon(
     await lineClient.replyMessage(replyToken, [{ type: 'text', text: '申し訳ございません。クーポン処理中にエラーが発生しました。' } as never]);
     return;
   }
-  const couponInfo = await gasGet(env.GAS_DEPLOY_ID, { method: 'getFurimanCouponInfo', lineUserId }) as Record<string, unknown>;
-  if (!couponInfo?.success) {
+  // 段階2.5（Capsec #250）: 適用条件は D1 で判定する（旧 GAS getFurimanCouponInfo / setFurimanCoupon は削除）。
+  // 友だち登録日時 = friends.created_at、付与済み = furim_customers.youtube_coupon、クーポン ID = furim_coupons
+  const data = db ? await resolveFurimanCoupon(db, lineUserId) : null;
+  if (!data) {
     await lineClient.replyMessage(replyToken, [{ type: 'text', text: '申し訳ございません。顧客情報が見つかりませんでした。' } as never]);
     return;
   }
-  const data = couponInfo.data as Record<string, string>;
   const customer = await fetch(`https://api.stripe.com/v1/customers/${data.stripeCustomerId}`, {
     headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
   }).then(r => r.json()) as { discount?: { coupon?: { name?: string } } };
@@ -605,11 +609,14 @@ export async function actionFurimanCoupon(
     headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ coupon: data.eligibleCouponId }).toString(),
   });
-  await gasPost(env.GAS_DEPLOY_ID, { method: 'setFurimanCoupon', lineUserId, couponName: data.eligibleCouponName });
-  // D1 furim_customers にも持つ（限定特典⑤の解放判定。Capsec #243）
+  // D1 furim_customers（限定特典⑤の解放判定）と適用履歴（旧: シート「クーポン適用履歴」）を先に書く
   if (db) {
     try {
       await upsertFurimCustomer(db, lineUserId, { youtube_coupon: data.eligibleCouponName || 'applied' });
+      await db
+        .prepare('INSERT INTO furim_coupon_applications (id, line_user_id, stripe_customer_id, coupon_name, coupon_id, route, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .bind(crypto.randomUUID(), lineUserId, data.stripeCustomerId, data.eligibleCouponName, data.eligibleCouponId, 'Furiman経由', jstNow())
+        .run();
     } catch (e) {
       console.error('[furim] youtube_coupon upsert failed:', lineUserId, e);
     }
@@ -627,6 +634,66 @@ export async function actionFurimanCoupon(
   }
 
   await lineClient.replyMessage(replyToken, [{ type: 'text', text: `【自動送信】\nYoutubeのキーワードありがとうございます！\n\n"${data.eligibleCouponName}"\nを付与いたしました！\n\n有料会員のお客様はリッチメニューの月額会員ページから、\n次回の支払額についてクーポン値引きが適用されているのを確認してください😄\n\n無料期間中のお客様は、\n初月料金をお得にご利用いただき\nFurimAutoを最大限活用して\nプラン選択に役立ててください💰💰💰` } as never]);
+  // シートの Youtubeクーポン列へ鏡写し（旧拡張の間はシートも残す。失敗は再実行キューが完遂させる）
+  if (db) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'Youtubeクーポン': data.eligibleCouponName });
+}
+
+// 「Furimanです」クーポンの適用判定（GAS getFurimanCouponInfo / checkCouponEligibility の移植）。
+// 顧客行（Stripe顧客ID）が無ければ null。付与済み・クーポン未登録は canApply=false
+export async function resolveFurimanCoupon(
+  db: D1Database,
+  lineUserId: string,
+  nowMs = Date.now(),
+): Promise<{ stripeCustomerId: string; daysSinceRegistration: number; eligibleCouponName: string; eligibleCouponId: string; canApply: boolean; reason: 'eligible' | 'already_applied' | 'coupon_not_found' } | null> {
+  const customer = await getFurimCustomer(db, lineUserId);
+  const stripeCustomerId = await resolveStripeCustomerId(db, lineUserId);
+  if (!stripeCustomerId) return null;
+  const friend = await db.prepare('SELECT created_at FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ created_at: string }>();
+  const registeredAt = friend?.created_at ? Date.parse(friend.created_at) : NaN;
+  const daysSinceRegistration = Number.isNaN(registeredAt) ? NaN : Math.floor((nowMs - registeredAt) / (24 * 60 * 60_000));
+  if ((customer?.youtube_coupon ?? '').trim() !== '') {
+    return { stripeCustomerId, daysSinceRegistration, eligibleCouponName: '', eligibleCouponId: '', canApply: false, reason: 'already_applied' };
+  }
+  // 1 週間以内は半額、以降は 20%OFF（登録日時が不明なら 20%OFF）
+  const eligibleCouponName = daysSinceRegistration < 7 ? 'Youtubeご視聴感謝半額クーポン' : 'Youtubeご視聴感謝20%OFFクーポン';
+  const { getCouponId } = await import('./referral-store.js');
+  const eligibleCouponId = await getCouponId(db, eligibleCouponName);
+  if (!eligibleCouponId) {
+    console.error('[furim] resolveFurimanCoupon: furim_coupons に無い', eligibleCouponName);
+    return { stripeCustomerId, daysSinceRegistration, eligibleCouponName, eligibleCouponId: '', canApply: false, reason: 'coupon_not_found' };
+  }
+  return { stripeCustomerId, daysSinceRegistration, eligibleCouponName, eligibleCouponId, canApply: true, reason: 'eligible' };
+}
+
+// 「解説見た」の延長判定（GAS setExtendTrialByKeyword の移植・段階2.5・Capsec #250）。D1 に先に書き、鏡写し用の fields を返す
+export async function applyExtendTrialKeyword(
+  db: D1Database,
+  kv: ExtCache | undefined,
+  lineUserId: string,
+  nowMs = Date.now(),
+): Promise<{ result: 'extended1w' | 'extended3d' | 'notEligible' | 'alreadyUsed' | 'error'; newExpiry?: string; mirror?: Record<string, unknown> }> {
+  const customer = await getFurimCustomer(db, lineUserId);
+  if (!customer) return { result: 'error' };
+  if ((customer.extend_keyword ?? '').trim() !== '') return { result: 'alreadyUsed' };
+  // プラン名が空でない（有料加入済み・解約履歴あり）→ 延長の代わりにチケット 100 枚（1 回きり）
+  if ((customer.plan_label ?? '').trim() !== '') {
+    const { applyTicketDelta } = await import('./ticket-ledger.js');
+    const r = await applyTicketDelta(db, kv, { line_user_id: lineUserId, key_code: customer.key_code }, { delta: 100, reason: 'extend_keyword', idempotencyKey: `extend_keyword:${lineUserId}` });
+    await upsertFurimCustomer(db, lineUserId, { extend_keyword: '対象外' });
+    return { result: 'notEligible', mirror: { '延長キーワード': '対象外', 'コピー出品チケット': r.copyTickets } };
+  }
+  const friend = await db.prepare('SELECT created_at FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ created_at: string }>();
+  const followMs = friend?.created_at ? Date.parse(friend.created_at) : NaN;
+  const ONE_WEEK_MS = 7 * 24 * 60 * 60_000;
+  const isWithinOneWeek = !Number.isNaN(followMs) && nowMs - followMs <= ONE_WEEK_MS;
+  const baseMs = parseJstDateTime(customer.subscription_end_at) ?? nowMs;
+  const newExpiryMs = baseMs + (isWithinOneWeek ? ONE_WEEK_MS : 3 * 24 * 60 * 60_000);
+  const label = isWithinOneWeek ? '1w' : '3d';
+  const newExpiryJst = formatJstDateTime(newExpiryMs);
+  await upsertFurimCustomer(db, lineUserId, { subscription_end_at: newExpiryJst, extend_keyword: label });
+  const { invalidateExtCache } = await import('./ext-auth.js');
+  await invalidateExtCache(kv, customer.key_code);
+  return { result: isWithinOneWeek ? 'extended1w' : 'extended3d', newExpiry: new Date(newExpiryMs).toISOString(), mirror: { 'サブスク終了日時': newExpiryJst, '延長キーワード': label } };
 }
 
 export async function actionExtendTrial(
@@ -635,36 +702,28 @@ export async function actionExtendTrial(
   replyToken: string,
   gasDeployId: string,
   db?: D1Database,
+  kv?: ExtCache,
 ): Promise<void> {
-  const result = await gasPost(gasDeployId, { method: 'setExtendTrialByKeyword', lineUserId }) as Record<string, string>;
+  const result = db ? await applyExtendTrialKeyword(db, kv, lineUserId) : { result: 'error' as const };
   const messages: Record<string, string> = {
     extended1w: `【自動送信】\n動画のご視聴ありがとうございます！🎉\n\n友達登録から1週間以内の方への特別特典として、\n無料試用期間を1週間延長しました✨\n\n引き続きFurimAutoをフル活用して\n売り上げUPを目指してください😄`,
     extended3d: `【自動送信】\n動画のご視聴ありがとうございます！🎉\n\nご視聴いただいた感謝として、\n無料試用期間を3日間延長しました✨\n\n引き続きFurimAutoをフル活用して\n売り上げUPを目指してください😄`,
     notEligible: `【自動送信】\n動画のご視聴ありがとうございます！🎉\n\n有料プランにご加入いただいているお客様には\n試用期間延長の代わりに、\nコピー出品チケットを100枚プレゼントしました🎁\n\nチケットは自動的に追加されていますので\nぜひご活用ください！`,
     alreadyUsed: `【自動送信】\n「解説見た」キーワードは\n既にご利用いただいております。\n\n1つのアカウントにつき1回限りの特典となっております🙇\n引き続きFurimAutoをよろしくお願いいたします！`,
   };
-  const text = messages[result?.result] ?? '申し訳ございません。処理中にエラーが発生しました。';
+  const text = messages[result.result] ?? '申し訳ございません。処理中にエラーが発生しました。';
   await lineClient.replyMessage(replyToken, [{ type: 'text', text } as never]);
 
-  // D1 furim_customers の「延長キーワード」（限定特典⑥の解放判定。GAS setExtendTrialByKeyword と同じ値。Capsec #243）
-  if (db) {
-    const extendKeyword = result?.result === 'extended1w' ? '1w' : result?.result === 'extended3d' ? '3d' : result?.result === 'notEligible' ? '対象外' : null;
-    if (extendKeyword) {
-      try {
-        await upsertFurimCustomer(db, lineUserId, { extend_keyword: extendKeyword });
-      } catch (e) {
-        console.error('[furim] extend_keyword upsert failed:', lineUserId, e);
-      }
-    }
-  }
+  // シートへ鏡写し（サブスク終了日時・延長キーワード・チケット残。旧拡張は GAS 経路でシートの期限を読む）
+  if (db && result.mirror) await mirrorCustomerFieldsToGas(db, gasDeployId, lineUserId, result.mirror);
 
   // kaisetsu フラグを書き込む（extended1w / extended3d のみ）
   if (db && (result?.result === 'extended1w' || result?.result === 'extended3d')) {
     try {
       const existing = await db.prepare('SELECT id, metadata FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string; metadata: string }>();
       if (existing) {
-        // クロージング用 trial_end はGASが書いた実際の新期限(newExpiry)をそのまま使う。
-        // 旧実装の「今日+7日」自前計算はGAS（元期限+7日）と最大1日ズレていた。
+        // クロージング用 trial_end は D1 に書いた実際の新期限(newExpiry)をそのまま使う。
+        // 旧実装の「今日+7日」自前計算は元期限+7日と最大1日ズレていた。
         // newExpiry が返らない異常時のみ従来式でフォールバック
         let trialEndStr: string;
         if (result.newExpiry && !Number.isNaN(new Date(result.newExpiry).getTime())) {

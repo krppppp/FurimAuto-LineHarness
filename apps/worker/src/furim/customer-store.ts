@@ -45,6 +45,7 @@ export type FurimCustomer = {
   inventory_sheet_url: string | null;
   inventory_sheet_created_at: string | null;
   ext_last_seen_at: string | null;         // Worker 経由の最終認証。NULL = 旧拡張（GAS 経路）のまま
+  gas_last_seen_at: string | null;         // 旧拡張（GAS getKeyCodeSet）からの最終認証（段階2.5・#245(b) 廃止日の判断材料）
   created_at: string;
   updated_at: string;
 };
@@ -84,6 +85,7 @@ const PATCHABLE = [
   'inventory_sheet_url',
   'inventory_sheet_created_at',
   'ext_last_seen_at',
+  'gas_last_seen_at',
 ] as const;
 
 /** 'YYYY-MM-DD HH:MM:SS'（JST）。シートに書く形式・stripe-processor の subscriptionEndDateTime と同じ */

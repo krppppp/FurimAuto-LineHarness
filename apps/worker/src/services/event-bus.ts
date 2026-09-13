@@ -650,6 +650,12 @@ async function executeAction(
           .first<{ line_user_id: string }>();
         const { absorbGasKeyCode } = await import('../furim/customer-store.js');
         await absorbGasKeyCode(db, kcFriend?.line_user_id, response);
+        // 旧プラン（プラン一覧ベース）の setCustomerData / setKeyCode は機能フラグ列をシートにしか書かない。
+        // 拡張の認証は D1 furim_feature_flags を読む（Capsec #245）ので、直後に 1 行取り込んで 30 分待たせない
+        if (method === 'setCustomerData' || method === 'setKeyCode') {
+          const { pullFeatureFlagsFromSheet } = await import('../furim/customer-sync.js');
+          await pullFeatureFlagsFromSheet(db, gasDeployId, kcFriend?.line_user_id);
+        }
       }
       // capture: { eventDataキー: GAS応答フィールド } — 後続stepの {{eventData.KEY}} で参照できる
       const capture = action.params.capture as Record<string, string> | undefined;

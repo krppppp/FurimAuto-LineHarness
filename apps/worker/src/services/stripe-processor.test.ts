@@ -25,6 +25,13 @@ vi.mock('../furim/gas-retry-queue.js', () => ({
   enqueueGasRetryJob: vi.fn(),
 }));
 
+// 段階2（Capsec #244 の残）: 既定は D1 側の同期が失敗 → 従来の GAS 判定にフォールバックする経路をテストする。
+// Worker 決定の経路は個別のテストで mockResolvedValueOnce する
+vi.mock('../furim/feature-flags.js', () => ({
+  applyPlanBuilderSync: vi.fn().mockRejectedValue(new Error('furim_master empty (test default)')),
+  gasSyncArgs: (r: { keyCode: string; keyCodeIssued: boolean; planLabel: string; flags: Record<string, string> }) => ({ keyCode: r.keyCode, keyCodeIssued: r.keyCodeIssued, planLabel: r.planLabel, flags: r.flags }),
+}));
+
 vi.mock('./event-bus.js', () => ({
   // 既定は automations 全成功(true)。invoiceハンドラは false のとき throw して再処理に回す。
   fireEvent: vi.fn().mockResolvedValue(true),
@@ -50,15 +57,25 @@ import { gasGet } from '../furim/gas-client.js';
 import { fireEvent } from './event-bus.js';
 import { processStripeEvent, sweepPendingStripeEvents } from './stripe-processor.js';
 
-function makeDb(recentAutomationRow: unknown = null) {
+// lineUserId: Stripe顧客ID → LINE ID の逆引き（furim_customers）の結果。段階2.5 で GAS getLINEIDwithStripeID は削除され D1 だけを見る。
+// Error を渡すと逆引きクエリが失敗する（D1 障害の再現）
+function makeDb(recentAutomationRow: unknown = null, lineUserId: string | null | Error = 'U-fail') {
+  let lastSql = '';
   const stmt = {
     bind: vi.fn(),
     run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
     all: vi.fn().mockResolvedValue({ results: [] }),
-    first: vi.fn().mockResolvedValue(recentAutomationRow),
+    first: vi.fn().mockImplementation(async () => {
+      if (/FROM furim_customers WHERE stripe_customer_id/.test(lastSql)) {
+        if (lineUserId instanceof Error) throw lineUserId;
+        return lineUserId ? { line_user_id: lineUserId } : null;
+      }
+      return recentAutomationRow;
+    }),
   };
   stmt.bind.mockReturnValue(stmt);
-  return { db: { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database, stmt };
+  const prepare = vi.fn().mockImplementation((sql: string) => { lastSql = sql; return stmt; });
+  return { db: { prepare } as unknown as D1Database, stmt };
 }
 
 const env = {
@@ -322,10 +339,9 @@ describe('processStripeEvent — invoice_paid の冪等/再処理', () => {
 
 describe('processStripeEvent — invoice_paid でのプラン名D1同期', () => {
   test('legacyサブスクのプラン名(sub.plan.nickname)を resolvedLineUserId で D1へ同期する', async () => {
-    const { db } = makeDb({ id: 'log-1' });
+    const { db } = makeDb({ id: 'log-1' }, 'U-plan');
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
-    // metadata に lineUserId が無いケース → GAS逆引きで resolvedLineUserId が確定する
-    vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-plan' });
+    // metadata に lineUserId が無いケース → D1 furim_customers の逆引きで resolvedLineUserId が確定する
     const fetchStub = vi.fn().mockImplementation((url: string) => {
       if (String(url).includes('/v1/subscriptions/')) {
         return Promise.resolve({
@@ -351,7 +367,7 @@ describe('processStripeEvent — invoice_paid でのプラン名D1同期', () =>
         },
       });
 
-      // friendId(metadata由来、未解決でnull)ではなく resolvedLineUserId(GAS逆引き)で更新される
+      // friendId(metadata由来、未解決でnull)ではなく resolvedLineUserId(D1逆引き)で更新される
       expect(updateFriendPlanName).toHaveBeenCalledWith(db, 'U-plan', 'プレミアムプラン');
     } finally {
       vi.unstubAllGlobals();
@@ -359,9 +375,8 @@ describe('processStripeEvent — invoice_paid でのプラン名D1同期', () =>
   });
 
   test('プラン名が確定しない場合は同期しない（STRIPE_SECRET_KEY未設定でsubscriptions.retrieveがスキップされるケース）', async () => {
-    const { db } = makeDb({ id: 'log-1' });
+    const { db } = makeDb({ id: 'log-1' }, 'U-noplan');
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
-    vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-noplan' });
 
     await processStripeEvent(db, env, {
       id: 'evt_plan_2',
@@ -378,21 +393,19 @@ import { gasPost } from '../furim/gas-client.js';
 import { enqueueGasRetryJob } from '../furim/gas-retry-queue.js';
 
 describe('processStripeEvent — GAS失敗のキュー退避（2026-08-14 Stripe経路統合）', () => {
-  test('getLINEIDwithStripeID のfetch失敗＋metadataフォールバック不成立ならthrowしてsweep再試行に委ねる', async () => {
-    const { db } = makeDb(null);
-    vi.mocked(gasGet).mockRejectedValue(new Error('GAS fetch hang'));
+  test('furim_customers の逆引き失敗＋metadataフォールバック不成立ならthrowしてsweep再試行に委ねる', async () => {
+    const { db } = makeDb(null, new Error('D1 down'));
 
     await expect(processStripeEvent(db, env, {
       id: 'evt_lookup_1',
       type: 'invoice.payment_succeeded',
       data: { object: { id: 'in_l1', customer: 'cus_l1', billing_reason: 'subscription_cycle' } },
-    })).rejects.toThrow(/getLINEIDwithStripeID fetch failed/);
+    })).rejects.toThrow(/furim_customers lookup failed/);
   });
 
-  test('getLINEIDwithStripeID が失敗しても subscription metadata で解決できれば続行する', async () => {
-    const { db } = makeDb({ id: 'log-1' });
+  test('furim_customers の逆引きが失敗しても subscription metadata で解決できれば続行する', async () => {
+    const { db } = makeDb({ id: 'log-1' }, new Error('D1 down'));
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
-    vi.mocked(gasGet).mockRejectedValue(new Error('GAS fetch hang'));
     const fetchStub = vi.fn().mockImplementation((url: string) => {
       if (String(url).includes('/v1/subscriptions/')) {
         return Promise.resolve({ ok: true, json: async () => ({ plan: { nickname: 'テストプラン' }, items: { data: [] }, metadata: { lineUserId: 'U-meta' } }) });
@@ -413,9 +426,8 @@ describe('processStripeEvent — GAS失敗のキュー退避（2026-08-14 Stripe
   });
 
   test('plan-builderのsyncFeatures失敗はキュー退避＋実行済みマークして処理を続行する', async () => {
-    const { db } = makeDb({ id: 'log-1' });
+    const { db } = makeDb({ id: 'log-1' }, 'U-pb');
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
-    vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-pb' });
     vi.mocked(gasPost).mockRejectedValueOnce(new Error('GAS fetch hang'));
     const fetchStub = vi.fn().mockImplementation((url: string) => {
       if (String(url).includes('/v1/subscriptions/')) {
@@ -449,9 +461,8 @@ describe('processStripeEvent — GAS失敗のキュー退避（2026-08-14 Stripe
   });
 
   test('sync-featuresが実行済みマーク済みならGASを呼ばない（sweep再実行とキューの二重経路防止）', async () => {
-    const { db } = makeDb({ id: 'log-1' });
+    const { db } = makeDb({ id: 'log-1' }, 'U-pb');
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1', plan_name: 'PBプラン:premium' } as never);
-    vi.mocked(gasGet).mockResolvedValue({ customer_line_id: 'U-pb' });
     vi.mocked(hasProcessedStripeAction).mockResolvedValueOnce(true as never);
     const fetchStub = vi.fn().mockImplementation((url: string) => {
       if (String(url).includes('/v1/subscriptions/')) {
@@ -470,6 +481,71 @@ describe('processStripeEvent — GAS失敗のキュー退避（2026-08-14 Stripe
 
       expect(gasPost).not.toHaveBeenCalled();
       expect(enqueueGasRetryJob).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+import { applyPlanBuilderSync } from '../furim/feature-flags.js';
+
+describe('processStripeEvent — plan-builder の同期は Worker が決めて D1 に先に書く（Capsec #244 段階2 の残）', () => {
+  test('Worker の決定値（keyCode/flags/planLabel）を GAS に渡し、再発行なら新キーコードを push する', async () => {
+    const { db } = makeDb({ id: 'log-1' }, 'U-pb');
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+    vi.mocked(applyPlanBuilderSync).mockResolvedValueOnce({
+      keyCode: 'pb_new12345', keyCodeIssued: true, keyCodeReissued: true, previousKeyCode: 'pb_old', planLabel: 'PBプラン:メルカリ 全自動化プラン',
+      flags: { mChangePrice: '1', AutoMultiChannel: '' }, ticketsGranted: 200,
+    });
+    vi.mocked(gasPost).mockResolvedValueOnce({ success: true });
+    const fetchStub = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('/v1/subscriptions/')) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: { data: [] }, metadata: { source: 'plan-builder', lineUserId: 'U-pb', packages: 'premium' } }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      await processStripeEvent(db, { ...(env as object), STRIPE_SECRET_KEY: 'sk_test_1' } as never, {
+        id: 'evt_pb_d1',
+        type: 'invoice.payment_succeeded',
+        data: { object: { id: 'in_pbd1', customer: 'cus_pbd1', billing_reason: 'subscription_cycle', subscription: 'sub_pbd1' } },
+      });
+      expect(applyPlanBuilderSync).toHaveBeenCalledWith(db, undefined, 'gas-deploy-1', expect.objectContaining({
+        lineUserId: 'U-pb', packages: 'premium', grantPremiumTickets: true, invoiceId: 'in_pbd1', planLabel: 'PBプラン:premium',
+      }));
+      const gasCall = vi.mocked(gasPost).mock.calls.find((c) => (c[1] as { method?: string }).method === 'syncFeaturesFromSubscription');
+      expect(gasCall?.[1]).toMatchObject({ keyCode: 'pb_new12345', keyCodeIssued: true, planLabel: 'PBプラン:メルカリ 全自動化プラン', flags: { mChangePrice: '1' } });
+      // Worker が決めたのでフォールバック用の取り込み（GAS 応答の absorb）は走らず、プラン名は Worker の合成値
+      expect(updateFriendPlanName).toHaveBeenCalledWith(db, 'U-pb', 'PBプラン:メルカリ 全自動化プラン');
+      expect(enqueueGasRetryJob).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('D1 に書けたあと GAS が落ちたら鏡写しだけ再実行キューへ（Worker 決定値つき・sweep からの再発行通知は無し）', async () => {
+    const { db } = makeDb({ id: 'log-1' }, 'U-pb');
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+    vi.mocked(applyPlanBuilderSync).mockResolvedValueOnce({
+      keyCode: 'pb_same', keyCodeIssued: false, keyCodeReissued: false, previousKeyCode: 'pb_same', planLabel: 'PBプラン:X', flags: { mChangePrice: '1' }, ticketsGranted: 0,
+    });
+    vi.mocked(gasPost).mockRejectedValueOnce(new Error('GAS fetch hang'));
+    const fetchStub = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('/v1/subscriptions/')) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: { data: [] }, metadata: { source: 'plan-builder', lineUserId: 'U-pb', packages: 'premium' } }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      await processStripeEvent(db, { ...(env as object), STRIPE_SECRET_KEY: 'sk_test_1' } as never, {
+        id: 'evt_pb_d2',
+        type: 'invoice.payment_succeeded',
+        data: { object: { id: 'in_pbd2', customer: 'cus_pbd2', billing_reason: 'subscription_cycle', subscription: 'sub_pbd2' } },
+      });
+      const job = vi.mocked(enqueueGasRetryJob).mock.calls[0][1];
+      expect(job.params).toMatchObject({ keyCode: 'pb_same', flags: { mChangePrice: '1' }, __notifyKeycodeReissue: '0' });
     } finally {
       vi.unstubAllGlobals();
     }

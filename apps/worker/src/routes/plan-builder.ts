@@ -210,21 +210,16 @@ export async function ensureComboCoupon(secretKey: string, nFull: number, nSemi:
 }
 
 // 顧客レベルのクーポン（「Furimanです」キーワードで付与される旧来フロー）を確認する。
-// Stripe顧客ID の解決: D1（furim_customers → friends.metadata）を先に、無ければ GAS getStripeIDwithLINEID（段階2 の移行期のみ）
-async function resolveCustomerIdD1First(db: D1Database | undefined, gasDeployId: string | undefined, lineUserId: string): Promise<string | null> {
-  if (db) {
-    try {
-      const { resolveStripeCustomerId } = await import('../furim/customer-store.js');
-      const id = await resolveStripeCustomerId(db, lineUserId);
-      if (id) return id;
-    } catch (e) {
-      console.error('[plan-builder] D1 customer id lookup failed:', e);
-    }
+// Stripe顧客ID の解決は D1（furim_customers → friends.metadata）だけ（GAS getStripeIDwithLINEID は段階2.5 で削除・Capsec #244）
+async function resolveCustomerIdD1First(db: D1Database | undefined, _gasDeployId: string | undefined, lineUserId: string): Promise<string | null> {
+  if (!db) return null;
+  try {
+    const { resolveStripeCustomerId } = await import('../furim/customer-store.js');
+    return await resolveStripeCustomerId(db, lineUserId);
+  } catch (e) {
+    console.error('[plan-builder] D1 customer id lookup failed:', e);
+    return null;
   }
-  if (!gasDeployId) return null;
-  const { gasGet } = await import('../furim/gas-client.js');
-  const r = (await gasGet(gasDeployId, { method: 'getStripeIDwithLINEID', lineUserId })) as { customer_stripe_id?: string | null };
-  return r?.customer_stripe_id ?? null;
 }
 
 // クーポンの付与はキーワード（actionFurimanCoupon）だけが行う。plan-builder側は
@@ -285,6 +280,8 @@ export type PlanCheckoutEnv = {
   WORKER_PUBLIC_URL?: string;
   // GAS の顧客ID照合が落ちたときのフォールバック用（friends.metadata.stripeCustomerId）
   DB?: D1Database;
+  // 拡張の認証キャッシュ（プラン変更でキーコード・機能フラグを書き換えた時に消す）
+  FURIM_EXT_CACHE?: KVNamespace;
 };
 
 // 選択内容を検証して価格情報つきで展開する（checkout / intent 共用）

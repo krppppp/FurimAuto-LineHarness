@@ -8,7 +8,7 @@ import {
 } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
 import { gasGet } from '../furim/gas-client.js';
-import { upsertFurimCustomer } from '../furim/customer-store.js';
+import { upsertFurimCustomer, getFurimCustomerByStripeId } from '../furim/customer-store.js';
 import { backfillFurimCustomers, backfillFurimExtColumns, reconcileFurimCustomers } from '../furim/customer-sync.js';
 import type { Env } from '../index.js';
 
@@ -294,7 +294,14 @@ furim.post('/api/furim/test-reset', async (c) => {
       result.d1 = 'not_found';
     }
     // furim_customers / furim_sync_diffs は line_user_id キー（friend が無くても消す。
-    // 旧 key_code が残ると follow 時の試用キーコード生成がスキップされる）
+    // 旧 key_code が残ると follow 時の試用キーコード生成がスキップされる）。
+    // 消す前に Stripe顧客ID を回収する（旧: GAS deleteCustomerRowByLineId がシート行から返していた。段階2.5 で削除）
+    try {
+      const fc = await db.prepare('SELECT stripe_customer_id FROM furim_customers WHERE line_user_id = ?').bind(lineUserId).first<{ stripe_customer_id: string | null }>();
+      if (fc?.stripe_customer_id) stripeIds.add(fc.stripe_customer_id);
+    } catch (e) {
+      console.log('[test-reset] furim_customers stripe id skip:', e);
+    }
     for (const t of ['furim_customers', 'furim_sync_diffs']) {
       try {
         await db.prepare(`DELETE FROM ${t} WHERE line_user_id = ?`).bind(lineUserId).run();
@@ -303,20 +310,8 @@ furim.post('/api/furim/test-reset', async (c) => {
       }
     }
 
-    // 2) スプシ: マスター行削除（行にあったStripe顧客IDも回収）
-    if (c.env.GAS_DEPLOY_ID) {
-      try {
-        const { gasPost } = await import('../furim/gas-client.js');
-        const r = (await gasPost(c.env.GAS_DEPLOY_ID, { method: 'deleteCustomerRowByLineId', lineUserId })) as {
-          success?: boolean;
-          deleted?: Array<{ row: number; stripeCustomerId?: string }>;
-        };
-        (r?.deleted ?? []).forEach((d) => { if (d.stripeCustomerId) stripeIds.add(d.stripeCustomerId); });
-        result.sheetRowsDeleted = (r?.deleted ?? []).length;
-      } catch (e) {
-        result.sheet = `error: ${String(e)}`;
-      }
-    }
+    // 2) スプシ: 段階2.5（Capsec #250）からシートは凍結（閲覧用）なので行は消さない。GAS deleteCustomerRowByLineId は削除
+    result.sheet = 'frozen (not deleted)';
 
     // 3) Stripe顧客削除（dev=テスト/prod=本番。サブスクも同時にキャンセルされる）
     const deletedCustomers: string[] = [];
@@ -549,15 +544,11 @@ furim.post('/api/furim/migrate-subscriptions', async (c) => {
       if (!dryRun) {
         if (migrated >= maxExecute) { row.status = 'deferred'; report.push(row); continue; }
         try {
-          // LINE ID逆引き（syncFeatures・plan-apply系がmetadata.lineUserIdを参照するため）
+          // LINE ID逆引き（syncFeatures・plan-apply系がmetadata.lineUserIdを参照するため）。D1 furim_customers から
           let lineUserId = '';
-          if (c.env.GAS_DEPLOY_ID) {
-            try {
-              const { gasGet } = await import('../furim/gas-client.js');
-              const r = (await gasGet(c.env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: sub.customer })) as { customer_line_id?: string };
-              lineUserId = r?.customer_line_id ?? '';
-            } catch { /* 逆引き失敗は許容 */ }
-          }
+          try {
+            lineUserId = (await getFurimCustomerByStripeId(c.env.DB, sub.customer))?.line_user_id ?? '';
+          } catch { /* 逆引き失敗は許容 */ }
           const params: Record<string, string> = { proration_behavior: 'none' };
           sub.items.data.forEach((it, i) => {
             params[`items[${i}][id]`] = it.id;
@@ -789,20 +780,70 @@ furim.post('/api/furim/backfill-plan-names', async (c) => {
  * GAS getKeyCodeSet から呼ばれる（Capsec #243）。拡張がキーコードを入力して端末判定文字列が
  * 発行された瞬間に D1 furim_customers.device_activated を立てる（限定特典③の解放判定）。
  * 段階1 では端末判定文字列だけシートが正で、差分検知 cron も同じ列を取り込む。
- * Body: { lineUserId: string, deviceActivated?: boolean }
+ * gasAuthSeen: 旧拡張（GAS 経路）の認証が成功した印（#245(b) getKeyCodeSet 廃止日の判断材料）
+ * Body: { lineUserId: string, deviceActivated?: boolean, gasAuthSeen?: boolean }
  */
 furim.post('/api/furim/customer-state', async (c) => {
   try {
-    const body = await c.req.json<{ lineUserId?: string; deviceActivated?: boolean }>();
+    const body = await c.req.json<{ lineUserId?: string; deviceActivated?: boolean; gasAuthSeen?: boolean }>();
     if (!body.lineUserId) return c.json({ success: false, error: 'lineUserId required' }, 400);
-    const patch: { device_activated?: number } = {};
+    const patch: { device_activated?: number; gas_last_seen_at?: string } = {};
     if (typeof body.deviceActivated === 'boolean') patch.device_activated = body.deviceActivated ? 1 : 0;
+    if (body.gasAuthSeen === true) patch.gas_last_seen_at = jstNow();
     if (Object.keys(patch).length === 0) return c.json({ success: false, error: 'no fields' }, 400);
     await upsertFurimCustomer(c.env.DB, body.lineUserId, patch);
     return c.json({ success: true, applied: patch });
   } catch (err) {
     console.error('[furim/customer-state] error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/furim/ticket-consumed
+ * 旧拡張（4.3.1 再申請版より前）が GAS updateCopyCredit でシートのチケット残を減らした直後に GAS が通知する（Capsec #254）。
+ * /api/ext/v1/copy-credit と同じ関数・同じ冪等キー（consume:<dedupeKey>）で furim_ticket_ledger に積み、残数を D1 に反映する。
+ * 新拡張の直接経路と同じ dedupeKey なので二重計上しない。
+ * Body: { keyCode: string, delta: number, dedupeKey: string, sourceUrl?: string, targetUrl?: string }
+ */
+furim.post('/api/furim/ticket-consumed', async (c) => {
+  try {
+    const body = await c.req.json<{ keyCode?: string; delta?: number | string; dedupeKey?: string; sourceUrl?: string; targetUrl?: string }>();
+    const keyCode = String(body.keyCode ?? '').trim();
+    const dedupeKey = String(body.dedupeKey ?? '').trim();
+    const delta = Number(body.delta);
+    if (!keyCode || !dedupeKey || !Number.isFinite(delta)) return c.json({ success: false, error: 'keyCode, delta, dedupeKey required' }, 400);
+    const customer = await c.env.DB.prepare('SELECT line_user_id, key_code FROM furim_customers WHERE key_code = ? ORDER BY updated_at DESC LIMIT 1').bind(keyCode).first<{ line_user_id: string; key_code: string }>();
+    if (!customer) return c.json({ success: false, error: '該当レコードなし' }, 404);
+    const { applyTicketDelta } = await import('../furim/ticket-ledger.js');
+    const r = await applyTicketDelta(c.env.DB, c.env.FURIM_EXT_CACHE, customer, {
+      delta,
+      reason: 'consume',
+      idempotencyKey: `consume:${dedupeKey}`,
+      sourceUrl: body.sourceUrl || null,
+      targetUrl: body.targetUrl || null,
+    });
+    console.log(`[furim/ticket-consumed] ${r.applied ? 'applied' : 'dup'} keyCode=${keyCode} delta=${delta} left=${r.copyTickets}`);
+    return c.json({ success: true, applied: r.applied, copyTickets: r.copyTickets });
+  } catch (err) {
+    console.error('[furim/ticket-consumed] error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/furim/refresh-master
+ * 機能/パッケージマスタを GAS getFeatureMaster から D1 furim_master に取り込み直す（段階2・Capsec #244。6h cron でも回る）
+ */
+furim.post('/api/furim/refresh-master', async (c) => {
+  try {
+    if (!c.env.GAS_DEPLOY_ID) return c.json({ success: false, error: 'GAS_DEPLOY_ID not configured' }, 500);
+    const { refreshFurimMaster } = await import('../furim/feature-flags.js');
+    const result = await refreshFurimMaster(c.env.DB, c.env.GAS_DEPLOY_ID);
+    return c.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[furim/refresh-master] error:', err);
+    return c.json({ success: false, error: String(err) }, 500);
   }
 });
 

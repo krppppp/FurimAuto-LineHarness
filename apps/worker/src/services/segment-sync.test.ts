@@ -1,10 +1,8 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest';
 
-const gasGetMock = vi.fn();
-vi.mock('../furim/gas-client.js', () => ({
-  gasGet: gasGetMock,
-  getGasErrorFromResponse: vi.fn(() => null),
-}));
+// セグメントは D1 furim_customers から算出する（段階2.5・Capsec #250）。ここでは算出結果を差し替え、同期ロジックだけを見る
+const listMock = vi.fn();
+vi.mock('../furim/segments.js', () => ({ listSegmentsFromD1: listMock }));
 
 const applyMock = vi.fn(async () => ({ httpStatus: 200, payload: { success: true } }));
 vi.mock('../routes/furim.js', () => ({
@@ -13,7 +11,7 @@ vi.mock('../routes/furim.js', () => ({
   UNIFIED_CUTOVER_AT: new Date('2026-08-24T23:00:00+09:00').getTime(),
 }));
 
-const { syncSegmentsFromGas } = await import('./segment-sync.js');
+const { syncSegments } = await import('./segment-sync.js');
 
 interface FriendFixture {
   id: string;
@@ -83,11 +81,11 @@ function freezeAtHourTop() {
   vi.setSystemTime(new Date('2026-08-25T01:01:00Z'));
 }
 
-describe('syncSegmentsFromGas', () => {
+describe('syncSegments', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     freezeAtHourTop();
-    gasGetMock.mockReset();
+    listMock.mockReset();
     applyMock.mockClear();
   });
   afterEach(() => {
@@ -95,99 +93,84 @@ describe('syncSegmentsFromGas', () => {
   });
 
   test('タグが食い違う人だけ applyScenarioSwitch に流す', async () => {
-    gasGetMock.mockResolvedValue({
-      success: true,
-      users: [
+    listMock.mockResolvedValue([
         { lineUserId: 'U1', segment: 3, isReferral: false }, // タグはセグメント2のまま → 対象
         { lineUserId: 'U2', segment: 4, isReferral: false }, // 一致＋enroll済み → skip
-      ],
-    });
+      ]);
     const db = makeDb([
       { id: 'f1', line_user_id: 'U1', created_at: AFTER_CUTOVER, segTags: ['セグメント2'], enrolled: true },
       { id: 'f2', line_user_id: 'U2', created_at: AFTER_CUTOVER, segTags: ['セグメント4'], enrolled: true },
     ]);
-    await syncSegmentsFromGas(db, 'gas-id');
+    await syncSegments(db);
     expect(applyMock).toHaveBeenCalledTimes(1);
     expect(applyMock).toHaveBeenCalledWith(db, 'U1', 3, false);
   });
 
   test('タグ一致でもカットオーバー後登録でenroll無しなら安全網として流す', async () => {
-    gasGetMock.mockResolvedValue({
-      success: true,
-      users: [{ lineUserId: 'U1', segment: 2, isReferral: false }],
-    });
+    listMock.mockResolvedValue([{ lineUserId: 'U1', segment: 2, isReferral: false }]);
     const db = makeDb([
       { id: 'f1', line_user_id: 'U1', created_at: AFTER_CUTOVER, segTags: ['セグメント2'], enrolled: false },
     ]);
-    await syncSegmentsFromGas(db, 'gas-id');
+    await syncSegments(db);
     expect(applyMock).toHaveBeenCalledTimes(1);
   });
 
   test('カットオーバー前登録はタグ一致なら流さない（enroll無しでも）', async () => {
-    gasGetMock.mockResolvedValue({
-      success: true,
-      users: [{ lineUserId: 'U1', segment: 2, isReferral: false }],
-    });
+    listMock.mockResolvedValue([{ lineUserId: 'U1', segment: 2, isReferral: false }]);
     const db = makeDb([
       { id: 'f1', line_user_id: 'U1', created_at: BEFORE_CUTOVER, segTags: ['セグメント2'], enrolled: false },
     ]);
-    await syncSegmentsFromGas(db, 'gas-id');
+    await syncSegments(db);
     expect(applyMock).not.toHaveBeenCalled();
   });
 
   test('D1に居ない人はスキップする', async () => {
-    gasGetMock.mockResolvedValue({
-      success: true,
-      users: [{ lineUserId: 'U-unknown', segment: 1, isReferral: false }],
-    });
+    listMock.mockResolvedValue([{ lineUserId: 'U-unknown', segment: 1, isReferral: false }]);
     const db = makeDb([]);
-    await syncSegmentsFromGas(db, 'gas-id');
+    await syncSegments(db);
     expect(applyMock).not.toHaveBeenCalled();
   });
 
   test('毎時:00以外のtickでは何もしない', async () => {
     vi.setSystemTime(new Date('2026-08-25T01:25:00Z')); // JST 10:25
-    gasGetMock.mockResolvedValue({ success: true, users: [{ lineUserId: 'U1', segment: 1, isReferral: false }] });
+    listMock.mockResolvedValue([{ lineUserId: 'U1', segment: 1, isReferral: false }]);
     const db = makeDb([]);
-    await syncSegmentsFromGas(db, 'gas-id');
-    expect(gasGetMock).not.toHaveBeenCalled();
+    await syncSegments(db);
+    expect(listMock).not.toHaveBeenCalled();
   });
 
   test('セグメントタグが未付与の人は対象になる', async () => {
-    gasGetMock.mockResolvedValue({
-      success: true,
-      users: [{ lineUserId: 'U1', segment: 1, isReferral: true }],
-    });
+    listMock.mockResolvedValue([{ lineUserId: 'U1', segment: 1, isReferral: true }]);
     const db = makeDb([
       { id: 'f1', line_user_id: 'U1', created_at: BEFORE_CUTOVER, segTags: [], enrolled: false },
     ]);
-    await syncSegmentsFromGas(db, 'gas-id');
+    await syncSegments(db);
     expect(applyMock).toHaveBeenCalledWith(db, 'U1', 1, true);
   });
 });
 
-describe('syncSegmentsFromGas: D1 のセグメントが GAS より進んでいれば下げない（Capsec #243）', () => {
+describe('syncSegments: タグのセグメントが算出値より進んでいれば下げない（Capsec #243）', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     freezeAtHourTop();
-    gasGetMock.mockReset();
+    listMock.mockReset();
     applyMock.mockClear();
   });
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  test('GAS が 2 でも D1 が 3（enroll 済み）なら流さない', async () => {
-    gasGetMock.mockResolvedValue({ success: true, users: [{ lineUserId: 'U1', segment: 2, isReferral: false }] });
+  test('算出が 2 でもタグが 3（enroll 済み）なら流さない', async () => {
+    listMock.mockResolvedValue([{ lineUserId: 'U1', segment: 2, isReferral: false }]);
     const db = makeDb([{ id: 'f1', line_user_id: 'U1', created_at: AFTER_CUTOVER, segTags: ['セグメント3'], enrolled: true }]);
-    await syncSegmentsFromGas(db, 'gas-id');
+    await syncSegments(db);
     expect(applyMock).not.toHaveBeenCalled();
   });
 
-  test('enroll 漏れがあれば GAS の番号ではなく D1 の番号で流す', async () => {
-    gasGetMock.mockResolvedValue({ success: true, users: [{ lineUserId: 'U1', segment: 2, isReferral: false }] });
+  test('enroll 漏れがあれば算出の番号ではなくタグの番号で流す', async () => {
+    listMock.mockResolvedValue([{ lineUserId: 'U1', segment: 2, isReferral: false }]);
     const db = makeDb([{ id: 'f1', line_user_id: 'U1', created_at: AFTER_CUTOVER, segTags: ['セグメント3'], enrolled: false }]);
-    await syncSegmentsFromGas(db, 'gas-id');
+    await syncSegments(db);
     expect(applyMock).toHaveBeenCalledWith(db, 'U1', 3, false);
   });
 });

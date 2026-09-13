@@ -1,5 +1,5 @@
 import { fireEvent } from './event-bus.js';
-import { gasGet, getGasErrorFromResponse } from '../furim/gas-client.js';
+import { listActiveTrialsFromD1 } from '../furim/segments.js';
 
 type KaisetsuMeta = {
   kaisetsu: boolean;
@@ -15,26 +15,16 @@ type KaisetsuMeta = {
   closing_sent?: string[];
 };
 
-type ActiveTrial = { lineUserId: string; trialEnd: string };
-
 /**
- * 顧客マスター（GAS）から「無料試用中で終了が近い人」を取り込み、friends.metadata に
- * closing=true / trial_end を立てる。
+ * D1 furim_customers から「無料試用中で終了が近い人」を取り込み（段階2.5・Capsec #250。旧 GAS listActiveTrials）、
+ * friends.metadata に closing=true / trial_end を立てる。
  *
  * これが無いと配信対象は「解説見た」を送った人（kaisetsu=true）だけで、本番全期間で6人しか
  * 居なかった。試用終了が近い一般ユーザーには終盤の案内が1通も無い状態だったため取り込む。
  * kaisetsu フラグには触らない（タグ整理や通常シナリオ停止の挙動は解説見た組だけのまま）。
  */
-async function syncClosingTargets(db: D1Database, gasDeployId: string): Promise<void> {
-  const res = await gasGet(gasDeployId, { method: 'listActiveTrials' }, { timeoutMs: 30_000 });
-  const gasError = getGasErrorFromResponse(res);
-  if (gasError) throw new Error(`listActiveTrials: ${gasError}`);
-
-  // trials が配列で返らない = GAS 側の異常。空配列として扱うと下の突き合わせで
-  // closing=true を全員分クリアしてしまうので、ここで throw して呼び出し元の catch に回す
-  const rawTrials = (res as { trials?: ActiveTrial[] })?.trials;
-  if (!Array.isArray(rawTrials)) throw new Error('listActiveTrials: trials が配列で返りませんでした');
-  const trials = rawTrials.filter((t) => t?.lineUserId && t?.trialEnd);
+async function syncClosingTargets(db: D1Database): Promise<void> {
+  const trials = (await listActiveTrialsFromD1(db)).filter((t) => t?.lineUserId && t?.trialEnd);
   let updated = 0;
 
   for (const trial of trials) {
@@ -100,7 +90,7 @@ function getRemainingDays(trialEnd: string): number {
 export async function processKaisetsuDeliveries(
   db: D1Database,
   lineAccessToken: string,
-  gasDeployId?: string,
+  opts: { syncTrials?: boolean } = {},
 ): Promise<void> {
   const today = todayJst();
 
@@ -108,9 +98,9 @@ export async function processKaisetsuDeliveries(
   const jstHour = new Date(Date.now() + 9 * 60 * 60_000).getUTCHours();
   if (jstHour !== 21) return;
 
-  if (gasDeployId) {
+  if (opts.syncTrials) {
     try {
-      await syncClosingTargets(db, gasDeployId);
+      await syncClosingTargets(db);
     } catch (err) {
       // 取り込みに失敗しても既存対象への配信は続ける
       console.error('[kaisetsu] syncClosingTargets error:', err);

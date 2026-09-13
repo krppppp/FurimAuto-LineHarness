@@ -28,7 +28,7 @@ import { getAiMode } from '../furim/firebase-client.js';
 import { withOutgoingLog } from '../utils/message-log.js';
 import { notifyStaffOfIncomingMessage } from '../services/push-notify.js';
 
-type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GAS_DEPLOY_ID?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; WORKER_NAME?: string; FURIM_TICKET_LIFF_URL?: string; FURIM_TICKET_PRICE_IDS?: string };
+type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GAS_DEPLOY_ID?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; WORKER_NAME?: string; FURIM_TICKET_LIFF_URL?: string; FURIM_TICKET_PRICE_IDS?: string; FURIM_EXT_CACHE?: KVNamespace };
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -497,6 +497,7 @@ async function handleEvent(
           STRIPE_SECRET_KEY: stripeKey,
           GAS_DEPLOY_ID: gasDeployId,
           WORKER_PUBLIC_URL: workerUrl,
+          FURIM_EXT_CACHE: env.FURIM_EXT_CACHE,
         }));
       return;
     }
@@ -522,6 +523,7 @@ async function handleEvent(
         handleButtonAction(loggingClient, userId, event.replyToken, incomingText, {
           GAS_DEPLOY_ID: gasDeployId,
           STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+          FURIM_EXT_CACHE: env.FURIM_EXT_CACHE,
           PLAN_BUILDER_LIFF_URL: env.PLAN_BUILDER_LIFF_URL,
           WORKER_NAME: env.WORKER_NAME,
           FURIM_TICKET_LIFF_URL: env.FURIM_TICKET_LIFF_URL,
@@ -558,7 +560,7 @@ async function handleEvent(
         : 'もう一度お試しください';
       const gasDeployId = env.GAS_DEPLOY_ID;
       await runHandlerSafely('handleKeywordAction', loggingClient, userId, retryHint, () =>
-        handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db));
+        handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE }, db));
       return;
     }
 
@@ -612,7 +614,7 @@ async function handleEvent(
     // 解説見た/解説みたキーワード（AIチャットモード中でも通す）
     if ((incomingText.trim() === '解説見た' || incomingText.trim() === '解説みた') && env?.GAS_DEPLOY_ID) {
       try {
-        await actionExtendTrial(loggingClient, userId, event.replyToken, env.GAS_DEPLOY_ID, db);
+        await actionExtendTrial(loggingClient, userId, event.replyToken, env.GAS_DEPLOY_ID, db, env.FURIM_EXT_CACHE);
       } catch (err) {
         // GASの応答遅延でreplyTokenが失効すると延長成功後でも無言死する
         // (2026-08-05 すがやさんの事例)。pushで結果を届ける

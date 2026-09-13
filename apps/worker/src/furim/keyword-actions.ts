@@ -1,9 +1,10 @@
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
-import { enqueueGasRetryJob, buildKeycodeResetMessages, fetchCurrentKeyCode } from './gas-retry-queue.js';
+import { buildKeycodeResetMessages, fetchCurrentKeyCode } from './gas-retry-queue.js';
 import { copyTicketFlexMessage } from './messages.js';
-import { absorbGasKeyCode, upsertFurimCustomer, resolveStripeCustomerId, extendSubscriptionEnd } from './customer-store.js';
+import { absorbGasKeyCode, upsertFurimCustomer, resolveStripeCustomerId, extendSubscriptionEnd, getFurimCustomer } from './customer-store.js';
 import { mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
+import { invalidateExtCache, type ExtCache } from './ext-auth.js';
 import { isPaidPlan } from './ticket-checkout.js';
 import {
   INTRODUCED_COUPON_NAME,
@@ -63,6 +64,7 @@ export type KeywordActionsEnv = {
   GAS_DEPLOY_ID: string;
   STRIPE_SECRET_KEY?: string;
   DB?: D1Database;
+  FURIM_EXT_CACHE?: ExtCache;
 };
 
 export async function handleKeywordAction(
@@ -75,35 +77,13 @@ export async function handleKeywordAction(
 ): Promise<boolean> {
   // "キーコードリセット"のみ【キーワード】プレフィックスなしの単体文字列でも動く特別対応
   if (rawText.includes('キーコードリセット')) {
-    // 足跡ログ: 無言死の切り分け用（2026-08-13）。tailでどこまで進んだかを特定する
-    console.log('[furim] キーコードリセット: GAS呼び出し開始', lineUserId);
-    try {
-      await gasGet(env.GAS_DEPLOY_ID, { method: 'resetKeyCode', lineUserId });
-    } catch (err) {
-      // インラインで完遂できなかったら再実行キューに積み、cronが必ず完遂させる。
-      // 中間の「受け付けました」返信はしない（2026-08-14 くろさん方針: 余計な返信はいらない）。
-      // 完遂通知はreplyTokenを優先し、失効していたらpush（push月間上限の節約）
-      console.error('[furim] キーコードリセット: GAS失敗。再実行キューに積みます', lineUserId, err);
-      if (db) {
-        // 完遂通知は sweep 側が resetKeyCode 専用の説明＋キーコードのセットを組むので notifyMessage は不要
-        await enqueueGasRetryJob(db, {
-          lineUserId,
-          method: 'resetKeyCode',
-          replyToken,
-        });
-        return true;
-      }
-      throw err;
-    }
-    console.log('[furim] キーコードリセット: GAS完了・返信します', lineUserId);
-    // D1 側も端末判定を解除（限定特典③の解放判定に使う。Capsec #243）
+    // 段階2.5（Capsec #250）: リセットの実体（端末判定文字列のクリア）は D1 furim_customers で完結し、GAS は待たない。
+    // 拡張の認証は D1（KV は 60 秒の写しなので消す）。シートへは返信後に setCustomerFields で鏡写し（旧拡張は GAS 経路で読む）
+    console.log('[furim] キーコードリセット: D1 で端末判定を解除', lineUserId);
+    const current = db ? await getFurimCustomer(db, lineUserId) : null;
     if (db) {
-      try {
-        // device_code も消す（段階3: 拡張の認証は D1 の端末判定文字列を見る。Capsec #245）
-        await upsertFurimCustomer(db, lineUserId, { device_activated: 0, device_code: null });
-      } catch (e) {
-        console.error('[furim] キーコードリセット: furim_customers 更新失敗', lineUserId, e);
-      }
+      await upsertFurimCustomer(db, lineUserId, { device_activated: 0, device_code: null });
+      await invalidateExtCache(env.FURIM_EXT_CACHE, current?.key_code);
     }
     // 返信は「何がリセットされ・次に何をするか」の説明＋コピー用のキーコード単体を一括で送る
     // （2026-08-13 くろさん指示。「完了しました」だけでは次の行動が伝わらなかった）。
@@ -121,6 +101,8 @@ export async function handleKeywordAction(
       await lineClient.pushMessage(lineUserId, doneMessages);
       console.log('[furim] キーコードリセット: push再送完了', lineUserId);
     }
+    // シートの端末判定文字列を空に（旧拡張の GAS getKeyCodeSet が読む列。失敗は再実行キューが完遂させる）
+    if (db) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { '端末判定文字列': '' });
     return true;
   }
 

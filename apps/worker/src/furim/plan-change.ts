@@ -253,34 +253,72 @@ export async function handlePlanChangeMessage(
     await db.prepare('UPDATE plan_builder_intents SET used_at = ? WHERE id = ?').bind(jstNow(), code).run();
     await setStage(db, code, 'used');
 
-    // スプシ同期を即時実行（プラン構成変更→キーコード再発行を含む）。
-    // 数秒後のinvoice webhookでも同じ同期が走るが、ラベル一致のためキーコードは安定（冪等）
+    // 契約内容の同期（プラン構成変更→キーコード再発行を含む）。段階2（Capsec #244 の残）: Worker が D1 に先に書き、
+    // GAS には決めた値を渡して鏡写し（失敗は再実行キューが完遂させる）。
+    // 数秒後のinvoice webhookでも同じ同期が走るが、集合一致のためキーコードは安定（冪等）
     let newKeyCode = '';
     let keyCodeIssued = false;
+    const selection = {
+      packages: (payload.packages ?? []).join(','),
+      features: (payload.features ?? []).join(','),
+      multiChannelSites: (payload.multiChannelSites ?? []).join('/'),
+    };
+    let decided: import('./feature-flags.js').PlanSyncResult | null = null;
+    try {
+      const { applyPlanBuilderSync } = await import('./feature-flags.js');
+      decided = await applyPlanBuilderSync(db, env.FURIM_EXT_CACHE, env.GAS_DEPLOY_ID, {
+        lineUserId,
+        stripeCustomerId: sub.customer,
+        ...selection,
+        subscriptionId: sub.id,
+        grantPremiumTickets: false, // チケット付与はinvoice webhook側で行う（二重付与防止）
+      });
+      newKeyCode = decided.keyCode;
+      keyCodeIssued = decided.keyCodeIssued;
+    } catch (e) {
+      console.error('[plan-change] D1 plan sync failed (GAS 判定にフォールバック):', e);
+    }
     if (env.GAS_DEPLOY_ID) {
+      const { gasSyncArgs } = await import('./feature-flags.js');
+      const gasArgs = {
+        lineUserId,
+        stripeCustomerID: sub.customer,
+        ...selection,
+        subscriptionId: sub.id,
+        grantPremiumTickets: false,
+        ...(decided ? gasSyncArgs(decided) : {}),
+      };
       try {
-        const { gasPost } = await import('./gas-client.js');
-        const sync = (await gasPost(env.GAS_DEPLOY_ID, {
-          method: 'syncFeaturesFromSubscription',
-          lineUserId,
-          stripeCustomerID: sub.customer,
-          packages: (payload.packages ?? []).join(','),
-          features: (payload.features ?? []).join(','),
-          multiChannelSites: (payload.multiChannelSites ?? []).join('/'),
-          subscriptionId: sub.id,
-          grantPremiumTickets: false, // チケット付与はinvoice webhook側で行う（二重付与防止）
-        })) as { success?: boolean; keyCode?: string; keyCodeIssued?: boolean };
-        newKeyCode = sync?.keyCode ?? '';
-        keyCodeIssued = sync?.keyCodeIssued === true;
-        // 再発行結果を D1 furim_customers に取り込む（Capsec #243）
-        const { absorbGasKeyCode } = await import('./customer-store.js');
-        await absorbGasKeyCode(db, lineUserId, sync);
-        // GAS が書いた機能フラグ列を D1 に取り込む（拡張の認証は D1 を読む。Capsec #245）
-        const { pullFeatureFlagsFromSheet } = await import('./customer-sync.js');
-        await pullFeatureFlagsFromSheet(db, env.GAS_DEPLOY_ID, lineUserId);
+        const { gasPost, getGasErrorFromResponse } = await import('./gas-client.js');
+        const sync = (await gasPost(env.GAS_DEPLOY_ID, { method: 'syncFeaturesFromSubscription', ...gasArgs })) as { success?: boolean; keyCode?: string; keyCodeIssued?: boolean };
+        const failure = getGasErrorFromResponse(sync);
+        if (failure) throw new Error(failure);
+        if (!decided) {
+          // フォールバック時だけ GAS の判定結果を D1 に取り込む（Capsec #243 / #245）
+          newKeyCode = sync?.keyCode ?? '';
+          keyCodeIssued = sync?.keyCodeIssued === true;
+          const { absorbGasKeyCode } = await import('./customer-store.js');
+          await absorbGasKeyCode(db, lineUserId, sync);
+          const { pullFeatureFlagsFromSheet } = await import('./customer-sync.js');
+          await pullFeatureFlagsFromSheet(db, env.GAS_DEPLOY_ID, lineUserId);
+        }
       } catch (e) {
-        console.error('[plan-change] syncFeatures failed:', e);
-        await setStage(db, code, 'sync_failed', String(e));
+        console.error('[plan-change] syncFeatures (GAS) failed:', e);
+        if (decided) {
+          // D1 は確定済み。鏡写しだけ再実行キューへ
+          const { enqueueGasRetryJob } = await import('./gas-retry-queue.js');
+          await enqueueGasRetryJob(db, {
+            lineUserId,
+            method: 'syncFeaturesFromSubscription',
+            params: gasArgs,
+            callType: 'post',
+            doneCheck: null,
+            dedupeKey: `syncFeaturesFromSubscription:plan-change:${code}`,
+            maxAttempts: 20,
+          });
+        } else {
+          await setStage(db, code, 'sync_failed', String(e));
+        }
       }
     }
 

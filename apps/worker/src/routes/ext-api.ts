@@ -151,28 +151,17 @@ mount('copy-credit', async (c, p, client) => {
     return c.json({ success: false, error: KEY_CODE_ERROR.NOT_FOUND, errorMessage: '入力されたキーコードは登録されていません。', keyCode, copyCredit: null });
   }
 
-  const id = crypto.randomUUID();
-  const now = jstNow();
-  const results = await db.batch([
-    db
-      .prepare(
-        `INSERT OR IGNORE INTO furim_ticket_ledger (id, line_user_id, delta, reason, idempotency_key, source_url, target_url, created_at)
-         VALUES (?, ?, ?, 'consume', ?, ?, ?, ?)`,
-      )
-      .bind(id, customer.line_user_id, Math.trunc(delta), `consume:${dedupeKey}`, strOrNull(p.sourceUrl), strOrNull(p.targetUrl), now),
-    db
-      .prepare(
-        `UPDATE furim_customers SET copy_tickets = MAX(0, COALESCE(copy_tickets, 0) + ?), updated_at = ?
-         WHERE line_user_id = ? AND EXISTS (SELECT 1 FROM furim_ticket_ledger WHERE id = ?)`,
-      )
-      .bind(Math.trunc(delta), now, customer.line_user_id, id),
-  ]);
-  const applied = (results[0]?.meta?.changes ?? 0) > 0;
-  const row = await db.prepare('SELECT copy_tickets FROM furim_customers WHERE line_user_id = ?').bind(customer.line_user_id).first<{ copy_tickets: number | null }>();
-  await invalidateExtCache(c.env.FURIM_EXT_CACHE, keyCode);
-  const copyCredit = Number(row?.copy_tickets ?? 0) || 0;
-  console.log(`[ext-api] copy-credit ${applied ? 'applied' : 'dup'} keyCode=${keyCode} delta=${delta} left=${copyCredit} client=${client}`);
-  return c.json({ success: true, keyCode, copyCredit, message: applied ? 'コピー出品チケットを更新しました' : '再送のためスキップしました' });
+  // 台帳＋残数は ticket-ledger.ts（旧拡張の GAS updateCopyCredit → /api/furim/ticket-consumed も同じ関数・同じ冪等キー）
+  const { applyTicketDelta } = await import('../furim/ticket-ledger.js');
+  const r = await applyTicketDelta(db, c.env.FURIM_EXT_CACHE, customer, {
+    delta,
+    reason: 'consume',
+    idempotencyKey: `consume:${dedupeKey}`,
+    sourceUrl: strOrNull(p.sourceUrl),
+    targetUrl: strOrNull(p.targetUrl),
+  });
+  console.log(`[ext-api] copy-credit ${r.applied ? 'applied' : 'dup'} keyCode=${keyCode} delta=${delta} left=${r.copyTickets} client=${client}`);
+  return c.json({ success: true, keyCode, copyCredit: r.copyTickets, message: r.applied ? 'コピー出品チケットを更新しました' : '再送のためスキップしました' });
 });
 
 // ── 2-3. execution-log ← stackExecutionData ──

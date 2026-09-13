@@ -32,11 +32,14 @@ export async function checkGasSheetAuth(
   let detail = '';
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      // 存在しない ID でもシート読み取りが走り {customer_stripe_id: null} の JSON が返る。
-      // 認可切れなら gasGet が throw するか、Google の HTML ページ (string) が返る
+      // 存在しない ID でもシート読み取りが走り {success:true, rows:[]} の JSON が返る（getStripeIDwithLINEID は
+      // 段階2.5 で削除したので getData を使う）。認可切れなら gasGet が throw するか、Google の HTML ページ (string) が返る
       const res = await gasGet(env.GAS_DEPLOY_ID, {
-        method: 'getStripeIDwithLINEID',
-        lineUserId: 'gas-health-canary',
+        method: 'getData',
+        sheet: '顧客情報-サブスク情報-キーコード',
+        headerRow: '3',
+        filterCol: 'LINE_ID',
+        filterVal: 'gas-health-canary',
       });
       if (typeof res === 'object' && res !== null) return 'ok';
       detail = String(res).slice(0, 150);

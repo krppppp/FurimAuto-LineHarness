@@ -72,7 +72,7 @@ import { processPendingCouponNotifications } from './services/coupon-notificatio
 import { planBuilder } from './routes/plan-builder.js';
 import { messagesRoute } from './routes/messages.js';
 import { processKaisetsuDeliveries } from './services/kaisetsu-delivery.js';
-import { syncSegmentsFromGas } from './services/segment-sync.js';
+import { syncSegments } from './services/segment-sync.js';
 import { sweepPendingStripeEvents } from './services/stripe-processor.js';
 import { sweepGasRetryJobs } from './furim/gas-retry-queue.js';
 import { watchPlanChangeIntents } from './furim/plan-change-watch.js';
@@ -963,18 +963,9 @@ async function scheduled(
   ctx: ExecutionContext,
 ): Promise<void> {
   setFirebaseAuthToken(env.FIREBASE_DB_SECRET);
-  // FurimAuto: 毎時0分に GAS sendStepMessages（セグメント判定・シナリオ切替）
+  // FurimAuto: 毎時0分のセグメント判定・シナリオ切替は syncSegments（D1 算出）が担う。
+  // 旧 GAS sendStepMessages の POST は段階2.5（Capsec #250）で廃止
   const jstMinutes = new Date(Date.now() + 9 * 60 * 60_000).getUTCMinutes();
-  if (jstMinutes === 0 && env.GAS_DEPLOY_ID) {
-    const gasUrl = `https://script.google.com/macros/s/${env.GAS_DEPLOY_ID}/exec`;
-    ctx.waitUntil(
-      fetch(gasUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ method: 'sendStepMessages' }),
-      }).catch((err) => console.error('[cron] GAS sendStepMessages error:', err)),
-    );
-  }
 
   // GASキープウォーム: 5分ごとの軽量ping（シート非接触・doGetで即return）。
   // 低頻度時間帯のコールドスタート緩和（キーコード発行等の体感遅延・無応答対策）
@@ -1098,8 +1089,8 @@ async function scheduled(
     processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
     processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
     processReminderDeliveries(env.DB, defaultLineClient),
-    processKaisetsuDeliveries(env.DB, env.LINE_CHANNEL_ACCESS_TOKEN, env.GAS_DEPLOY_ID), // furim: 試用終盤クロージング配信
-    syncSegmentsFromGas(env.DB, env.GAS_DEPLOY_ID), // furim: 毎時セグメント同期（内部で毎時:00ゲート・旧GASトリガーの置き換え）
+    processKaisetsuDeliveries(env.DB, env.LINE_CHANNEL_ACCESS_TOKEN, { syncTrials: true }), // furim: 試用終盤クロージング配信（対象は D1 から）
+    syncSegments(env.DB), // furim: 毎時セグメント同期（D1 算出・内部で毎時:00ゲート・旧GASトリガーの置き換え）
     processPendingCouponNotifications(env.DB, env), // furim: クーポン付与のLINE通知 (3分猶予後)
   );
   jobs.push(processQueuedBroadcasts(env.DB, defaultLineClient, env.WORKER_URL));
@@ -1129,6 +1120,16 @@ async function scheduled(
     await processInsightFetch(env.DB, lineClients, defaultLineClient);
   } catch (e) {
     console.error('Insight fetch error:', e);
+  }
+
+  // FurimAuto: 機能/パッケージマスタ（furim_master）を GAS getFeatureMaster から取り込み直す — 6h cron tick（段階4 で GAS を消すまで）
+  if (event.cron === '0 */6 * * *' && env.GAS_DEPLOY_ID) {
+    try {
+      const { refreshFurimMaster } = await import('./furim/feature-flags.js');
+      await refreshFurimMaster(env.DB, env.GAS_DEPLOY_ID);
+    } catch (e) {
+      console.error('[cron] furim master refresh error:', e);
+    }
   }
 
   // Booking expirer — runs only on the 6h cron tick.

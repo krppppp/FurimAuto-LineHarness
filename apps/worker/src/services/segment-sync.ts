@@ -1,13 +1,12 @@
-import { gasGet, getGasErrorFromResponse } from '../furim/gas-client.js';
 import { applyScenarioSwitch, UNIFIED_SCENARIO_NAME, UNIFIED_CUTOVER_AT } from '../routes/furim.js';
-
-type SegmentUser = { lineUserId: string; segment: number; isReferral: boolean };
+import { listSegmentsFromD1 } from '../furim/segments.js';
 
 /**
  * 毎時セグメント同期（旧GAS sendStepMessagesトリガーの置き換え・2026-08-25）。
  *
- * GASの読み取りAPI listSegments から「ステップ配信対象（登録0〜21日・非会員）の
- * 現在セグメント」を取得し、セグメントタグの更新と統合版シナリオへの安全網enrollを行う。
+ * D1 furim_customers から「ステップ配信対象（登録0〜21日・非会員）の現在セグメント」を算出し
+ * （段階2.5・Capsec #250。旧 GAS listSegments / sendStepMessages の置き換え）、
+ * セグメントタグの更新と統合版シナリオへの安全網enrollを行う。
  *
  * 旧方式はGASの時間主導トリガーが毎時 scenario-switch を叩いていたが、トリガーが
  * 黙って止まる事故（2026-08-17〜、1週間気づけず）があったため、時間主導をworker cron
@@ -17,30 +16,19 @@ type SegmentUser = { lineUserId: string; segment: number; isReferral: boolean };
  * 「タグが現状と食い違う人」「enrollが無いカットオーバー後登録者」だけに絞る。
  * セグメント変化は稀なので定常時の処理対象はごく少数になる。
  */
-export async function syncSegmentsFromGas(db: D1Database, gasDeployId?: string): Promise<void> {
-  if (!gasDeployId) return;
-
+export async function syncSegments(db: D1Database): Promise<void> {
   // 5分cronの毎時 :00 tick でだけ動く（kaisetsu と同じ自己ゲート方式）。
   // 6時間cronと同時発火する時刻は二重実行になり得るが、差分方式なので冪等。
   const jstMinute = new Date(Date.now() + 9 * 60 * 60_000).getUTCMinutes();
   if (jstMinute >= 5) return;
 
-  let res: unknown;
+  let users: Awaited<ReturnType<typeof listSegmentsFromD1>>;
   try {
-    res = await gasGet(gasDeployId, { method: 'listSegments' }, { timeoutMs: 60_000 });
+    users = await listSegmentsFromD1(db);
   } catch (err) {
-    console.error('[segment-sync] listSegments fetch error:', err);
+    console.error('[segment-sync] listSegmentsFromD1 error:', err);
     return;
   }
-  const gasError = getGasErrorFromResponse(res);
-  if (gasError) {
-    console.error('[segment-sync] listSegments error:', gasError);
-    return;
-  }
-
-  const users = ((res as { users?: SegmentUser[] })?.users ?? []).filter(
-    (u) => u?.lineUserId && Number.isInteger(u.segment),
-  );
   if (users.length === 0) {
     console.log('[segment-sync] 対象0件');
     return;
@@ -100,12 +88,11 @@ export async function syncSegmentsFromGas(db: D1Database, gasDeployId?: string):
   for (const u of users) {
     const cur = current.get(u.lineUserId);
     if (!cur) {
-      // D1に居ない/ブロック中。GAS側マスターとD1のズレは正常ケース（旧GASも404 skip扱い）
+      // friends に居ない/ブロック中（旧GASも404 skip扱い）
       missing++;
       continue;
     }
-    // D1 のセグメントが GAS より進んでいるときは下げない（Capsec #243: 「初回発行」等の鏡写しが
-    // 遅れている間に :00 の同期で 3→2 に揺り戻るのを防ぐ。セグメントは前進しかしない）
+    // タグのセグメントが算出値より進んでいるときは下げない（セグメントは前進しかしない）
     const curSeg = [...cur.tags].reduce((m, t) => Math.max(m, Number(t.replace('セグメント', '')) || 0), 0);
     const targetSeg = curSeg > u.segment ? curSeg : u.segment;
     const wantTag = `セグメント${targetSeg}`;

@@ -1,13 +1,20 @@
 import type { LineClient } from '@line-crm/line-sdk';
-import { gasPost } from './gas-client.js';
+import { jstNow } from '@line-crm/db';
 import { carouselTemplate, surveyTemplate, copyTicketFlexMessage } from './messages.js';
 import { logOutgoing } from '../utils/message-log.js';
-import { absorbGasKeyCode, upsertFurimCustomer, resolveStripeCustomerId } from './customer-store.js';
+import { upsertFurimCustomer, resolveStripeCustomerId, getFurimCustomer } from './customer-store.js';
 import { buildTicketCheckoutUrl } from './ticket-checkout.js';
+import { mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
+import { upsertFeatureFlags } from './customer-sync.js';
+import { INVENTORY_PATROL_ALL_SITES } from './feature-flags.js';
+import { applyTicketDelta } from './ticket-ledger.js';
+import { grantTrialPromo, type TrialPromoResult } from './trial-promo.js';
+import type { ExtCache } from './ext-auth.js';
 
 export type ButtonActionsEnv = {
   GAS_DEPLOY_ID: string;
   STRIPE_SECRET_KEY?: string;
+  FURIM_EXT_CACHE?: ExtCache;
   PLAN_BUILDER_LIFF_URL?: string;
   // チケット決済 URL 組み立て用（ticket-checkout.ts）。WORKER_NAME で dev/prod を判定
   WORKER_NAME?: string;
@@ -131,7 +138,8 @@ export async function handleButtonAction(
     if (surveyResult === '紹介') {
       await lineClient.pushMessage(lineUserId, [{ type: 'text', text: referralPushText } as never]);
     }
-    // D1 furim_customers を先に書く（限定特典①の解放判定。Capsec #243）。シートは従来どおり GAS へ
+    // D1 furim_customers（限定特典①の解放判定）と回答履歴 furim_survey_answers（旧: シート「アンケート結果」）を先に書く。
+    // シートへは setCustomerFields で鏡写し（段階2.5・Capsec #250。GAS setSurveyResult は削除）
     if (db) {
       try {
         await upsertFurimCustomer(db, lineUserId, { survey_answer: surveyResult ?? null });
@@ -139,15 +147,23 @@ export async function handleButtonAction(
         console.error('[furim] survey_answer upsert failed:', lineUserId, e);
       }
     }
-    await gasPost(env.GAS_DEPLOY_ID, { method: 'setSurveyResult', lineUserId, surveyResult });
 
     // セグメント2 へ昇格（アンケート回答済み）
     if (db) {
-      const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
+      const friend = await db.prepare('SELECT id, display_name FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string; display_name: string | null }>();
       if (friend) {
         await switchSegmentTag(db, friend.id, 2);
         if (surveyResult === '紹介') await logOutgoing(db, friend.id, 'text', referralPushText);
       }
+      try {
+        await db
+          .prepare('INSERT INTO furim_survey_answers (id, line_user_id, display_name, answer, created_at) VALUES (?, ?, ?, ?, ?)')
+          .bind(crypto.randomUUID(), lineUserId, friend?.display_name ?? null, surveyResult ?? '', jstNow())
+          .run();
+      } catch (e) {
+        console.error('[furim] furim_survey_answers insert failed:', lineUserId, e);
+      }
+      await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'アンケート回答': surveyResult ?? '' });
     }
     return true;
   }
@@ -237,16 +253,23 @@ export async function handleButtonAction(
   }
 
   if (text.includes('コピー出品チケット30枚GET')) {
-    // D1 furim_customers を先に書く（限定特典④の解放判定。Capsec #243）。付与の実体（+30枚）は GAS
+    // 付与の実体（+30 枚）も D1（台帳 free30:<lineUserId> で通算 1 回）。限定特典④の解放判定は free30_ticket。
+    // シートへは setCustomerFields で鏡写し（段階2.5・Capsec #250。GAS setFree30CopyTickets は削除）
+    let copyTickets: number | null = null;
     if (db) {
       try {
-        await upsertFurimCustomer(db, lineUserId, { free30_ticket: 1 });
+        const customer = await getFurimCustomer(db, lineUserId);
+        if (customer?.free30_ticket !== 1) {
+          const r = await applyTicketDelta(db, env.FURIM_EXT_CACHE, { line_user_id: lineUserId, key_code: customer?.key_code ?? null }, { delta: 30, reason: 'free30', idempotencyKey: `free30:${lineUserId}` });
+          copyTickets = r.copyTickets;
+          await upsertFurimCustomer(db, lineUserId, { free30_ticket: 1 });
+          console.log(`[furim] Free30: +30 ${r.applied ? 'applied' : 'dup'} lineUserId=${lineUserId} left=${r.copyTickets}`);
+        } else {
+          console.log(`[furim] Free30: 受け取り済みのためスキップ lineUserId=${lineUserId}`);
+        }
       } catch (e) {
-        console.error('[furim] free30_ticket upsert failed:', lineUserId, e);
+        console.error('[furim] free30 ticket grant failed:', lineUserId, e);
       }
-    }
-    await gasPost(env.GAS_DEPLOY_ID, { method: 'setFree30CopyTickets', lineUserId });
-    if (db) {
       const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
       if (friend) {
         const currentSeg = await getCurrentSegment(db, friend.id);
@@ -258,6 +281,9 @@ export async function handleButtonAction(
       { type: 'video', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%83%A1%E3%83%AB%E3%82%AB%E3%83%AATo%E3%83%A9%E3%82%AF%E3%83%9E%E3%82%B3%E3%83%92%E3%82%9A%E3%83%BC%E5%87%BA%E5%93%81.mp4', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png' } as never,
       { type: 'text', text: 'メルカリToラクマコピー出品機能の説明書はこちらです。\nURL: https://furimauto.com/howto/#mCopyRakumaListing' } as never,
     ]);
+    if (db && copyTickets != null) {
+      await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'Free30チケット': true, 'コピー出品チケット': copyTickets });
+    }
     return true;
   }
 
@@ -292,14 +318,17 @@ export async function handleButtonAction(
   // 在庫管理シート無料プロモ: フラグ(InventorySheet)をTRUE・自動削除巡回(AutoMultiChannel)を全サイトに設定。
   // 該当ユーザーのマスターシート行を GAS が書き換える。拡張は次回 getKeyCodeSet 取得で有効判定する。
   if (text.includes('在庫管理シート無料お試し')) {
-    await gasPost(env.GAS_DEPLOY_ID, { method: 'enableInventorySheet', lineUserId });
-    // 拡張の認証（段階3・Capsec #245）は D1 furim_feature_flags を読むので、GAS がシートに書く値と同じものを D1 にも置く
+    // 拡張の認証（段階3・Capsec #245）は D1 furim_feature_flags を読む。D1 に先に書き、シートへは setCustomerFields の
+    // flags で鏡写し（段階2.5・Capsec #250。GAS enableInventorySheet は削除）
+    const inventoryFlags = { InventorySheet: '1', AutoMultiChannel: INVENTORY_PATROL_ALL_SITES };
     if (db) {
       try {
-        const { upsertFeatureFlags } = await import('./customer-sync.js');
-        await upsertFeatureFlags(db, lineUserId, { InventorySheet: '1', AutoMultiChannel: 'メルカリ/Shops/ラクマ/ヤフオク/ヤフフリ' }, 'promo');
+        await upsertFeatureFlags(db, lineUserId, inventoryFlags, 'promo');
+        const customer = await getFurimCustomer(db, lineUserId);
+        const { invalidateExtCache } = await import('./ext-auth.js');
+        await invalidateExtCache(env.FURIM_EXT_CACHE, customer?.key_code);
       } catch (e) {
-        console.error('[furim] 在庫管理シート無料お試し: furim_feature_flags 更新失敗（cron が取り込む）', lineUserId, e);
+        console.error('[furim] 在庫管理シート無料お試し: furim_feature_flags 更新失敗', lineUserId, e);
       }
     }
     // 手順①のバージョン更新を最初に置く: 旧バージョン(4.2.1以前)のままシートを作成すると
@@ -309,6 +338,7 @@ export async function handleButtonAction(
       type: 'text',
       text: '✅在庫管理シートを有効化しました！\n\nメルカリ・ラクマ・Shops・ヤフオク・ヤフフリの在庫を1枚のスプレッドシートでまとめて管理し、売れたら他サイトの出品を自動でお知らせ・削除できます📦\n\n【使い始め方】\n① FurimAuto拡張機能を最新版（v4.2.2以降）へ更新する\n更新方法: https://furimauto.com/howto/#checkVersion\n\n② キーコード入力画面にてバージョンが4.2.2であることを確認して、入力ボタンを一度押して成功になるまでそのまま待つ\n\n③ 出品一覧ページを一度更新してみると、新たに緑色の「在庫管理シートを作成」ボタンが現れる\n\n④ 説明書に沿ってセットアップする\nhttps://furimauto.com/howto/index.html#inventorySheet\n\nうまく表示されない時は一度拡張を開き直してキーコードを再取得してみてください🙏',
     } as never]);
+    if (db) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, {}, inventoryFlags);
     return true;
   }
 
@@ -317,9 +347,10 @@ export async function handleButtonAction(
   // 全機能開放は GAS 側（grantOneWeekTrial / TRIAL_PROMOS）で行う。
   // 有料会員はキーコード刷新が不利益になるため GAS が付与せず reason=paid を返す
   if (text.includes('1週間無料プレゼント') || text.includes('無料開放プレゼント')) {
-    const result = await gasPost(env.GAS_DEPLOY_ID, { method: 'grantOneWeekTrial', lineUserId }) as Record<string, string>;
-    // 刷新されたキーコードを D1 furim_customers に取り込む（Capsec #243）
-    await absorbGasKeyCode(db, lineUserId, result);
+    // 段階2.5（Capsec #250）: 付与は Worker（trial-promo.ts）が D1 に先に書く。GAS grantOneWeekTrial は削除
+    const result: TrialPromoResult = db
+      ? await grantTrialPromo(db, env.FURIM_EXT_CACHE, env.GAS_DEPLOY_ID, lineUserId)
+      : { success: false, reason: 'error', message: 'D1 なし' };
     const messages: unknown[] = [];
     if (result && result.success) {
       messages.push({
@@ -342,6 +373,15 @@ export async function handleButtonAction(
       messages.push({ type: 'text', text: '申し訳ございません、付与処理に失敗しました🙇\n\nお手数ですが、このLINEにそのままご返信ください。担当者が確認して付与いたします。' });
     }
     await lineClient.replyMessage(replyToken, messages as never[]);
+    if (db && result.success) {
+      await mirrorCustomerFieldsToGas(
+        db,
+        env.GAS_DEPLOY_ID,
+        lineUserId,
+        { 'サブスク終了日時': result.expiryJst, 'キーコード': result.keyCode, '端末判定文字列': '', '初回発行': true },
+        result.flags,
+      );
+    }
     return true;
   }
 

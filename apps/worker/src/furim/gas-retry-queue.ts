@@ -64,14 +64,16 @@ export async function fetchCurrentKeyCode(db: D1Database | undefined, lineUserId
 }
 
 // LINE 起点で D1 に書いた値をシートへ鏡写しする（GAS setCustomerFields・冪等）。
-// 1 回だけ試し、失敗なら再実行キューに積んで cron が完遂させる。顧客への返信の後に呼ぶ（待たせない）
+// 1 回だけ試し、失敗なら再実行キューに積んで cron が完遂させる。顧客への返信の後に呼ぶ（待たせない）。
+// flags は機能フラグ列（feature_key → '1'/'0'/文字列。GAS 側で true/false に戻して該当列へ書く）
 export async function mirrorCustomerFieldsToGas(
   db: D1Database,
   gasDeployId: string,
   lineUserId: string,
   fields: Record<string, unknown>,
+  flags?: Record<string, string>,
 ): Promise<void> {
-  const params = { lineUserId, fields };
+  const params: Record<string, unknown> = flags && Object.keys(flags).length ? { lineUserId, fields, flags } : { lineUserId, fields };
   try {
     const res = await gasPost(gasDeployId, { method: 'setCustomerFields', ...params });
     const failure = getGasErrorFromResponse(res);
@@ -84,7 +86,7 @@ export async function mirrorCustomerFieldsToGas(
       params,
       callType: 'post',
       doneCheck: null,
-      dedupeKey: `setCustomerFields:${Object.keys(fields).join(',')}`,
+      dedupeKey: `setCustomerFields:${Object.keys(fields).join(',')}${flags && Object.keys(flags).length ? ',flags' : ''}`,
       maxAttempts: 20,
     });
   }
@@ -174,11 +176,10 @@ export function toEpoch(value: unknown): number | null {
 }
 
 export const DONE_CHECKS: Record<string, DoneCheckFn> = {
-  // setCustomerData: マスターシートに同一LINE_IDの行が既にあれば実行済み
+  // setCustomerData: マスターシートに同一LINE_IDの行が既にあれば実行済み（getStripeIDwithLINEID は段階2.5 で削除。getData で引く）
   customerRowExists: async (gasDeployId, job) => {
-    const data = await gasGet(gasDeployId, { method: 'getStripeIDwithLINEID', lineUserId: job.line_user_id }, { timeoutMs: SWEEP_GAS_TIMEOUT_MS }) as Record<string, string> | null;
-    const stripeId = data?.customer_stripe_id || data?.stripeCustomerId || data?.stripeID || data?.data;
-    return !!stripeId;
+    const rows = await fetchSheetRows(gasDeployId, MASTER_SHEET, 3, 'LINE_ID', job.line_user_id);
+    return rows.length > 0;
   },
 
   // setSubscriptionData: マスター行のサブスクIDと終了日時が書き込み予定値と一致していれば実行済み。
@@ -299,6 +300,27 @@ export async function sweepGasRetryJobs(
         continue;
       }
 
+      // 旧 resetKeyCode ジョブ（段階2.5 で GAS resetKeyCode は削除・Capsec #250）: リセットの実体は D1 側で済んでいるので
+      // 端末判定の解除を D1 に書き、完遂通知だけ届ける
+      if (job.method === 'resetKeyCode') {
+        try {
+          const { upsertFurimCustomer } = await import('./customer-store.js');
+          await upsertFurimCustomer(db, job.line_user_id, { device_activated: 0, device_code: null });
+        } catch (e) {
+          console.error('[gas-retry] resetKeyCode: furim_customers 更新失敗', e);
+        }
+        try {
+          const keyCode = await fetchCurrentKeyCode(db, job.line_user_id);
+          await notifyUser(lineClient, job.line_user_id, job.reply_token, buildKeycodeResetMessages(keyCode) as never[]);
+        } catch (e) {
+          console.error('[gas-retry] 完遂通知に失敗 method=resetKeyCode', e);
+        }
+        await db.prepare(`UPDATE gas_retry_jobs SET status = 'done', last_error = 'served from D1', updated_at = ? WHERE id = ?`)
+          .bind(jstNow(), job.id).run();
+        console.log(`[gas-retry] 完遂(D1) method=resetKeyCode lineUserId=${job.line_user_id}`);
+        continue;
+      }
+
       const params = jobParams(job);
       // `__` プレフィックスは通知判定用のメタデータ。GASには送らない
       const gasParams = Object.fromEntries(Object.entries(params).filter(([k]) => !k.startsWith('__')));
@@ -318,18 +340,7 @@ export async function sweepGasRetryJobs(
       await absorbGasKeyCode(db, job.line_user_id, result);
 
       try {
-        if (job.method === 'resetKeyCode') {
-          // リセットの完遂通知は説明＋キーコード単体のセットで送る（インライン成功時と同じ体験）。
-          // リセットは端末判定の解除なので D1 側も device_activated を落とす
-          try {
-            const { upsertFurimCustomer } = await import('./customer-store.js');
-            await upsertFurimCustomer(db, job.line_user_id, { device_activated: 0 });
-          } catch (e) {
-            console.error('[gas-retry] resetKeyCode: furim_customers 更新失敗', e);
-          }
-          const keyCode = await fetchCurrentKeyCode(db, job.line_user_id);
-          await notifyUser(lineClient, job.line_user_id, job.reply_token, buildKeycodeResetMessages(keyCode) as never[]);
-        } else if (job.method === 'syncFeaturesFromSubscription') {
+        if (job.method === 'syncFeaturesFromSubscription') {
           // 更新時のキーコード再発行通知（インライン成功時のstripe-processorと同じ文面）。
           // GAS完走済み・Worker見切りのケースでは再実行時 keyCodeIssued=false になり
           // 通知は送られない（ユーザーはメニューの「キーコード発行」で自己回復可能）
@@ -337,9 +348,12 @@ export async function sweepGasRetryJobs(
           if (params.__notifyKeycodeReissue === '1' && r?.keyCodeIssued && r.keyCode) {
             await notifyUser(lineClient, job.line_user_id, job.reply_token, keycodeReissuedMessages(r.keyCode) as never[]);
           }
-          // 再実行で GAS が書いた機能フラグ列を D1 に取り込む（Capsec #245）
-          const { pullFeatureFlagsFromSheet } = await import('./customer-sync.js');
-          await pullFeatureFlagsFromSheet(db, env.GAS_DEPLOY_ID, job.line_user_id);
+          // Worker が決めた値（flags）を渡していない旧ジョブだけ、GAS が書いた機能フラグ列を D1 に取り込む（Capsec #245）。
+          // 段階2.5 以降のジョブは D1 が先に書かれている（feature-flags.ts）ので取り込まない
+          if (!params.flags) {
+            const { pullFeatureFlagsFromSheet } = await import('./customer-sync.js');
+            await pullFeatureFlagsFromSheet(db, env.GAS_DEPLOY_ID, job.line_user_id);
+          }
         } else if (job.notify_message) {
           await notifyUser(lineClient, job.line_user_id, job.reply_token, [{ type: 'text', text: job.notify_message }] as never[]);
         }

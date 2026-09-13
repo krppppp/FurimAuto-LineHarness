@@ -233,26 +233,28 @@ function makeKeycodeDb(keyCode: string | null) {
   return { prepare: vi.fn().mockReturnValue(stmt) };
 }
 
-describe('handleKeywordAction キーコードリセットの特別対応', () => {
-  it('【キーワード】プレフィックスなしでも動き、説明＋キーコード単体を一括で返信する', async () => {
-    gasGet.mockResolvedValueOnce({});                          // resetKeyCode
+describe('handleKeywordAction キーコードリセットの特別対応（段階2.5: D1 で完結・GAS resetKeyCode は削除）', () => {
+  it('【キーワード】プレフィックスなしでも動き、D1 の端末判定を解除して説明＋キーコード単体を一括で返信し、シートへ鏡写しする', async () => {
     const client = makeClient();
+    const db = makeKeycodeDb('pb_test123');
 
-    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, makeKeycodeDb('pb_test123') as never);
+    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, db as never);
 
     expect(result).toBe(true);
-    expect(gasGet).toHaveBeenCalledTimes(1);
-    expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
+    expect(gasGet).not.toHaveBeenCalled();
+    const sqls = db.prepare.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(sqls.some((q: string) => /INSERT INTO furim_customers/.test(q) && /device_code/.test(q))).toBe(true);
     const messages = client.replyMessage.mock.calls[0][1];
     expect(messages).toHaveLength(2);
     expect(messages[0].text).toContain('リセットされたもの');
     expect(messages[0].text).toContain('お手数ですが次の対応をお願いいたします');
     // キーコードはコピーしやすいよう単体メッセージ
     expect(messages[1].text).toBe('pb_test123');
+    // 返信の後にシートの端末判定文字列を空にする（旧拡張が GAS 経路で読む列）
+    expect(gasPost).toHaveBeenCalledWith('deploy-id', { method: 'setCustomerFields', lineUserId: 'Uuser', fields: { '端末判定文字列': '' } });
   });
 
   it('キーコードが取得できなくても、メニュー誘導つきの説明だけで返す', async () => {
-    gasGet.mockResolvedValueOnce({});                                  // resetKeyCode
     const client = makeClient();
 
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, makeKeycodeDb(null) as never);
@@ -264,27 +266,26 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
   });
 
   it('文中に含まれる場合でも部分一致で発火する（既存の他キーワードと同じ判定方式）', async () => {
-    gasGet.mockResolvedValueOnce({});
     const client = makeClient();
 
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'お手数ですがキーコードリセットお願いします', env);
 
     expect(result).toBe(true);
-    expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
+    expect(gasGet).not.toHaveBeenCalled();
+    expect(client.replyMessage).toHaveBeenCalledTimes(1);
   });
 
   it('従来通り【キーワード】プレフィックス付きでも動く', async () => {
-    gasGet.mockResolvedValueOnce({});
     const client = makeClient();
 
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', '【キーワード】キーコードリセット', env);
 
     expect(result).toBe(true);
-    expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
+    expect(client.replyMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('GASが失敗したら再実行キューに積むだけで中間返信はしない（2026-08-14 くろさん方針）', async () => {
-    gasGet.mockRejectedValueOnce(new Error('GAS fetch hang (8000ms)'));
+  it('鏡写しの GAS が失敗しても顧客には返信済みで、setCustomerFields を再実行キューに積む', async () => {
+    gasPost.mockRejectedValueOnce(new Error('GAS fetch hang (8000ms)'));
     const client = makeClient();
     const stmt = { bind: vi.fn(), run: vi.fn().mockResolvedValue({}), first: vi.fn().mockResolvedValue(null) };
     stmt.bind.mockReturnValue(stmt);
@@ -293,17 +294,15 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, db as never);
 
     expect(result).toBe(true);
-    // gas_retry_jobs への INSERT が走る（完遂通知はcron側がreplyToken優先で送る）
+    // リセットは D1 で完了しているので返信は届く
+    expect(client.replyMessage).toHaveBeenCalledTimes(1);
+    // 鏡写しだけ gas_retry_jobs へ
     const sqls = db.prepare.mock.calls.map((c: unknown[]) => String(c[0]));
     expect(sqls.some((q: string) => q.includes('INSERT INTO gas_retry_jobs'))).toBe(true);
-    expect(stmt.run).toHaveBeenCalled();
-    // 中間の「受け付けました」返信は廃止（余計な返信はしない）
-    expect(client.replyMessage).not.toHaveBeenCalled();
     expect(client.pushMessage).not.toHaveBeenCalled();
   });
 
   it('replyが失敗してもpushで完了通知を届ける（リセット自体は成功しているため）', async () => {
-    gasGet.mockResolvedValueOnce({});
     const client = makeClient();
     client.replyMessage.mockRejectedValueOnce(new Error('Invalid reply token'));
 
@@ -317,7 +316,6 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
   });
 
   it('replyが成功したときはpushしない（無駄な二重送信をしない）', async () => {
-    gasGet.mockResolvedValueOnce({});
     const client = makeClient();
 
     await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, makeKeycodeDb('pb_test123') as never);
