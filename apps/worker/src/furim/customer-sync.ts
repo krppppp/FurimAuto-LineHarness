@@ -79,11 +79,57 @@ export function sheetRowToPatch(row: SheetRow): FurimCustomerPatch {
     copy_tickets: int(row['コピー出品チケット']),
     mercari_url: str(row['メルカリURL']),
     customer_email: str(row['Email']),
+    // 段階3（migration 071）: 拡張の認証・ログを Worker が受ける
+    device_code: str(row['端末判定文字列']),
+    shops_url: str(row['ShopsURL']),
+    rakuma_url: str(row['ラクマURL']),
+    yahoo_flea_url: str(row['ヤフフリURL']),
+    inventory_sheet_url: str(row['在庫管理シート']),
   };
 }
 
-// 段階2 でもシートが正の列（拡張が GAS 経由で書く）: 差分検知 cron が D1 に取り込む
-const SHEET_OWNED_FIELDS = ['device_activated', 'copy_tickets', 'mercari_url'] as const;
+// 機能フラグ列の見出しは「日本語名\n(機能キー)」。mChangePrice の列から右を機能列とみなす（GAS getKeyCodeSet と同じ）
+const FEATURE_KEY_RE = /\(([A-Za-z]+)\)/;
+const FIRST_FEATURE_KEY = 'mChangePrice';
+
+/** シート 1 行 → furim_feature_flags の値（'1' / '0' / 文字列）。機能列が無ければ空 */
+export function sheetRowToFeatureFlags(row: SheetRow): Record<string, string> {
+  const out: Record<string, string> = {};
+  let started = false;
+  for (const header of Object.keys(row)) {
+    const m = String(header).match(FEATURE_KEY_RE);
+    if (!m) continue;
+    if (!started) {
+      if (m[1] !== FIRST_FEATURE_KEY) continue;
+      started = true;
+    }
+    const v = row[header];
+    if (v === true) out[m[1]] = '1';
+    else if (v === false) out[m[1]] = '0';
+    else {
+      // 文字列列（AutoMultiChannel = 巡回サイト）は空文字も含めそのまま。GAS も空セルを "" で返していた
+      const s = v == null ? '' : String(v).trim();
+      const upper = s.toUpperCase();
+      out[m[1]] = upper === 'TRUE' ? '1' : upper === 'FALSE' ? '0' : s;
+    }
+  }
+  return out;
+}
+
+function buildFeatureFlagUpserts(db: D1Database, lineUserId: string, flags: Record<string, string>, now: string): D1PreparedStatement[] {
+  return Object.entries(flags).map(([key, value]) =>
+    db
+      .prepare(
+        `INSERT INTO furim_feature_flags (line_user_id, feature_key, value, source, updated_at) VALUES (?, ?, ?, 'sheet', ?)
+         ON CONFLICT(line_user_id, feature_key) DO UPDATE SET value = excluded.value, source = excluded.source, updated_at = excluded.updated_at`,
+      )
+      .bind(lineUserId, key, value, now),
+  );
+}
+
+// 旧拡張（GAS 経路）の間だけシートが正の列: 差分検知 cron が D1 に取り込む。
+// Worker 経由で 1 度でも認証した顧客（ext_last_seen_at が非 NULL）は D1 だけが正（段階3・Capsec #245）
+const SHEET_OWNED_FIELDS = ['device_activated', 'device_code', 'copy_tickets', 'mercari_url'] as const;
 
 // LINE ユーザーID の形式（U + 32 桁 hex）。getData はヘッダーより上のテンプレ行・型注記行
 // （LINE_ID="String"）も返すので、形式で弾く
@@ -141,6 +187,61 @@ export async function backfillFurimCustomers(
   return { dryRun: false, totalRows: rows.length, targetCount: targets.length, upserted, sample: targets.slice(0, 5) };
 }
 
+export type BackfillExtResult = {
+  dryRun: boolean;
+  totalRows: number;
+  targetCount: number;
+  customersUpserted: number;
+  flagsUpserted: number;
+  sample: Array<{ lineUserId: string; patch: FurimCustomerPatch; flagCount: number }>;
+};
+
+/**
+ * 段階3 の初期投入（Capsec #245）: シートから「拡張の認証が読む列」だけを D1 に写す。
+ * 端末判定文字列・各サイト URL・在庫管理シート・機能フラグ。D1 が正の列（キーコード・期限・チケット残）は触らない。
+ * 端末判定文字列とメルカリURL は Worker 経由で認証済みの顧客（ext_last_seen_at あり）には書かない
+ */
+export async function backfillFurimExtColumns(
+  db: D1Database,
+  gasDeployId: string,
+  opts: { dryRun: boolean },
+): Promise<BackfillExtResult> {
+  const rows = await fetchMasterRows(gasDeployId);
+  const d1All = await db.prepare('SELECT line_user_id, ext_last_seen_at FROM furim_customers').all<{ line_user_id: string; ext_last_seen_at: string | null }>();
+  const seen = new Map<string, string | null>();
+  for (const r of d1All.results ?? []) seen.set(r.line_user_id, r.ext_last_seen_at);
+
+  const targets: Array<{ lineUserId: string; patch: FurimCustomerPatch; flags: Record<string, string> }> = [];
+  for (const row of rows) {
+    const lineUserId = sheetRowLineUserId(row);
+    if (!lineUserId || !seen.has(lineUserId)) continue;
+    const full = sheetRowToPatch(row);
+    const patch: FurimCustomerPatch = {
+      shops_url: full.shops_url ?? null,
+      rakuma_url: full.rakuma_url ?? null,
+      yahoo_flea_url: full.yahoo_flea_url ?? null,
+      inventory_sheet_url: full.inventory_sheet_url ?? null,
+    };
+    if (!seen.get(lineUserId)) {
+      patch.device_code = full.device_code ?? null;
+      patch.device_activated = full.device_activated;
+      patch.mercari_url = full.mercari_url ?? null;
+    }
+    targets.push({ lineUserId, patch, flags: sheetRowToFeatureFlags(row) });
+  }
+  const sample = targets.slice(0, 5).map((t) => ({ lineUserId: t.lineUserId, patch: t.patch, flagCount: Object.keys(t.flags).length }));
+  if (opts.dryRun) {
+    return { dryRun: true, totalRows: rows.length, targetCount: targets.length, customersUpserted: 0, flagsUpserted: 0, sample };
+  }
+  const now = jstNow();
+  const customersUpserted = await runBatches(db, targets.map((t) => buildUpsertStatement(db, t.lineUserId, t.patch)));
+  const flagStmts: D1PreparedStatement[] = [];
+  for (const t of targets) flagStmts.push(...buildFeatureFlagUpserts(db, t.lineUserId, t.flags, now));
+  const flagsUpserted = await runBatches(db, flagStmts);
+  console.log('[furim/backfill-ext-columns]', JSON.stringify({ totalRows: rows.length, targetCount: targets.length, customersUpserted, flagsUpserted }));
+  return { dryRun: false, totalRows: rows.length, targetCount: targets.length, customersUpserted, flagsUpserted, sample };
+}
+
 // ── 差分検知 ──────────────────────────────────────────────
 
 type DiffRow = {
@@ -178,6 +279,7 @@ export type ReconcileResult = {
   sheetRows: number;
   d1Rows: number;
   pulled: number;
+  flagsPulled?: number;
   observedDiffs: number;
   newDiffs: number;
   resolvedDiffs: number;
@@ -206,11 +308,19 @@ export async function reconcileFurimCustomers(
   const d1All = await db.prepare('SELECT * FROM furim_customers').all<FurimCustomer>();
   const d1 = new Map<string, FurimCustomer>();
   for (const r of d1All.results ?? []) d1.set(r.line_user_id, r);
+  const flagRows = await db.prepare('SELECT line_user_id, feature_key, value FROM furim_feature_flags').all<{ line_user_id: string; feature_key: string; value: string }>();
+  const flagsByUser = new Map<string, Record<string, string>>();
+  for (const f of flagRows.results ?? []) {
+    let m = flagsByUser.get(f.line_user_id);
+    if (!m) { m = {}; flagsByUser.set(f.line_user_id, m); }
+    m[f.feature_key] = f.value;
+  }
 
   const stmts: D1PreparedStatement[] = [];
   const observed: ObservedDiff[] = [];
   const seenSheet = new Set<string>();
   let pulled = 0;
+  let flagsPulled = 0;
 
   for (const row of rows) {
     const lineUserId = sheetRowLineUserId(row);
@@ -222,8 +332,9 @@ export async function reconcileFurimCustomers(
       observed.push({ lineUserId, field: 'row_missing_in_d1', d1Value: null, sheetValue: patch.key_code ?? '(row)' });
       continue;
     }
-    // 1. シートが正の列を取り込む（端末判定文字列・チケット残数・メルカリURL は拡張が GAS 経由で書く。段階3 で Worker に移る）
-    {
+    // 1. 旧拡張（GAS 経路）の顧客だけ、シートが正の列を取り込む（端末判定文字列・チケット残数・メルカリURL）。
+    //    Worker 経由で認証済み（ext_last_seen_at あり）の顧客は Worker が書いた D1 の値を上書きしない
+    if (!cur.ext_last_seen_at) {
       const pull: FurimCustomerPatch = {};
       for (const f of SHEET_OWNED_FIELDS) {
         const sheetVal = patch[f] ?? null;
@@ -233,6 +344,17 @@ export async function reconcileFurimCustomers(
       if (Object.keys(pull).length) {
         stmts.push(buildUpsertStatement(db, lineUserId, { ...pull, sheet_synced_at: nowJst }));
         pulled++;
+      }
+    }
+    // 1'. 機能フラグは GAS（syncFeaturesFromSubscription 等）がシートにしか書かないので、変化分を取り込む（段階3・Capsec #245）
+    {
+      const sheetFlags = sheetRowToFeatureFlags(row);
+      const d1Flags = flagsByUser.get(lineUserId) ?? {};
+      const changed: Record<string, string> = {};
+      for (const [k, v] of Object.entries(sheetFlags)) if (d1Flags[k] !== v) changed[k] = v;
+      if (Object.keys(changed).length) {
+        stmts.push(...buildFeatureFlagUpserts(db, lineUserId, changed, nowJst));
+        flagsPulled++;
       }
     }
     // 2. D1 が正の列のズレ
@@ -306,7 +428,7 @@ export async function reconcileFurimCustomers(
     console.warn(`[furim/customer-sync] diff alert sent: ${due.length} 件`);
   }
 
-  const result: ReconcileResult = { sheetRows: rows.length, d1Rows: d1.size, pulled, observedDiffs: observed.length, newDiffs, resolvedDiffs, notified };
+  const result: ReconcileResult = { sheetRows: rows.length, d1Rows: d1.size, pulled, flagsPulled, observedDiffs: observed.length, newDiffs, resolvedDiffs, notified };
   console.log('[furim/customer-sync]', JSON.stringify(result));
   return result;
 }

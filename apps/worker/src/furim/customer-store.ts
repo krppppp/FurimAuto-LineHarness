@@ -37,6 +37,14 @@ export type FurimCustomer = {
   customer_email: string | null;
   last_invoice_id: string | null;
   canceled_at: string | null;
+  // 段階3（migration 071）: 拡張の認証・ログを Worker が受ける
+  device_code: string | null;              // 端末判定文字列（Worker が発行。旧拡張の間はシートから取り込む）
+  shops_url: string | null;
+  rakuma_url: string | null;
+  yahoo_flea_url: string | null;
+  inventory_sheet_url: string | null;
+  inventory_sheet_created_at: string | null;
+  ext_last_seen_at: string | null;         // Worker 経由の最終認証。NULL = 旧拡張（GAS 経路）のまま
   created_at: string;
   updated_at: string;
 };
@@ -69,6 +77,13 @@ const PATCHABLE = [
   'customer_email',
   'last_invoice_id',
   'canceled_at',
+  'device_code',
+  'shops_url',
+  'rakuma_url',
+  'yahoo_flea_url',
+  'inventory_sheet_url',
+  'inventory_sheet_created_at',
+  'ext_last_seen_at',
 ] as const;
 
 /** 'YYYY-MM-DD HH:MM:SS'（JST）。シートに書く形式・stripe-processor の subscriptionEndDateTime と同じ */
@@ -170,10 +185,12 @@ export async function absorbGasKeyCode(db: D1Database | undefined, lineUserId: s
     if (current?.key_code !== keyCode) {
       patch.key_code = keyCode;
       patch.device_activated = 0;
+      patch.device_code = null;
     }
     if (issued) {
       patch.key_code_issued = 1;
       patch.device_activated = 0;
+      patch.device_code = null;
     }
     if (Object.keys(patch).length === 0) return;
     await upsertFurimCustomer(db, lineUserId, patch);
@@ -184,7 +201,7 @@ export async function absorbGasKeyCode(db: D1Database | undefined, lineUserId: s
 
 /** 解約（customer.subscription.deleted）: GAS deleteSubscription と同じくキーコードと端末判定を消す */
 export async function clearFurimCustomerKeyCode(db: D1Database, lineUserId: string): Promise<void> {
-  await upsertFurimCustomer(db, lineUserId, { key_code: null, device_activated: 0 });
+  await upsertFurimCustomer(db, lineUserId, { key_code: null, device_activated: 0, device_code: null });
 }
 
 // ── 限定特典GET の 6 フラグ（GAS getLimitedGiftStatus.js と同じ派生式） ──

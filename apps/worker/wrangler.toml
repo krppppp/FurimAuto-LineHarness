@@ -28,6 +28,11 @@ database_id = "2fa9387e-61fb-4f81-9b18-4087837feabd"
 binding = "IMAGES"
 bucket_name = "line-harness-images"
 
+# 拡張の認証（/api/ext/v1/key-code-set）のキャッシュ。D1 furim_customers が正で KV は 60 秒の写し（Capsec #245）
+[[kv_namespaces]]
+binding = "FURIM_EXT_CACHE"
+id = "d8574e633feb478088074d0756494352"
+
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 
@@ -77,6 +82,10 @@ database_id = "2fa9387e-61fb-4f81-9b18-4087837feabd"
 binding = "IMAGES"
 bucket_name = "line-harness-images"
 
+[[env.dev.kv_namespaces]]
+binding = "FURIM_EXT_CACHE"
+id = "d8574e633feb478088074d0756494352"
+
 [env.dev.triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 
@@ -115,6 +124,11 @@ database_id = "24650d0d-e165-4220-9ebe-9a5fab202d7c"
 [[env.prod.r2_buckets]]
 binding = "IMAGES"
 bucket_name = "line-harness-images"
+
+# prod-FURIM_EXT_CACHE（dev とは別 namespace）
+[[env.prod.kv_namespaces]]
+binding = "FURIM_EXT_CACHE"
+id = "0e6c4e7a19d047b9a4a4ca1044c29967"
 
 [env.prod.triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]

@@ -24,7 +24,7 @@ type Write = { sql: string; args: unknown[] };
  * - friends の display_name → opts.names
  * - batch / run は記録
  */
-function makeDb(opts: { customers?: unknown[]; openDiffs?: unknown[]; dueDiffs?: unknown[]; names?: unknown[] } = {}) {
+function makeDb(opts: { customers?: unknown[]; openDiffs?: unknown[]; dueDiffs?: unknown[]; names?: unknown[]; flags?: unknown[] } = {}) {
   const writes: Write[] = [];
   const stmtFor = (sql: string, args: unknown[]) => ({
     sql,
@@ -32,6 +32,7 @@ function makeDb(opts: { customers?: unknown[]; openDiffs?: unknown[]; dueDiffs?:
     run: async () => { writes.push({ sql, args }); return { meta: { changes: 1 } }; },
     first: async () => null,
     all: async () => {
+      if (/FROM furim_feature_flags/.test(sql)) return { results: opts.flags ?? [] };
       if (/FROM furim_customers/.test(sql)) return { results: opts.customers ?? [] };
       if (/notified_at IS NULL AND first_seen_at/.test(sql)) return { results: opts.dueDiffs ?? [] };
       if (/FROM furim_sync_diffs WHERE resolved_at IS NULL/.test(sql)) return { results: opts.openDiffs ?? [] };
@@ -191,5 +192,92 @@ describe('backfillFurimCustomers', () => {
     expect(writes).toHaveLength(2);
     expect(writes[0].sql).toContain('sheet_synced_at = excluded.sheet_synced_at');
     expect(writes[1].args[0]).toBe(uid('2'));
+  });
+});
+
+// ── 段階3（Capsec #245）: 機能フラグの取り込み・Worker 認証済み顧客のシート取り込み停止・初期投入 ──
+const { sheetRowToFeatureFlags, backfillFurimExtColumns } = await import('./customer-sync.js');
+
+describe('sheetRowToFeatureFlags', () => {
+  it('(mChangePrice) の列から右を機能列とみなし、bool は 1/0・文字列列はそのまま', () => {
+    const row = sheetRow({
+      'サブスク価格': 2980,
+      'メルカリ値下げ機能\n(mChangePrice)': true,
+      'メルカリ底値\n(mSetBottomPrice)': 'FALSE',
+      '自動併売\n(AutoMultiChannel)': 'メルカリ/ラクマ',
+      '在庫管理\n(InventorySheet)': '',
+    });
+    expect(sheetRowToFeatureFlags(row)).toEqual({ mChangePrice: '1', mSetBottomPrice: '0', AutoMultiChannel: 'メルカリ/ラクマ', InventorySheet: '' });
+  });
+
+  it('括弧付き見出しでも mChangePrice より左は機能列にしない', () => {
+    expect(sheetRowToFeatureFlags(sheetRow({ '備考\n(memo)': 'x' }))).toEqual({});
+  });
+});
+
+describe('reconcileFurimCustomers（段階3）', () => {
+  it('Worker 経由で認証済み（ext_last_seen_at あり）の顧客はシートから端末判定/チケット/URL を取り込まない', async () => {
+    gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ '端末判定文字列': '0.sheet', 'コピー出品チケット': 99 })] });
+    const { db, writes } = makeDb({ customers: [customer({ device_activated: 1, device_code: 'worker-issued', copy_tickets: 3, ext_last_seen_at: '2026-09-14 03:00:00' })] });
+    const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
+    expect(r.pulled).toBe(0);
+    expect(writes.some((w) => /INSERT INTO furim_customers/.test(w.sql))).toBe(false);
+  });
+
+  it('旧拡張の顧客は端末判定文字列（device_code）も取り込む', async () => {
+    gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ '端末判定文字列': '0.sheet' })] });
+    const { db, writes } = makeDb({ customers: [customer({ device_activated: 0, device_code: null, ext_last_seen_at: null })] });
+    const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
+    expect(r.pulled).toBe(1);
+    const pull = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql));
+    expect(pull?.sql).toMatch(/device_code/);
+    expect(pull?.args).toContain('0.sheet');
+  });
+
+  it('機能フラグは D1 と違う分だけ upsert する', async () => {
+    gasGet.mockResolvedValueOnce({
+      success: true,
+      rows: [sheetRow({ 'メルカリ値下げ機能\n(mChangePrice)': true, '自動併売\n(AutoMultiChannel)': 'メルカリ' })],
+    });
+    const { db, writes } = makeDb({ customers: [customer()], flags: [{ line_user_id: uid('1'), feature_key: 'mChangePrice', value: '1' }] });
+    const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
+    expect(r.flagsPulled).toBe(1);
+    const flagWrites = writes.filter((w) => /INSERT INTO furim_feature_flags/.test(w.sql));
+    expect(flagWrites).toHaveLength(1);
+    expect(flagWrites[0].args.slice(0, 3)).toEqual([uid('1'), 'AutoMultiChannel', 'メルカリ']);
+  });
+});
+
+describe('backfillFurimExtColumns', () => {
+  it('端末判定文字列・各サイト URL・在庫シート・機能フラグだけを写し、D1 が正の列は触らない', async () => {
+    gasGet.mockResolvedValueOnce({
+      success: true,
+      rows: [
+        sheetRow({ '端末判定文字列': '0.sheet', 'ShopsURL': 'https://mercari-shops.com/shops/1', '在庫管理シート': 'https://docs.google.com/x', 'メルカリ値下げ機能\n(mChangePrice)': true }),
+        sheetRow({ 'LINE_ID': uid('2'), '端末判定文字列': '0.other' }),
+        sheetRow({ 'LINE_ID': uid('3') }),
+      ],
+    });
+    const { db, writes } = makeDb({ customers: [customer(), customer({ line_user_id: uid('2'), ext_last_seen_at: '2026-09-14 03:00:00' })] });
+    const r = await backfillFurimExtColumns(db, 'dep-1', { dryRun: false });
+    expect(r).toMatchObject({ dryRun: false, totalRows: 3, targetCount: 2 });
+    const c1 = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql) && w.args[0] === uid('1'));
+    expect(c1?.sql).toMatch(/device_code/);
+    expect(c1?.sql).toMatch(/shops_url/);
+    expect(c1?.sql).toMatch(/inventory_sheet_url/);
+    expect(c1?.sql).not.toMatch(/key_code/);
+    expect(c1?.sql).not.toMatch(/subscription_end_at/);
+    const c2 = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql) && w.args[0] === uid('2'));
+    expect(c2?.sql).not.toMatch(/device_code/);
+    const flags = writes.filter((w) => /INSERT INTO furim_feature_flags/.test(w.sql));
+    expect(flags.map((w) => [w.args[0], w.args[1], w.args[2]])).toEqual([[uid('1'), 'mChangePrice', '1']]);
+  });
+
+  it('dryRun は書かない', async () => {
+    gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ '端末判定文字列': '0.sheet' })] });
+    const { db, writes } = makeDb({ customers: [customer()] });
+    const r = await backfillFurimExtColumns(db, 'dep-1', { dryRun: true });
+    expect(r.dryRun).toBe(true);
+    expect(writes).toHaveLength(0);
   });
 });

@@ -67,6 +67,7 @@ import { furim } from './routes/furim.js';
 import { furimCoupons } from './routes/furim-coupons.js';
 import { furimChats } from './routes/furim-chats.js';
 import { furimAdmin } from './routes/furim-admin.js';
+import { extApi } from './routes/ext-api.js';
 import { processPendingCouponNotifications } from './services/coupon-notifications.js';
 import { planBuilder } from './routes/plan-builder.js';
 import { messagesRoute } from './routes/messages.js';
@@ -109,6 +110,8 @@ export type Env = {
     DB: D1Database;
     IMAGES: R2Bucket;
     ASSETS: Fetcher;
+    // 拡張の認証キャッシュ（Capsec #245）。未バインドでも D1 だけで動く
+    FURIM_EXT_CACHE?: KVNamespace;
     LINE_CHANNEL_SECRET: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
     API_KEY: string;
@@ -231,6 +234,7 @@ app.route('/', furim);
 app.route('/', furimCoupons);
 app.route('/', furimChats);
 app.route('/', furimAdmin);
+app.route('/', extApi);
 app.route('/', planBuilder);
 app.route('/', messagesRoute);
 app.route('/', forms);

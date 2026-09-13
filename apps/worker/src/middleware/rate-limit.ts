@@ -121,6 +121,10 @@ const UNAUTHENTICATED_WINDOW = 60_000; // 1 min
 const IP_CEILING_MAX = 3000;
 const IP_CEILING_WINDOW = 60_000; // 1 min
 
+const EXT_API_PREFIX = '/api/ext/v1/';
+const EXT_API_MAX = 120;
+const EXT_API_WINDOW = 60_000; // 1 min
+
 export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<Response | void> {
   const path = new URL(c.req.url).pathname;
 
@@ -132,6 +136,21 @@ export async function rateLimitMiddleware(c: Context<Env>, next: Next): Promise<
   let key: string;
   let max: number;
   let windowMs: number;
+
+  // Chrome 拡張の認証・ログ API（Capsec #245）: IP 単位 120 req/分。超過は契約どおり
+  // {success:false, error:"rate_limited"} の JSON（拡張は 4xx を再送しない）
+  if (path.startsWith(EXT_API_PREFIX)) {
+    const result = check(`ext:${getClientIp(c)}`, EXT_API_MAX, EXT_API_WINDOW);
+    if (!result.ok) {
+      return c.json(
+        { success: false, error: 'rate_limited', errorMessage: 'アクセスが集中しています。しばらく時間をおいて再度お試しください。' },
+        { status: 429, headers: { 'Retry-After': String(result.retryAfter) } },
+      );
+    }
+    await next();
+    c.header('X-RateLimit-Remaining', String(result.remaining));
+    return;
+  }
 
   if (isUnauthenticatedPath(path)) {
     // Key by IP for unauthenticated endpoints

@@ -79,12 +79,12 @@ describe('absorbGasKeyCode', () => {
     expect(writes).toHaveLength(0);
   });
 
-  it('keyCodeIssued=true なら key_code_issued=1・device_activated=0', async () => {
+  it('keyCodeIssued=true なら key_code_issued=1・device_activated=0・device_code=NULL', async () => {
     const { db, writes } = makeDb({ customer: { key_code: 'pb_same', device_activated: 1, key_code_issued: 0 } });
     await absorbGasKeyCode(db, 'U1', { keyCode: 'pb_same', keyCodeIssued: true });
     expect(writes).toHaveLength(1);
-    expect(writes[0].sql).toContain('(line_user_id, key_code_issued, device_activated, created_at, updated_at)');
-    expect(writes[0].args.slice(1, 3)).toEqual([1, 0]);
+    expect(writes[0].sql).toContain('(line_user_id, key_code_issued, device_activated, device_code, created_at, updated_at)');
+    expect(writes[0].args.slice(1, 4)).toEqual([1, 0, null]);
   });
 
   it('エラーコード文字列・keyCode 無し・db 無しは無視', async () => {

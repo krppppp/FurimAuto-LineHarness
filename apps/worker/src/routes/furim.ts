@@ -9,7 +9,7 @@ import {
 import { LineClient } from '@line-crm/line-sdk';
 import { gasGet } from '../furim/gas-client.js';
 import { upsertFurimCustomer } from '../furim/customer-store.js';
-import { backfillFurimCustomers, reconcileFurimCustomers } from '../furim/customer-sync.js';
+import { backfillFurimCustomers, backfillFurimExtColumns, reconcileFurimCustomers } from '../furim/customer-sync.js';
 import type { Env } from '../index.js';
 
 const furim = new Hono<Env>();
@@ -824,6 +824,28 @@ furim.post('/api/furim/backfill-customers', async (c) => {
     return c.json({ success: true, ...result });
   } catch (err) {
     console.error('[furim/backfill-customers] error:', err);
+    return c.json({ success: false, error: String(err) }, 500);
+  }
+});
+
+/**
+ * POST /api/furim/backfill-ext-columns
+ * 段階3（Capsec #245）の初期投入: シートから端末判定文字列・各サイト URL・在庫管理シート・機能フラグだけを D1 に写す。
+ * Body: { dryRun?: boolean = true, confirmProd?: boolean }
+ */
+furim.post('/api/furim/backfill-ext-columns', async (c) => {
+  const isDev = c.env.WORKER_NAME === 'line-harness';
+  try {
+    const body = await c.req.json<{ dryRun?: boolean; confirmProd?: boolean }>().catch(() => ({}) as { dryRun?: boolean; confirmProd?: boolean });
+    const dryRun = body.dryRun !== false;
+    if (!dryRun && !isDev && body.confirmProd !== true) {
+      return c.json({ success: false, error: '本番workerでの実行には confirmProd: true が必要です' }, 403);
+    }
+    if (!c.env.GAS_DEPLOY_ID) return c.json({ success: false, error: 'GAS_DEPLOY_ID not configured' }, 500);
+    const result = await backfillFurimExtColumns(c.env.DB, c.env.GAS_DEPLOY_ID, { dryRun });
+    return c.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[furim/backfill-ext-columns] error:', err);
     return c.json({ success: false, error: String(err) }, 500);
   }
 });

@@ -181,7 +181,10 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path === '/api/meet-callback' || // Meet Harness completion callback
     path === '/api/qr' || // Public QR proxy — used by desktop landing pages
     path === '/api/health' || // Liveness probe (update CLI / self-update verify)
-    path === '/api/lp-beacon' // LP behavior beacon from furimauto.com (sendBeacon, no auth)
+    path === '/api/lp-beacon' || // LP behavior beacon from furimauto.com (sendBeacon, no auth)
+    // Chrome 拡張の認証・ログ API（Capsec #245）。拡張は公開物なので秘密鍵を持たず、
+    // X-FurimAuto-Client ヘッダ必須＋IP 流量制限を routes/ext-api.ts 側で行う
+    path.startsWith('/api/ext/v1/')
   ) {
     return next();
   }

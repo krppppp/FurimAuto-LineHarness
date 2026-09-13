@@ -99,7 +99,8 @@ export async function handleKeywordAction(
     // D1 側も端末判定を解除（限定特典③の解放判定に使う。Capsec #243）
     if (db) {
       try {
-        await upsertFurimCustomer(db, lineUserId, { device_activated: 0 });
+        // device_code も消す（段階3: 拡張の認証は D1 の端末判定文字列を見る。Capsec #245）
+        await upsertFurimCustomer(db, lineUserId, { device_activated: 0, device_code: null });
       } catch (e) {
         console.error('[furim] キーコードリセット: furim_customers 更新失敗', lineUserId, e);
       }
