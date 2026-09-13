@@ -86,6 +86,7 @@ export async function handleButtonAction(
         ])
       : [null, null];
     const data = buildTicketCheckoutUrl({ ticketCount, planName, stripeCustomerId, env });
+    console.log('[furim] ticket checkout:', lineUserId, ticketCount, planName ?? '(no plan)', 'error' in data ? data.error : data.checkoutURL);
     if ('error' in data) {
       await lineClient.replyMessage(replyToken, [{ type: 'text', text: data.error } as never]);
     } else {

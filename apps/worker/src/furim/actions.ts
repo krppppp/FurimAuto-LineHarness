@@ -415,6 +415,7 @@ async function actionMemberPage(
   }
 
   const portal = await portalRes.json() as { url: string };
+  console.log('[furim] billing portal created:', lineUserId, stripeCustomerId, portal.url ? 'ok' : 'no-url');
   await lineClient.replyMessage(replyToken, [{
     type: 'imagemap',
     baseUrl: 'https://storage.googleapis.com/furimauto_line/images/member_page',
