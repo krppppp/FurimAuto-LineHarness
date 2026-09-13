@@ -2,6 +2,7 @@ import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
 import { enqueueGasRetryJob, buildKeycodeResetMessages, fetchCurrentKeyCode } from './gas-retry-queue.js';
 import { copyTicketFlexMessage } from './messages.js';
+import { absorbGasKeyCode, upsertFurimCustomer } from './customer-store.js';
 import { getFriendByLineUserId, getFriendById, getAffiliateByCode, completeFriendActiveScenarios, getScenarioByName, enrollFriendInScenario } from '@line-crm/db';
 
 // seed-furimauto-all-scenarios.mjs v2 の命名と一致させること（旧統合7本命名だと見つからず切替が空振りする）
@@ -83,6 +84,14 @@ export async function handleKeywordAction(
       throw err;
     }
     console.log('[furim] キーコードリセット: GAS完了・返信します', lineUserId);
+    // D1 側も端末判定を解除（限定特典③の解放判定に使う。Capsec #243）
+    if (db) {
+      try {
+        await upsertFurimCustomer(db, lineUserId, { device_activated: 0 });
+      } catch (e) {
+        console.error('[furim] キーコードリセット: furim_customers 更新失敗', lineUserId, e);
+      }
+    }
     // 返信は「何がリセットされ・次に何をするか」の説明＋コピー用のキーコード単体を一括で送る
     // （2026-08-13 くろさん指示。「完了しました」だけでは次の行動が伝わらなかった）。
     // キーコードが取れなくてもリセット完了の案内は返す（メニュー誘導にフォールバック）
@@ -121,6 +130,8 @@ export async function handleKeywordAction(
     const match = text.match(/無料お試し1週間(\d{8})/);
     const expiryDate = match ? match[1] : null;
     const data = await gasPost(env.GAS_DEPLOY_ID, { method: 'setKeyCodeExpiry', lineUserId, expiryDate }) as Record<string, unknown>;
+    // 発行されたキーコードを D1 furim_customers に取り込む（Capsec #243）
+    await absorbGasKeyCode(db, lineUserId, data);
     if (data?.success) {
       await lineClient.replyMessage(replyToken, [
         { type: 'text', text: `🎉【キャンペーン参加完了！】🎉\n\nFurimAutoの全機能を2週間無料でお試しいただけます！\n\nキーコードの準備ができましたので、\nリッチメニューの「キーコード発行」をタップしてください👇\n\n使い方は簡単3ステップ！\n①キーコードを発行\n②PCブラウザにFurimAutoを導入\n③キーコードを入力する\nだけ！✋\n\n初回の導入方法は下の1分動画を参考に最短3分で導入してみてください♪` } as never,

@@ -395,6 +395,17 @@ async function resolveGasArgs(
   // 無料試用は14日（2026-08-27 くろさん決定で7日→14日化。既存登録者は7日のまま）
   const trialEndJst = new Date(nowJst.getTime() + 14 * 24 * 60 * 60_000);
   const fmtJst = (d: Date) => d.toISOString().replace('T', ' ').slice(0, 19);
+  // {{key_code}}: furim_customers.key_code（友だち追加時に Worker が生成した試用キーコード。Capsec #243）。
+  // 使う automation（setCustomerData）だけのために引く
+  let keyCode = '';
+  const needsKeyCode = Object.values(args).some((v) => typeof v === 'string' && v.includes('{{key_code}}'));
+  if (friend && needsKeyCode) {
+    const kc = await db
+      .prepare('SELECT key_code FROM furim_customers WHERE line_user_id = ?')
+      .bind(friend.line_user_id)
+      .first<{ key_code: string | null }>();
+    keyCode = kc?.key_code ?? '';
+  }
   const resolved: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) {
     if (typeof v === 'string') {
@@ -407,7 +418,8 @@ async function resolveGasArgs(
           .replace('{{display_name}}', friend.display_name ?? '')
           .replace('{{stripe_customer_id}}', meta.stripeCustomerId ?? '')
           .replace('{{now_jst}}', fmtJst(nowJst))
-          .replace('{{trial_end_jst}}', fmtJst(trialEndJst));
+          .replace('{{trial_end_jst}}', fmtJst(trialEndJst))
+          .replace('{{key_code}}', keyCode);
       }
       // {{eventData.KEY}} — payload.eventData から動的展開
       s = s.replace(/\{\{eventData\.([^}]+)\}\}/g, (_m, key: string) =>
@@ -629,6 +641,16 @@ async function executeAction(
         }
         throw err;
       }
+      // GAS 応答にキーコードが載っていれば D1 furim_customers に取り込む（Capsec #243:
+      // setCustomerData / setKeyCode の発行結果を D1 と揃える）
+      if (friendId && response && typeof response === 'object' && 'keyCode' in (response as Record<string, unknown>)) {
+        const kcFriend = await db
+          .prepare('SELECT line_user_id FROM friends WHERE id = ?')
+          .bind(friendId)
+          .first<{ line_user_id: string }>();
+        const { absorbGasKeyCode } = await import('../furim/customer-store.js');
+        await absorbGasKeyCode(db, kcFriend?.line_user_id, response);
+      }
       // capture: { eventDataキー: GAS応答フィールド } — 後続stepの {{eventData.KEY}} で参照できる
       const capture = action.params.capture as Record<string, string> | undefined;
       if (capture && response && typeof response === 'object') {
@@ -765,6 +787,13 @@ async function executeAction(
         const saveKey = (action.params.save_to_metadata as string | undefined) ?? 'stripeCustomerId';
         const merged = { ...meta, [saveKey]: data.id };
         await db.prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?').bind(JSON.stringify(merged), jstNow(), friendId).run();
+        // D1 furim_customers にも持つ（月額会員ページ・チケット注文が GAS を待たずに顧客IDを引く。Capsec #243）
+        try {
+          const { upsertFurimCustomer } = await import('../furim/customer-store.js');
+          await upsertFurimCustomer(db, friend.line_user_id, { stripe_customer_id: data.id });
+        } catch (e) {
+          console.error('[event-bus] furim_customers stripe_customer_id upsert failed:', e);
+        }
       }
       break;
     }

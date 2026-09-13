@@ -104,7 +104,11 @@ export async function syncSegmentsFromGas(db: D1Database, gasDeployId?: string):
       missing++;
       continue;
     }
-    const wantTag = `セグメント${u.segment}`;
+    // D1 のセグメントが GAS より進んでいるときは下げない（Capsec #243: 「初回発行」等の鏡写しが
+    // 遅れている間に :00 の同期で 3→2 に揺り戻るのを防ぐ。セグメントは前進しかしない）
+    const curSeg = [...cur.tags].reduce((m, t) => Math.max(m, Number(t.replace('セグメント', '')) || 0), 0);
+    const targetSeg = curSeg > u.segment ? curSeg : u.segment;
+    const wantTag = `セグメント${targetSeg}`;
     const tagUpToDate = cur.tags.size === 1 && cur.tags.has(wantTag);
     const needsEnroll = !cur.enrolled && new Date(cur.createdAt).getTime() >= UNIFIED_CUTOVER_AT;
     if (tagUpToDate && !needsEnroll) {
@@ -112,7 +116,7 @@ export async function syncSegmentsFromGas(db: D1Database, gasDeployId?: string):
       continue;
     }
     try {
-      const result = await applyScenarioSwitch(db, u.lineUserId, u.segment, Boolean(u.isReferral));
+      const result = await applyScenarioSwitch(db, u.lineUserId, targetSeg, Boolean(u.isReferral));
       if (result.payload.success) applied++;
       else errors++;
     } catch (err) {

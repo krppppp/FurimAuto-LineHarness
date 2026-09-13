@@ -2,11 +2,16 @@ import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
 import { carouselTemplate, surveyTemplate, copyTicketFlexMessage } from './messages.js';
 import { logOutgoing } from '../utils/message-log.js';
+import { absorbGasKeyCode, upsertFurimCustomer } from './customer-store.js';
 
 export type ButtonActionsEnv = {
   GAS_DEPLOY_ID: string;
   STRIPE_SECRET_KEY?: string;
   PLAN_BUILDER_LIFF_URL?: string;
+  // チケット決済 URL 組み立て用（ticket-checkout.ts）。WORKER_NAME で dev/prod を判定
+  WORKER_NAME?: string;
+  FURIM_TICKET_LIFF_URL?: string;
+  FURIM_TICKET_PRICE_IDS?: string;
 };
 
 // プラン診断LIFFは本番/DEVでチャネルが違う。ここにベタ書きするとDEVのURLを
@@ -116,6 +121,14 @@ export async function handleButtonAction(
     if (surveyResult === '紹介') {
       await lineClient.pushMessage(lineUserId, [{ type: 'text', text: referralPushText } as never]);
     }
+    // D1 furim_customers を先に書く（限定特典①の解放判定。Capsec #243）。シートは従来どおり GAS へ
+    if (db) {
+      try {
+        await upsertFurimCustomer(db, lineUserId, { survey_answer: surveyResult ?? null });
+      } catch (e) {
+        console.error('[furim] survey_answer upsert failed:', lineUserId, e);
+      }
+    }
     await gasPost(env.GAS_DEPLOY_ID, { method: 'setSurveyResult', lineUserId, surveyResult });
 
     // セグメント2 へ昇格（アンケート回答済み）
@@ -214,6 +227,14 @@ export async function handleButtonAction(
   }
 
   if (text.includes('コピー出品チケット30枚GET')) {
+    // D1 furim_customers を先に書く（限定特典④の解放判定。Capsec #243）。付与の実体（+30枚）は GAS
+    if (db) {
+      try {
+        await upsertFurimCustomer(db, lineUserId, { free30_ticket: 1 });
+      } catch (e) {
+        console.error('[furim] free30_ticket upsert failed:', lineUserId, e);
+      }
+    }
     await gasPost(env.GAS_DEPLOY_ID, { method: 'setFree30CopyTickets', lineUserId });
     if (db) {
       const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
@@ -278,6 +299,8 @@ export async function handleButtonAction(
   // 有料会員はキーコード刷新が不利益になるため GAS が付与せず reason=paid を返す
   if (text.includes('1週間無料プレゼント') || text.includes('無料開放プレゼント')) {
     const result = await gasPost(env.GAS_DEPLOY_ID, { method: 'grantOneWeekTrial', lineUserId }) as Record<string, string>;
+    // 刷新されたキーコードを D1 furim_customers に取り込む（Capsec #243）
+    await absorbGasKeyCode(db, lineUserId, result);
     const messages: unknown[] = [];
     if (result && result.success) {
       messages.push({

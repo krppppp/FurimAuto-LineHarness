@@ -19,6 +19,7 @@ import { handleFurimAction, actionFurimanCoupon, actionExtendTrial } from '../fu
 import type { FurimActionsEnv } from '../furim/actions.js';
 import { handleButtonAction } from '../furim/button-actions.js';
 import { handleKeywordAction } from '../furim/keyword-actions.js';
+import { generateTrialKeyCode, getFurimCustomer, upsertFurimCustomer } from '../furim/customer-store.js';
 
 // X口コミクーポン申請の通知先（くろさん）。申請URLと付与コマンドをpushする
 const X_REVIEW_STAFF_LINE_USER_ID = 'U5d35c3e6b2be0a6ec699b2a1de2aba93';
@@ -27,7 +28,7 @@ import { getAiMode } from '../furim/firebase-client.js';
 import { withOutgoingLog } from '../utils/message-log.js';
 import { notifyStaffOfIncomingMessage } from '../services/push-notify.js';
 
-type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GAS_DEPLOY_ID?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string };
+type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GAS_DEPLOY_ID?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; WORKER_NAME?: string; FURIM_TICKET_LIFF_URL?: string; FURIM_TICKET_PRICE_IDS?: string };
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -268,6 +269,20 @@ async function handleEvent(
         .bind(lineAccountId, friend.id).run();
     }
 
+    // 試用キーコードは Worker が先に生成して D1 に持つ（Capsec #243）。GAS setCustomerData には
+    // automation の args {{key_code}} で渡し、シートにも同じ値が書かれる。GAS が遅くても
+    // 「キーコード発行」タップは D1 から即返せる。再フォロー・生成済みなら触らない
+    if (isNewUser) {
+      try {
+        const existingCustomer = await getFurimCustomer(db, userId);
+        if (!existingCustomer?.key_code) {
+          await upsertFurimCustomer(db, userId, { key_code: generateTrialKeyCode() });
+        }
+      } catch (err) {
+        console.error('[webhook] trial keycode generation failed:', userId, err);
+      }
+    }
+
     // タグ付与・リッチメニュー設定・ウェルカムメッセージ・リフォロー処理は friend_add Automation で管理
 
     // イベントバス発火: friend_add（replyToken を渡してオートメーション内で使用）
@@ -504,7 +519,14 @@ async function handleEvent(
       // クロージャに渡すと env の絞り込みが外れるので、ここで確定させる
       const gasDeployId = env.GAS_DEPLOY_ID;
       await runHandlerSafely('handleButtonAction', loggingClient, userId, 'もう一度ボタンをタップしてください', () =>
-        handleButtonAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, PLAN_BUILDER_LIFF_URL: env.PLAN_BUILDER_LIFF_URL }, db));
+        handleButtonAction(loggingClient, userId, event.replyToken, incomingText, {
+          GAS_DEPLOY_ID: gasDeployId,
+          STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
+          PLAN_BUILDER_LIFF_URL: env.PLAN_BUILDER_LIFF_URL,
+          WORKER_NAME: env.WORKER_NAME,
+          FURIM_TICKET_LIFF_URL: env.FURIM_TICKET_LIFF_URL,
+          FURIM_TICKET_PRICE_IDS: env.FURIM_TICKET_PRICE_IDS,
+        }, db));
       return;
     }
 

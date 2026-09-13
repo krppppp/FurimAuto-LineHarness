@@ -272,6 +272,9 @@ export async function handlePlanChangeMessage(
         })) as { success?: boolean; keyCode?: string; keyCodeIssued?: boolean };
         newKeyCode = sync?.keyCode ?? '';
         keyCodeIssued = sync?.keyCodeIssued === true;
+        // 再発行結果を D1 furim_customers に取り込む（Capsec #243）
+        const { absorbGasKeyCode } = await import('./customer-store.js');
+        await absorbGasKeyCode(db, lineUserId, sync);
       } catch (e) {
         console.error('[plan-change] syncFeatures failed:', e);
         await setStage(db, code, 'sync_failed', String(e));

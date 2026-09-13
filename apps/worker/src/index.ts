@@ -144,6 +144,9 @@ export type Env = {
     // アンバサダー紹介offer の id（環境ごとに別値）。ref がこの offer の affiliate_link
     // なら紹介URL経由の紹介成立処理を走らせる。未設定なら URL経由紹介は静かに無効。
     FURIM_AMBASSADOR_OFFER_ID?: string;
+    // コピー出品チケット決済 LIFF と単価別 PriceID（furim/ticket-checkout.ts。環境ごとに別値）
+    FURIM_TICKET_LIFF_URL?: string;
+    FURIM_TICKET_PRICE_IDS?: string;
     FIREBASE_DATABASE_URL?: string;
     FIREBASE_DB_SECRET?: string;
     STRIPE_SECRET_KEY?: string;
@@ -1105,6 +1108,13 @@ async function scheduled(
   // プラン変更（PB-…）の未反映検知: LINE でコード送信済みなのに 30分経っても used_at が無い、
   // または used なのに Stripe に反映が無いものを1回だけ通知する（Capsec #240）
   jobs.push(watchPlanChangeIntents(env.DB, defaultLineClient, env));
+  // 顧客マスター（シート）⇄ D1 furim_customers の差分検知（Capsec #243）。
+  // 内部で JST :15/:45 の tick だけ動き、30分以上続くズレをスタッフへ1回だけ通知する
+  jobs.push(
+    import('./furim/customer-sync.js')
+      .then(({ reconcileFurimCustomers }) => reconcileFurimCustomers(env.DB, defaultLineClient, env))
+      .catch((err) => console.error('[cron] furim customer-sync error:', err)),
+  );
 
   await Promise.allSettled(jobs);
 

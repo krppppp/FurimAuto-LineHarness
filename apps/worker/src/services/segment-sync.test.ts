@@ -165,3 +165,29 @@ describe('syncSegmentsFromGas', () => {
     expect(applyMock).toHaveBeenCalledWith(db, 'U1', 1, true);
   });
 });
+
+describe('syncSegmentsFromGas: D1 のセグメントが GAS より進んでいれば下げない（Capsec #243）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    freezeAtHourTop();
+    gasGetMock.mockReset();
+    applyMock.mockClear();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('GAS が 2 でも D1 が 3（enroll 済み）なら流さない', async () => {
+    gasGetMock.mockResolvedValue({ success: true, users: [{ lineUserId: 'U1', segment: 2, isReferral: false }] });
+    const db = makeDb([{ id: 'f1', line_user_id: 'U1', created_at: AFTER_CUTOVER, segTags: ['セグメント3'], enrolled: true }]);
+    await syncSegmentsFromGas(db, 'gas-id');
+    expect(applyMock).not.toHaveBeenCalled();
+  });
+
+  test('enroll 漏れがあれば GAS の番号ではなく D1 の番号で流す', async () => {
+    gasGetMock.mockResolvedValue({ success: true, users: [{ lineUserId: 'U1', segment: 2, isReferral: false }] });
+    const db = makeDb([{ id: 'f1', line_user_id: 'U1', created_at: AFTER_CUTOVER, segTags: ['セグメント3'], enrolled: false }]);
+    await syncSegmentsFromGas(db, 'gas-id');
+    expect(applyMock).toHaveBeenCalledWith(db, 'U1', 3, false);
+  });
+});

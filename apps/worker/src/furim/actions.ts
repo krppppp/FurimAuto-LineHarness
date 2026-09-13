@@ -2,6 +2,7 @@ import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
 import { enqueueGasRetryJob } from './gas-retry-queue.js';
 import { getSentGiftBatches, setSentGiftBatches } from './firebase-client.js';
+import { upsertFurimCustomer } from './customer-store.js';
 import {
   carouselTemplate,
   ticketOrderTemplate,
@@ -618,6 +619,14 @@ export async function actionFurimanCoupon(
     body: new URLSearchParams({ coupon: data.eligibleCouponId }).toString(),
   });
   await gasPost(env.GAS_DEPLOY_ID, { method: 'setFurimanCoupon', lineUserId, couponName: data.eligibleCouponName });
+  // D1 furim_customers にも持つ（限定特典⑤の解放判定。Capsec #243）
+  if (db) {
+    try {
+      await upsertFurimCustomer(db, lineUserId, { youtube_coupon: data.eligibleCouponName || 'applied' });
+    } catch (e) {
+      console.error('[furim] youtube_coupon upsert failed:', lineUserId, e);
+    }
+  }
 
   // Furimanですタグ付与 + セグメント7 へ昇格（Youtubeクーポン取得）
   if (db) {
@@ -649,6 +658,18 @@ export async function actionExtendTrial(
   };
   const text = messages[result?.result] ?? '申し訳ございません。処理中にエラーが発生しました。';
   await lineClient.replyMessage(replyToken, [{ type: 'text', text } as never]);
+
+  // D1 furim_customers の「延長キーワード」（限定特典⑥の解放判定。GAS setExtendTrialByKeyword と同じ値。Capsec #243）
+  if (db) {
+    const extendKeyword = result?.result === 'extended1w' ? '1w' : result?.result === 'extended3d' ? '3d' : result?.result === 'notEligible' ? '対象外' : null;
+    if (extendKeyword) {
+      try {
+        await upsertFurimCustomer(db, lineUserId, { extend_keyword: extendKeyword });
+      } catch (e) {
+        console.error('[furim] extend_keyword upsert failed:', lineUserId, e);
+      }
+    }
+  }
 
   // kaisetsu フラグを書き込む（extended1w / extended3d のみ）
   if (db && (result?.result === 'extended1w' || result?.result === 'extended3d')) {

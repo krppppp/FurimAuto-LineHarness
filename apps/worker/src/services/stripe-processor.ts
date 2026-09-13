@@ -14,6 +14,7 @@ import { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost, getGasErrorFromResponse } from '../furim/gas-client.js';
 import { enqueueGasRetryJob } from '../furim/gas-retry-queue.js';
 import { keycodeReissuedMessages } from '../furim/messages.js';
+import { absorbGasKeyCode, upsertFurimCustomer, clearFurimCustomerKeyCode, getFurimCustomerByStripeId } from '../furim/customer-store.js';
 import { fireEvent } from './event-bus.js';
 import { logOutgoing } from '../utils/message-log.js';
 import type { Env } from '../index.js';
@@ -115,6 +116,14 @@ export async function processStripeEvent(
     // フォールバックでも解決できなければthrowしてsweepの再試行に委ねる
     let resolvedLineUserId = lineUserId;
     let gasLookupFailed = false;
+    // D1 furim_customers に Stripe顧客ID があれば GAS の逆引きを待たない（Capsec #243）
+    if (!resolvedLineUserId && stripeCustomerId) {
+      try {
+        resolvedLineUserId = (await getFurimCustomerByStripeId(db, stripeCustomerId))?.line_user_id ?? null;
+      } catch (e) {
+        console.error('[stripe/invoice] furim_customers lookup failed:', e);
+      }
+    }
     if (!resolvedLineUserId && stripeCustomerId && env.GAS_DEPLOY_ID) {
       try {
         const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
@@ -216,6 +225,8 @@ export async function processStripeEvent(
           // GASが合成した日本語ラベル（なければキーベースのラベル）で埋める
           const syncRes = result as { planLabel?: string; keyCode?: string; keyCodeIssued?: boolean } | null;
           if (!planName) planName = syncRes?.planLabel || pbLabel;
+          // pb_ キーコードの発行/再発行を D1 furim_customers に取り込む（Capsec #243）
+          await absorbGasKeyCode(db, syncGasArgs.lineUserId || resolvedLineUserId, syncRes);
 
           // キーコードが再発行された場合は新キーコードをユーザーへ通知する。
           // - subscription_cycle: ダウングレード予約の切替日・移行顧客の初回更新（ラベル変化で再発行）
@@ -309,6 +320,14 @@ export async function processStripeEvent(
         await updateFriendPlanName(db, resolvedLineUserId, planName);
       } catch (e) {
         console.error('[stripe/invoice] updateFriendPlanName failed:', e);
+      }
+    }
+    // Stripe顧客ID を D1 furim_customers に持つ（イベントの顧客IDで必ず上書き＝顧客分裂の自己修復と同じ意味。Capsec #243）
+    if (resolvedLineUserId && stripeCustomerId) {
+      try {
+        await upsertFurimCustomer(db, resolvedLineUserId, { stripe_customer_id: stripeCustomerId });
+      } catch (e) {
+        console.error('[stripe/invoice] furim_customers upsert failed:', e);
       }
     }
 
@@ -486,6 +505,13 @@ export async function processStripeEvent(
   if (body.type === 'customer.subscription.deleted') {
     const stripeCustomerId = obj.customer ?? '';
     let resolvedLineUserId = lineUserId;
+    if (!resolvedLineUserId && stripeCustomerId) {
+      try {
+        resolvedLineUserId = (await getFurimCustomerByStripeId(db, stripeCustomerId))?.line_user_id ?? null;
+      } catch (e) {
+        console.error('[stripe/subscription.deleted] furim_customers lookup failed:', e);
+      }
+    }
     if (!resolvedLineUserId && stripeCustomerId && env.GAS_DEPLOY_ID) {
       try {
         const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLINEIDwithStripeID', stripeCustomerID: stripeCustomerId }) as Record<string, string>;
@@ -498,6 +524,17 @@ export async function processStripeEvent(
       }
     }
     const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
+    // D1 側の解約反映（Capsec #243）: GAS deleteSubscription と同じくキーコード・端末判定を消し、
+    // プラン名を「キャンセル済み」にする（チケット単価の有料判定・キーコード発行の結果を GAS と揃える）
+    if (resolvedLineUserId) {
+      try {
+        await clearFurimCustomerKeyCode(db, resolvedLineUserId);
+        if (stripeCustomerId) await upsertFurimCustomer(db, resolvedLineUserId, { stripe_customer_id: stripeCustomerId });
+        await updateFriendPlanName(db, resolvedLineUserId, 'キャンセル済み');
+      } catch (e) {
+        console.error('[stripe/subscription.deleted] D1 clear failed:', e);
+      }
+    }
     // action単位でbody.idを冪等キーに厳密1回実行。未完なら(clearAll後に)throwしてcron再処理に回す。
     const subDeletedOk = await fireEvent(db, 'stripe_subscription_deleted', {
       friendId: resolvedFriend?.id ?? friendId ?? undefined,
@@ -550,6 +587,13 @@ export async function processStripeEvent(
       const quantity = parseInt(obj.metadata?.quantity ?? '0', 10);
       if (ticketLineUserId && quantity > 0) {
         const ticketFriend = await getFriendByLineUserId(db, ticketLineUserId);
+        if (obj.customer) {
+          try {
+            await upsertFurimCustomer(db, ticketLineUserId, { stripe_customer_id: obj.customer });
+          } catch (e) {
+            console.error('[stripe/payment_intent] furim_customers upsert failed:', e);
+          }
+        }
         // チケット付与(枚数加算=非冪等)含むため action単位でbody.idを冪等キーに厳密1回実行。
         const ticketOk = await fireEvent(db, 'stripe_ticket_purchased', {
           friendId: ticketFriend?.id ?? undefined,

@@ -14,6 +14,7 @@ import { jstNow } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost, getGasErrorFromResponse } from './gas-client.js';
 import { keycodeReissuedMessages } from './messages.js';
+import { absorbGasKeyCode } from './customer-store.js';
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 
@@ -269,6 +270,9 @@ export async function sweepGasRetryJobs(
       // GASはHTTP 200のまま失敗を返すことがある（{success:false} / HTMLエラーページ）
       const failure = getGasErrorFromResponse(result);
       if (failure) throw new Error(failure);
+
+      // 再実行の応答にキーコードが載っていれば D1 furim_customers に取り込む（Capsec #243）
+      await absorbGasKeyCode(db, job.line_user_id, result);
 
       // キーコード発行はマスター行が未作成のうちは "エラーコード(401)" を返す。
       // その間は失敗扱いで残し、行が出来てから（setCustomerDataジョブの完遂後に）発行して届ける

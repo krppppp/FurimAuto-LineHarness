@@ -53,6 +53,10 @@ ADMIN_ALLOW_CROSS_SITE = "true"
 # アンバサダー紹介offer（dev=line-crm-rebase で作成した id）。deploy:dev はこのトップレベル
 # [vars] を焼き込む。ref がこのofferの affiliate_link なら URL経由紹介処理を走らせる。
 FURIM_AMBASSADOR_OFFER_ID = "e1fa71aa-2d1d-4fb6-8daa-0e448c95ad32"
+# コピー出品チケット決済 LIFF と単価別 PriceID（GAS getTicketCheckoutUrl の移植・Capsec #243）。
+# dev はテスト Stripe の PriceID（dev シート「チケット単価一覧」と同値）
+FURIM_TICKET_LIFF_URL = "https://liff.line.me/1661091589-dduTkcxr"
+FURIM_TICKET_PRICE_IDS = '{"15":"price_1SFCnRF2C7KcCkFfwuJjlCnl","14":"price_1SFpRyF2C7KcCkFfAtxvQ9ug","13":"price_1SFpS5F2C7KcCkFfkMV4iadi","10":"price_1SFpSAF2C7KcCkFfC8HafSTC"}'
 
 # ─── DEV環境（Worker名: line-harness）────────────────────────────────────────
 [env.dev]
@@ -91,6 +95,9 @@ ADMIN_ALLOW_CROSS_SITE = "true"
 # アンバサダー紹介offer（dev=line-crm-rebase で作成した id）。ref がこのofferの
 # affiliate_link なら URL経由の紹介成立処理を走らせる。prodは別値。
 FURIM_AMBASSADOR_OFFER_ID = "e1fa71aa-2d1d-4fb6-8daa-0e448c95ad32"
+# コピー出品チケット決済 LIFF と単価別 PriceID（dev=テスト Stripe。Capsec #243）
+FURIM_TICKET_LIFF_URL = "https://liff.line.me/1661091589-dduTkcxr"
+FURIM_TICKET_PRICE_IDS = '{"15":"price_1SFCnRF2C7KcCkFfwuJjlCnl","14":"price_1SFpRyF2C7KcCkFfAtxvQ9ug","13":"price_1SFpS5F2C7KcCkFfkMV4iadi","10":"price_1SFpSAF2C7KcCkFfC8HafSTC"}'
 
 # ─── PROD環境（Worker名: line-harness-prod）─────────────────────────────────
 [env.prod]
@@ -134,3 +141,6 @@ ADMIN_ORIGIN = "https://line-harness-admin-prod-6mo.pages.dev"
 ADMIN_ALLOW_CROSS_SITE = "true"
 # アンバサダー紹介offer（prod=line-crm-prod で作成した id。devとは別値）。
 FURIM_AMBASSADOR_OFFER_ID = "5468b932-575d-454e-8628-9f2d32402f10"
+# コピー出品チケット決済 LIFF と単価別 PriceID（prod=本番 Stripe。本番シート「チケット単価一覧」と同値。Capsec #243）
+FURIM_TICKET_LIFF_URL = "https://liff.line.me/1660804123-VgnRNDJm"
+FURIM_TICKET_PRICE_IDS = '{"15":"price_1SFCiyF2C7KcCkFfzJ7IuaTA","14":"price_1SFpOcF2C7KcCkFfZlbmPgiW","13":"price_1SFpOjF2C7KcCkFfR6lqZEo0","10":"price_1SFpOpF2C7KcCkFf27Ygjrl2"}'

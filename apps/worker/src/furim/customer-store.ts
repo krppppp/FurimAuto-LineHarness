@@ -1,0 +1,170 @@
+// FurimAuto 顧客状態の D1 ストア（migration 068・Capsec #243・2026-09-13）。
+//
+// LINE のタップ操作（キーコード発行・月額会員ページ・限定特典GET・チケット注文）は
+// ここだけを読む。GAS/スプレッドシートを同期で待たない（30日で顧客向けエラー23件の主因）。
+// 書き手の分担:
+//   - LINE 起点の状態（キーコード発行済み・アンケート・Free30・Youtubeクーポン・延長KW）: Worker が先に書き、
+//     GAS へは非同期で鏡写し
+//   - Stripe 起点（pb_ 再発行・解約クリア・Stripe顧客ID）: GAS 応答 / webhook から absorb で取り込む
+//   - 端末判定文字列（拡張が GAS 経由で書く）: 段階1 ではシートが正。GAS からの通知と差分検知 cron で取り込む
+import { jstNow } from '@line-crm/db';
+
+export type FurimCustomer = {
+  line_user_id: string;
+  stripe_customer_id: string | null;
+  key_code: string | null;
+  key_code_issued: number;
+  device_activated: number;
+  survey_answer: string | null;
+  free30_ticket: number;
+  youtube_coupon: string | null;
+  extend_keyword: string | null;
+  sheet_synced_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FurimCustomerPatch = Partial<Omit<FurimCustomer, 'line_user_id' | 'created_at' | 'updated_at'>>;
+
+const PATCHABLE = [
+  'stripe_customer_id',
+  'key_code',
+  'key_code_issued',
+  'device_activated',
+  'survey_answer',
+  'free30_ticket',
+  'youtube_coupon',
+  'extend_keyword',
+  'sheet_synced_at',
+] as const;
+
+// 試用キーコードの接頭語。GAS プラン一覧「友達登録2週間トライアルプラン」の「キーコード接頭語」と同値
+// （setKeyCode.js が接頭語の前方一致で「同一プラン」を判定するため、必ず一致させる）
+export const TRIAL_KEYCODE_PREFIX = '2weektrial_';
+
+export async function getFurimCustomer(db: D1Database, lineUserId: string): Promise<FurimCustomer | null> {
+  return db.prepare('SELECT * FROM furim_customers WHERE line_user_id = ?').bind(lineUserId).first<FurimCustomer>();
+}
+
+export async function getFurimCustomerByStripeId(db: D1Database, stripeCustomerId: string): Promise<FurimCustomer | null> {
+  return db.prepare('SELECT * FROM furim_customers WHERE stripe_customer_id = ? ORDER BY updated_at DESC LIMIT 1').bind(stripeCustomerId).first<FurimCustomer>();
+}
+
+/** 指定した列だけを上書きする upsert。行が無ければ作る。空 patch は created_at/updated_at だけ整える */
+export async function upsertFurimCustomer(db: D1Database, lineUserId: string, patch: FurimCustomerPatch): Promise<void> {
+  const stmt = buildUpsertStatement(db, lineUserId, patch);
+  await stmt.run();
+}
+
+export function buildUpsertStatement(db: D1Database, lineUserId: string, patch: FurimCustomerPatch): D1PreparedStatement {
+  const now = jstNow();
+  const cols: string[] = [];
+  const vals: unknown[] = [];
+  for (const k of PATCHABLE) {
+    if (patch[k] !== undefined) {
+      cols.push(k);
+      vals.push(patch[k]);
+    }
+  }
+  const insertCols = ['line_user_id', ...cols, 'created_at', 'updated_at'];
+  const placeholders = insertCols.map(() => '?').join(', ');
+  const updates = [...cols.map((c) => `${c} = excluded.${c}`), 'updated_at = excluded.updated_at'].join(', ');
+  return db
+    .prepare(
+      `INSERT INTO furim_customers (${insertCols.join(', ')}) VALUES (${placeholders})
+       ON CONFLICT(line_user_id) DO UPDATE SET ${updates}`,
+    )
+    .bind(lineUserId, ...vals, now, now);
+}
+
+/**
+ * 試用キーコードを生成する。GAS setKeyCode.js の「接頭語 + Math.random().toString(36).slice(-8)」の移植。
+ * 乱数だけ crypto に替える（GAS 版は "0." が混入する実データがある。拡張は等値比較しかしないので無害）
+ */
+export function generateTrialKeyCode(): string {
+  const alphabet = '0123456789abcdefghijklmnopqrstuvwxyz';
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  let s = '';
+  for (const b of bytes) s += alphabet[b % alphabet.length];
+  return TRIAL_KEYCODE_PREFIX + s;
+}
+
+/**
+ * GAS 応答からキーコード関連の状態を取り込む（2 規則）:
+ *  (1) resp.keyCode が D1 と異なる → key_code を更新し device_activated=0（GAS は再発行時に必ず端末判定をクリアする）
+ *  (2) resp.keyCodeIssued===true → key_code_issued=1・device_activated=0（syncFeatures は発行時に「初回発行」を書く）
+ * 応答に keyCode が無い / エラーコード文字列なら何もしない。失敗しても呼び出し元の処理は止めない
+ */
+export async function absorbGasKeyCode(db: D1Database | undefined, lineUserId: string | null | undefined, resp: unknown): Promise<void> {
+  if (!db || !lineUserId || !resp || typeof resp !== 'object') return;
+  const r = resp as { keyCode?: unknown; keyCodeIssued?: unknown };
+  const keyCode = typeof r.keyCode === 'string' ? r.keyCode.trim() : '';
+  const issued = r.keyCodeIssued === true;
+  if (!keyCode || keyCode.includes('エラーコード')) return;
+  try {
+    const current = await getFurimCustomer(db, lineUserId);
+    const patch: FurimCustomerPatch = {};
+    if (current?.key_code !== keyCode) {
+      patch.key_code = keyCode;
+      patch.device_activated = 0;
+    }
+    if (issued) {
+      patch.key_code_issued = 1;
+      patch.device_activated = 0;
+    }
+    if (Object.keys(patch).length === 0) return;
+    await upsertFurimCustomer(db, lineUserId, patch);
+  } catch (e) {
+    console.error('[furim/customer-store] absorbGasKeyCode failed:', lineUserId, e);
+  }
+}
+
+/** 解約（customer.subscription.deleted）: GAS deleteSubscription と同じくキーコードと端末判定を消す */
+export async function clearFurimCustomerKeyCode(db: D1Database, lineUserId: string): Promise<void> {
+  await upsertFurimCustomer(db, lineUserId, { key_code: null, device_activated: 0 });
+}
+
+// ── 限定特典GET の 6 フラグ（GAS getLimitedGiftStatus.js と同じ派生式） ──
+export type GiftStatus = {
+  hasCompletedSurvey: boolean;
+  hasIssuedKeycode: boolean;
+  hasActivatedKeycode: boolean;
+  hasFree30Ticket: boolean;
+  hasYoutubeCoupon: boolean;
+  hasExtendKeyword: boolean;
+};
+
+export function deriveGiftStatus(c: FurimCustomer | null): GiftStatus {
+  if (!c) {
+    return { hasCompletedSurvey: false, hasIssuedKeycode: false, hasActivatedKeycode: false, hasFree30Ticket: false, hasYoutubeCoupon: false, hasExtendKeyword: false };
+  }
+  const survey = (c.survey_answer ?? '').trim();
+  return {
+    hasCompletedSurvey: !!survey && survey !== 'サブアカウント',
+    hasIssuedKeycode: c.key_code_issued === 1,
+    hasActivatedKeycode: c.device_activated === 1,
+    hasFree30Ticket: c.free30_ticket === 1,
+    hasYoutubeCoupon: (c.youtube_coupon ?? '').trim() !== '',
+    hasExtendKeyword: c.extend_keyword === '1w' || c.extend_keyword === '3d',
+  };
+}
+
+/** friends.metadata.stripeCustomerId（友だち追加時の create_stripe_customer が書く）を読む */
+export async function getStripeCustomerIdFromFriendMeta(db: D1Database, lineUserId: string): Promise<string | null> {
+  const row = await db.prepare('SELECT metadata FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ metadata: string }>();
+  if (!row) return null;
+  try {
+    const meta = JSON.parse(row.metadata || '{}') as { stripeCustomerId?: string };
+    return meta.stripeCustomerId || null;
+  } catch {
+    return null;
+  }
+}
+
+/** furim_customers → friends.metadata の順で Stripe 顧客IDを解決する */
+export async function resolveStripeCustomerId(db: D1Database, lineUserId: string): Promise<string | null> {
+  const c = await getFurimCustomer(db, lineUserId);
+  if (c?.stripe_customer_id) return c.stripe_customer_id;
+  return getStripeCustomerIdFromFriendMeta(db, lineUserId);
+}
