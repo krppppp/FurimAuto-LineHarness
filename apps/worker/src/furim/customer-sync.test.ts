@@ -11,6 +11,7 @@ vi.mock('./gas-client.js', async (importOriginal) => ({
 const sendPushToAll = vi.fn().mockResolvedValue(undefined);
 vi.mock('../services/push-notify.js', () => ({ sendPushToAll }));
 
+const uid = (n: string) => 'U' + n.padStart(32, '0');
 const { sheetRowToPatch, diffCustomerRow, isReconcileTick, reconcileFurimCustomers, backfillFurimCustomers } = await import('./customer-sync.js');
 
 type Write = { sql: string; args: unknown[] };
@@ -53,7 +54,7 @@ function makeDb(opts: { customers?: unknown[]; openDiffs?: unknown[]; dueDiffs?:
 
 function customer(overrides: Record<string, unknown> = {}) {
   return {
-    line_user_id: 'U1', stripe_customer_id: 'cus_1', key_code: 'pb_abc', key_code_issued: 1, device_activated: 0,
+    line_user_id: uid('1'), stripe_customer_id: 'cus_1', key_code: 'pb_abc', key_code_issued: 1, device_activated: 0,
     survey_answer: '紹介', free30_ticket: 0, youtube_coupon: null, extend_keyword: null, sheet_synced_at: null,
     created_at: '', updated_at: '', ...overrides,
   };
@@ -61,7 +62,7 @@ function customer(overrides: Record<string, unknown> = {}) {
 
 function sheetRow(overrides: Record<string, unknown> = {}) {
   return {
-    'LINE_ID': 'U1', 'Stripe顧客ID': 'cus_1', 'キーコード': 'pb_abc', '初回発行': true, '端末判定文字列': '',
+    'LINE_ID': uid('1'), 'Stripe顧客ID': 'cus_1', 'キーコード': 'pb_abc', '初回発行': true, '端末判定文字列': '',
     'アンケート回答': '紹介', 'Free30チケット': false, 'Youtubeクーポン': '', '延長キーワード': '', ...overrides,
   };
 }
@@ -84,12 +85,12 @@ describe('sheetRowToPatch', () => {
 
 describe('diffCustomerRow', () => {
   it('D1 が正の列だけ比べ、null と空文字は同値', () => {
-    const d = diffCustomerRow('U1', sheetRowToPatch(sheetRow({ 'キーコード': 'pb_other', 'Youtubeクーポン': '' })), customer({ youtube_coupon: null }));
-    expect(d).toEqual([{ lineUserId: 'U1', field: 'key_code', d1Value: 'pb_abc', sheetValue: 'pb_other' }]);
+    const d = diffCustomerRow(uid('1'), sheetRowToPatch(sheetRow({ 'キーコード': 'pb_other', 'Youtubeクーポン': '' })), customer({ youtube_coupon: null }));
+    expect(d).toEqual([{ lineUserId: uid('1'), field: 'key_code', d1Value: 'pb_abc', sheetValue: 'pb_other' }]);
   });
 
   it('device_activated（シート正）は diff にしない', () => {
-    expect(diffCustomerRow('U1', sheetRowToPatch(sheetRow({ '端末判定文字列': 'x' })), customer({ device_activated: 0 }))).toEqual([]);
+    expect(diffCustomerRow(uid('1'), sheetRowToPatch(sheetRow({ '端末判定文字列': 'x' })), customer({ device_activated: 0 }))).toEqual([]);
   });
 });
 
@@ -113,19 +114,19 @@ describe('reconcileFurimCustomers', () => {
   });
 
   it('端末判定文字列は取り込み、D1 正の列のズレは diff として記録、通知は猶予前ならしない', async () => {
-    gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ '端末判定文字列': '0.dev', 'キーコード': 'pb_sheet' }), sheetRow({ 'LINE_ID': 'U9' })] });
-    const { db, writes } = makeDb({ customers: [customer({ device_activated: 0 }), customer({ line_user_id: 'U2' })] });
+    gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ '端末判定文字列': '0.dev', 'キーコード': 'pb_sheet' }), sheetRow({ 'LINE_ID': uid('9') })] });
+    const { db, writes } = makeDb({ customers: [customer({ device_activated: 0 }), customer({ line_user_id: uid('2') })] });
 
     const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
 
     expect(r).toMatchObject({ sheetRows: 2, d1Rows: 2, pulled: 1, observedDiffs: 3, newDiffs: 3, resolvedDiffs: 0, notified: 0 });
     const pull = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql));
-    expect(pull?.args.slice(0, 2)).toEqual(['U1', 1]);
+    expect(pull?.args.slice(0, 2)).toEqual([uid('1'), 1]);
     const inserts = writes.filter((w) => /INSERT INTO furim_sync_diffs/.test(w.sql));
     expect(inserts.map((w) => [w.args[1], w.args[2]])).toEqual([
-      ['U1', 'key_code'],
-      ['U9', 'row_missing_in_d1'],
-      ['U2', 'row_missing_in_sheet'],
+      [uid('1'), 'key_code'],
+      [uid('9'), 'row_missing_in_d1'],
+      [uid('2'), 'row_missing_in_sheet'],
     ]);
     expect(lineClient.pushMessage).not.toHaveBeenCalled();
     expect(sendPushToAll).not.toHaveBeenCalled();
@@ -136,8 +137,8 @@ describe('reconcileFurimCustomers', () => {
     const { db, writes } = makeDb({
       customers: [customer()],
       openDiffs: [
-        { id: 'd-keep', line_user_id: 'U1', field: 'key_code', first_seen_at: 'x', last_seen_at: 'x', notified_at: null, resolved_at: null },
-        { id: 'd-gone', line_user_id: 'U1', field: 'survey_answer', first_seen_at: 'x', last_seen_at: 'x', notified_at: null, resolved_at: null },
+        { id: 'd-keep', line_user_id: uid('1'), field: 'key_code', first_seen_at: 'x', last_seen_at: 'x', notified_at: null, resolved_at: null },
+        { id: 'd-gone', line_user_id: uid('1'), field: 'survey_answer', first_seen_at: 'x', last_seen_at: 'x', notified_at: null, resolved_at: null },
       ],
     });
 
@@ -152,9 +153,9 @@ describe('reconcileFurimCustomers', () => {
     gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ 'キーコード': 'pb_sheet' })] });
     const { db, writes } = makeDb({
       customers: [customer()],
-      openDiffs: [{ id: 'd-1', line_user_id: 'U1', field: 'key_code', d1_value: 'pb_abc', sheet_value: 'pb_sheet', first_seen_at: 'x', last_seen_at: 'x', notified_at: null, resolved_at: null }],
-      dueDiffs: [{ id: 'd-1', line_user_id: 'U1', field: 'key_code', d1_value: 'pb_abc', sheet_value: 'pb_sheet', first_seen_at: 'x', last_seen_at: 'x', notified_at: null, resolved_at: null }],
-      names: [{ line_user_id: 'U1', display_name: 'テスト太郎' }],
+      openDiffs: [{ id: 'd-1', line_user_id: uid('1'), field: 'key_code', d1_value: 'pb_abc', sheet_value: 'pb_sheet', first_seen_at: 'x', last_seen_at: 'x', notified_at: null, resolved_at: null }],
+      dueDiffs: [{ id: 'd-1', line_user_id: uid('1'), field: 'key_code', d1_value: 'pb_abc', sheet_value: 'pb_sheet', first_seen_at: 'x', last_seen_at: 'x', notified_at: null, resolved_at: null }],
+      names: [{ line_user_id: uid('1'), display_name: 'テスト太郎' }],
     });
 
     const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
@@ -177,7 +178,7 @@ describe('reconcileFurimCustomers', () => {
 
 describe('backfillFurimCustomers', () => {
   it('dryRun は書かずに件数とサンプルを返す。実行時は全列 upsert', async () => {
-    gasGet.mockResolvedValue({ success: true, rows: [sheetRow(), sheetRow({ 'LINE_ID': '' }), sheetRow({ 'LINE_ID': 'U2', 'キーコード': '' })] });
+    gasGet.mockResolvedValue({ success: true, rows: [sheetRow(), sheetRow({ 'LINE_ID': '' }), sheetRow({ 'LINE_ID': uid('2'), 'キーコード': '' })] });
     const { db, writes } = makeDb();
 
     const dry = await backfillFurimCustomers(db, 'dep-1', { dryRun: true });
@@ -188,6 +189,6 @@ describe('backfillFurimCustomers', () => {
     expect(real).toMatchObject({ dryRun: false, targetCount: 2, upserted: 2 });
     expect(writes).toHaveLength(2);
     expect(writes[0].sql).toContain('sheet_synced_at = excluded.sheet_synced_at');
-    expect(writes[1].args[0]).toBe('U2');
+    expect(writes[1].args[0]).toBe(uid('2'));
   });
 });

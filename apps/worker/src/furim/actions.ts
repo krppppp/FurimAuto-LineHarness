@@ -1,8 +1,8 @@
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost } from './gas-client.js';
-import { enqueueGasRetryJob } from './gas-retry-queue.js';
+import { mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
 import { getSentGiftBatches, setSentGiftBatches } from './firebase-client.js';
-import { upsertFurimCustomer } from './customer-store.js';
+import { getFurimCustomer, upsertFurimCustomer, resolveStripeCustomerId, deriveGiftStatus } from './customer-store.js';
 import {
   carouselTemplate,
   ticketOrderTemplate,
@@ -217,10 +217,10 @@ export async function handleFurimAction(
         await lineClient.replyMessage(replyToken, [ticketOrderTemplate as never]);
         return true;
       case '月額会員ページ':
-        await actionMemberPage(lineClient, lineUserId, replyToken, resolvedEnv);
+        await actionMemberPage(lineClient, lineUserId, replyToken, resolvedEnv, db);
         return true;
       case '限定特典GET':
-        await actionLimitedGift(lineClient, lineUserId, replyToken, resolvedEnv);
+        await actionLimitedGift(lineClient, lineUserId, replyToken, resolvedEnv, db);
         return true;
       case '利用方法説明書':
         await lineClient.replyMessage(replyToken, [{
@@ -336,31 +336,14 @@ async function actionKeycodeIssue(
   env: ResolvedEnv,
   db?: D1Database,
 ) {
-  let data: Record<string, string> | null = null;
-  try {
-    data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getKeyCode', lineUserId }) as Record<string, string>;
-  } catch (err) {
-    console.error('[furim] getKeyCode failed:', err);
-  }
-  console.log('[furim] getKeyCode response:', data);
+  // キーコードは D1 furim_customers から返す（Capsec #243）。GAS getKeyCode は呼ばない。
+  // 友だち追加時に Worker が生成し、Stripe 起点の再発行は absorbGasKeyCode で取り込まれている
+  const customer = db ? await getFurimCustomer(db, lineUserId) : null;
+  const keyCode = (customer?.key_code ?? '').trim();
+  console.log('[furim] keycode from D1:', lineUserId, keyCode ? 'hit' : 'miss');
 
-  if (!data?.keyCode) {
-    // 1回きり実行で失敗 → 再実行キューに積んでcronが完遂し、キーコードを届ける
-    // （2026-08-14 くろさん方針: インラインリトライ廃止・中間の返信もしない。
-    //   完遂通知はreplyToken優先→失効時のみpushで月間上限を節約）
-    if (db) {
-      await enqueueGasRetryJob(db, {
-        lineUserId,
-        method: 'getKeyCode',
-        replyToken,
-      });
-      return;
-    }
-    await lineClient.pushMessage(lineUserId, [{ type: 'text', text: '申し訳ございません、発行処理が混み合っています🙇\nお手数ですが、少し時間をおいてもう一度「キーコード発行」をタップしてください。' } as never]);
-    return;
-  }
-
-  if (data.keyCode === 'エラーコード(401)') {
+  if (!keyCode) {
+    // 行が無い/空: 友だち追加直後で未生成、または解約でクリア済み。GAS 時代の 401 と同じ案内
     await replyOrPush(lineClient, replyToken, lineUserId, [{ type: 'text', text: 'まだ準備中なので10秒経ったらもう一回押してください🙇' } as never]);
     return;
   }
@@ -369,9 +352,20 @@ async function actionKeycodeIssue(
   // 旧実装は試用キーコード時に利用方法imagemap＋コピーチケットFlexも同時送信していたが、
   // 肝心のキーコードが埋もれて分かりづらいため廃止。チケットFlexは特典への道4/6(Day4昼)、
   // 利用方法はウェルカム動画・リッチメニューで導線が残っている
-  const messages: unknown[] = [{ type: 'text', text: data.keyCode }];
+  const messages: unknown[] = [{ type: 'text', text: keyCode }];
 
   await replyOrPush(lineClient, replyToken, lineUserId, messages as never[]);
+
+  // 「初回発行」フラグ（限定特典②の解放判定）: D1 を先に立て、シートへは返信後に 1 回だけ試して
+  // 失敗なら再実行キュー（GAS getKeyCode が持っていた副作用の鏡写し）
+  if (db && customer?.key_code_issued !== 1) {
+    try {
+      await upsertFurimCustomer(db, lineUserId, { key_code_issued: 1 });
+    } catch (err) {
+      console.error('[furim] key_code_issued upsert failed:', lineUserId, err);
+    }
+    await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { '初回発行': true });
+  }
 
   // セグメント3 へ昇格（キーコード発行済み）
   if (db) {
@@ -389,6 +383,7 @@ async function actionMemberPage(
   lineUserId: string,
   replyToken: string,
   env: ResolvedEnv,
+  db?: D1Database,
 ) {
   if (!env.STRIPE_SECRET_KEY) {
     console.warn('[furim] STRIPE_SECRET_KEY not set, cannot create billing portal');
@@ -396,8 +391,8 @@ async function actionMemberPage(
     return;
   }
 
-  const gasData = await gasGet(env.GAS_DEPLOY_ID, { method: 'getStripeIDwithLINEID', lineUserId }) as Record<string, string>;
-  const stripeCustomerId = gasData?.customer_stripe_id || gasData?.stripeCustomerId || gasData?.stripeID || gasData?.data;
+  // Stripe顧客ID は D1（furim_customers → friends.metadata）から（Capsec #243）。GAS getStripeIDwithLINEID は呼ばない
+  const stripeCustomerId = db ? await resolveStripeCustomerId(db, lineUserId) : null;
 
   if (!stripeCustomerId) {
     await lineClient.replyMessage(replyToken, [{ type: 'text', text: '会員情報が見つかりませんでした。' } as never]);
@@ -434,13 +429,16 @@ async function actionLimitedGift(
   lineUserId: string,
   replyToken: string,
   env: ResolvedEnv,
+  db?: D1Database,
 ) {
-  const [statusRaw, sentBatches] = await Promise.all([
-    gasGet(env.GAS_DEPLOY_ID, { method: 'getLimitedGiftStatus', lineUserId }),
+  // 解放判定の 6 フラグは D1 furim_customers から（Capsec #243。派生式は GAS getLimitedGiftStatus と同じ）。
+  // 送信済み特典番号は従来どおり Firebase
+  const [customer, sentBatches] = await Promise.all([
+    db ? getFurimCustomer(db, lineUserId) : Promise.resolve(null),
     env.FIREBASE_DATABASE_URL ? getSentGiftBatches(env.FIREBASE_DATABASE_URL, lineUserId) : Promise.resolve([] as number[]),
   ]);
 
-  const status = statusRaw as GiftStatus;
+  const status: GiftStatus = deriveGiftStatus(customer);
 
   const newBatches = GIFT_BATCHES.filter(
     (b) => !sentBatches.includes(b.batchNo) && b.isUnlocked(status),

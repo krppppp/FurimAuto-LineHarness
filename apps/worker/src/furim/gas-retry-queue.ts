@@ -14,7 +14,7 @@ import { jstNow } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, gasPost, getGasErrorFromResponse } from './gas-client.js';
 import { keycodeReissuedMessages } from './messages.js';
-import { absorbGasKeyCode } from './customer-store.js';
+import { absorbGasKeyCode, getFurimCustomer } from './customer-store.js';
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 
@@ -49,17 +49,44 @@ export function buildKeycodeResetMessages(keyCode: string | null): Array<{ type:
   return messages;
 }
 
-// 現在のキーコードを取得する。取れなくても呼び出し元はリセット完了の案内自体は返せる
-// ようにnullで返す（getKeyCodeはエラー時 keyCode:"エラーコード(401)" を返す仕様）。
-export async function fetchCurrentKeyCode(gasDeployId: string, lineUserId: string): Promise<string | null> {
+// 現在のキーコードを D1 furim_customers から取得する（Capsec #243: GAS getKeyCode は呼ばない）。
+// 取れなくても呼び出し元はリセット完了の案内自体は返せるように null で返す
+export async function fetchCurrentKeyCode(db: D1Database | undefined, lineUserId: string): Promise<string | null> {
+  if (!db) return null;
   try {
-    const data = await gasGet(gasDeployId, { method: 'getKeyCode', lineUserId }, { timeoutMs: SWEEP_GAS_TIMEOUT_MS }) as { keyCode?: string } | null;
-    const kc = data?.keyCode ?? '';
-    if (!kc || kc.includes('エラーコード')) return null;
-    return kc;
+    const c = await getFurimCustomer(db, lineUserId);
+    const kc = (c?.key_code ?? '').trim();
+    return kc || null;
   } catch (err) {
     console.warn('[gas-retry] キーコード取得に失敗（案内はメニュー誘導にフォールバック）:', String(err));
     return null;
+  }
+}
+
+// LINE 起点で D1 に書いた値をシートへ鏡写しする（GAS setCustomerFields・冪等）。
+// 1 回だけ試し、失敗なら再実行キューに積んで cron が完遂させる。顧客への返信の後に呼ぶ（待たせない）
+export async function mirrorCustomerFieldsToGas(
+  db: D1Database,
+  gasDeployId: string,
+  lineUserId: string,
+  fields: Record<string, unknown>,
+): Promise<void> {
+  const params = { lineUserId, fields };
+  try {
+    const res = await gasPost(gasDeployId, { method: 'setCustomerFields', ...params });
+    const failure = getGasErrorFromResponse(res);
+    if (failure) throw new Error(failure);
+  } catch (err) {
+    console.warn(`[gas-retry] setCustomerFields 失敗→再実行キューに退避 lineUserId=${lineUserId}: ${String(err)}`);
+    await enqueueGasRetryJob(db, {
+      lineUserId,
+      method: 'setCustomerFields',
+      params,
+      callType: 'post',
+      doneCheck: null,
+      dedupeKey: `setCustomerFields:${Object.keys(fields).join(',')}`,
+      maxAttempts: 20,
+    });
   }
 }
 
@@ -256,6 +283,22 @@ export async function sweepGasRetryJobs(
         continue;
       }
 
+      // 旧 getKeyCode ジョブ（読み切替前に積まれたもの）: GAS は呼ばず D1 のキーコードを届ける（Capsec #243）。
+      // D1 に無ければ失敗扱いで残す（友だち追加直後で行が出来ていない間）
+      if (job.method === 'getKeyCode') {
+        const kc = await fetchCurrentKeyCode(db, job.line_user_id);
+        if (!kc) throw new Error('keycode not ready (D1)');
+        try {
+          await notifyUser(lineClient, job.line_user_id, job.reply_token, [{ type: 'text', text: kc }] as never[]);
+        } catch (e) {
+          console.error('[gas-retry] 完遂通知に失敗 method=getKeyCode', e);
+        }
+        await db.prepare(`UPDATE gas_retry_jobs SET status = 'done', last_error = 'served from D1', updated_at = ? WHERE id = ?`)
+          .bind(jstNow(), job.id).run();
+        console.log(`[gas-retry] 完遂(D1) method=getKeyCode lineUserId=${job.line_user_id}`);
+        continue;
+      }
+
       const params = jobParams(job);
       // `__` プレフィックスは通知判定用のメタデータ。GASには送らない
       const gasParams = Object.fromEntries(Object.entries(params).filter(([k]) => !k.startsWith('__')));
@@ -274,22 +317,18 @@ export async function sweepGasRetryJobs(
       // 再実行の応答にキーコードが載っていれば D1 furim_customers に取り込む（Capsec #243）
       await absorbGasKeyCode(db, job.line_user_id, result);
 
-      // キーコード発行はマスター行が未作成のうちは "エラーコード(401)" を返す。
-      // その間は失敗扱いで残し、行が出来てから（setCustomerDataジョブの完遂後に）発行して届ける
-      if (job.method === 'getKeyCode') {
-        const kc = (result as { keyCode?: string } | null)?.keyCode ?? '';
-        if (!kc || kc.includes('エラーコード')) throw new Error(`keycode not ready: ${kc || '(empty)'}`);
-      }
-
       try {
         if (job.method === 'resetKeyCode') {
-          // リセットの完遂通知は説明＋キーコード単体のセットで送る（インライン成功時と同じ体験）
-          const keyCode = await fetchCurrentKeyCode(env.GAS_DEPLOY_ID, job.line_user_id);
+          // リセットの完遂通知は説明＋キーコード単体のセットで送る（インライン成功時と同じ体験）。
+          // リセットは端末判定の解除なので D1 側も device_activated を落とす
+          try {
+            const { upsertFurimCustomer } = await import('./customer-store.js');
+            await upsertFurimCustomer(db, job.line_user_id, { device_activated: 0 });
+          } catch (e) {
+            console.error('[gas-retry] resetKeyCode: furim_customers 更新失敗', e);
+          }
+          const keyCode = await fetchCurrentKeyCode(db, job.line_user_id);
           await notifyUser(lineClient, job.line_user_id, job.reply_token, buildKeycodeResetMessages(keyCode) as never[]);
-        } else if (job.method === 'getKeyCode') {
-          // キーコード発行の完遂通知はキーコード単体（インライン成功時と同じ）
-          const keyCode = (result as { keyCode: string }).keyCode;
-          await notifyUser(lineClient, job.line_user_id, job.reply_token, [{ type: 'text', text: keyCode }] as never[]);
         } else if (job.method === 'syncFeaturesFromSubscription') {
           // 更新時のキーコード再発行通知（インライン成功時のstripe-processorと同じ文面）。
           // GAS完走済み・Worker見切りのケースでは再実行時 keyCodeIssued=false になり

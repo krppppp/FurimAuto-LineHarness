@@ -8,7 +8,7 @@ vi.mock('./gas-client.js', async (importOriginal) => ({
 }));
 
 import { gasGet, gasPost } from './gas-client.js';
-import { enqueueGasRetryJob, sweepGasRetryJobs, DONE_CHECKS } from './gas-retry-queue.js';
+import { enqueueGasRetryJob, sweepGasRetryJobs, DONE_CHECKS, mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
 
 type Write = { sql: string; args: unknown[] };
 
@@ -165,5 +165,50 @@ describe('DONE_CHECKS', () => {
       params: JSON.stringify({ stripeCustomerID: 'cus_1', subscriptionID: 'sub_1', subscriptionEndDateTime: '2026-09-15 07:53:38' }),
     });
     expect(done).toBe(true);
+  });
+});
+
+describe('sweepGasRetryJobs: 旧 getKeyCode ジョブは D1 から届ける（Capsec #243）', () => {
+  test('D1 に key_code があれば GAS を呼ばず push して done', async () => {
+    const lineClient = makeLineClient();
+    const { writes } = makeQueueDb();
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind(...args: unknown[]) {
+            return {
+              run: async () => { writes.push({ sql, args }); return {}; },
+              first: async () => (/FROM furim_customers/.test(sql) ? { key_code: 'pb_fromd1' } : null),
+              all: async () => ({ results: [] }),
+            };
+          },
+          all: async () => ({ results: [job({ method: 'getKeyCode', call_type: 'get', max_attempts: 5 })] }),
+        };
+      },
+    } as unknown as D1Database;
+    await sweepGasRetryJobs(db, lineClient as never, envOk);
+    expect(gasGet).not.toHaveBeenCalled();
+    expect(lineClient.pushMessage).toHaveBeenCalledWith('U1', [{ type: 'text', text: 'pb_fromd1' }]);
+    expect(writes.some((w) => w.sql.includes("last_error = 'served from D1'"))).toBe(true);
+  });
+});
+
+describe('mirrorCustomerFieldsToGas', () => {
+  test('GAS 成功なら何も積まない', async () => {
+    vi.mocked(gasPost).mockResolvedValue({ success: true });
+    const { db, writes } = makeQueueDb();
+    await mirrorCustomerFieldsToGas(db, 'dep-1', 'U1', { '初回発行': true });
+    expect(gasPost).toHaveBeenCalledWith('dep-1', { method: 'setCustomerFields', lineUserId: 'U1', fields: { '初回発行': true } });
+    expect(writes.filter((w) => /INSERT INTO gas_retry_jobs/.test(w.sql))).toHaveLength(0);
+  });
+
+  test('GAS が success:false でも throw せず再実行キューに積む', async () => {
+    vi.mocked(gasPost).mockResolvedValue({ success: false, error: '該当レコードなし' });
+    const { db, writes } = makeQueueDb();
+    await mirrorCustomerFieldsToGas(db, 'dep-1', 'U1', { '初回発行': true });
+    const insert = writes.find((w) => /INSERT INTO gas_retry_jobs/.test(w.sql));
+    expect(insert).toBeTruthy();
+    expect(insert!.args).toContain('setCustomerFields:初回発行');
+    expect(insert!.args).toContain(20);
   });
 });

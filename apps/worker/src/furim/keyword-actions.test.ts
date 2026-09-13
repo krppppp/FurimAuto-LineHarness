@@ -128,17 +128,27 @@ describe('processReferral 冪等ガード', () => {
   });
 });
 
+// キーコードは D1 furim_customers から読む（Capsec #243）。GAS getKeyCode は呼ばない
+function makeKeycodeDb(keyCode: string | null) {
+  const stmt = {
+    bind: vi.fn(),
+    run: vi.fn().mockResolvedValue({}),
+    first: vi.fn().mockImplementation(async () => (keyCode ? { key_code: keyCode } : null)),
+  };
+  stmt.bind.mockReturnValue(stmt);
+  return { prepare: vi.fn().mockReturnValue(stmt) };
+}
+
 describe('handleKeywordAction キーコードリセットの特別対応', () => {
   it('【キーワード】プレフィックスなしでも動き、説明＋キーコード単体を一括で返信する', async () => {
     gasGet.mockResolvedValueOnce({});                          // resetKeyCode
-    gasGet.mockResolvedValueOnce({ keyCode: 'pb_test123' });   // getKeyCode
     const client = makeClient();
 
-    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env);
+    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, makeKeycodeDb('pb_test123') as never);
 
     expect(result).toBe(true);
+    expect(gasGet).toHaveBeenCalledTimes(1);
     expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'resetKeyCode', lineUserId: 'Uuser' });
-    expect(gasGet).toHaveBeenCalledWith('deploy-id', { method: 'getKeyCode', lineUserId: 'Uuser' }, expect.anything());
     const messages = client.replyMessage.mock.calls[0][1];
     expect(messages).toHaveLength(2);
     expect(messages[0].text).toContain('リセットされたもの');
@@ -149,10 +159,9 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
 
   it('キーコードが取得できなくても、メニュー誘導つきの説明だけで返す', async () => {
     gasGet.mockResolvedValueOnce({});                                  // resetKeyCode
-    gasGet.mockResolvedValueOnce({ keyCode: 'エラーコード(401)' });     // getKeyCode 失敗相当
     const client = makeClient();
 
-    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env);
+    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, makeKeycodeDb(null) as never);
 
     expect(result).toBe(true);
     const messages = client.replyMessage.mock.calls[0][1];
@@ -162,7 +171,6 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
 
   it('文中に含まれる場合でも部分一致で発火する（既存の他キーワードと同じ判定方式）', async () => {
     gasGet.mockResolvedValueOnce({});
-    gasGet.mockResolvedValueOnce({ keyCode: 'pb_test123' });
     const client = makeClient();
 
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'お手数ですがキーコードリセットお願いします', env);
@@ -173,7 +181,6 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
 
   it('従来通り【キーワード】プレフィックス付きでも動く', async () => {
     gasGet.mockResolvedValueOnce({});
-    gasGet.mockResolvedValueOnce({ keyCode: 'pb_test123' });
     const client = makeClient();
 
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', '【キーワード】キーコードリセット', env);
@@ -203,11 +210,10 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
 
   it('replyが失敗してもpushで完了通知を届ける（リセット自体は成功しているため）', async () => {
     gasGet.mockResolvedValueOnce({});
-    gasGet.mockResolvedValueOnce({ keyCode: 'pb_test123' });
     const client = makeClient();
     client.replyMessage.mockRejectedValueOnce(new Error('Invalid reply token'));
 
-    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', '【キーワード】キーコードリセット', env);
+    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', '【キーワード】キーコードリセット', env, makeKeycodeDb('pb_test123') as never);
 
     expect(result).toBe(true);
     // 例外を外へ投げない（呼び出し元がエラー文言に化けさせないため）。reply と同じ2通をpushで届ける
@@ -218,10 +224,9 @@ describe('handleKeywordAction キーコードリセットの特別対応', () =>
 
   it('replyが成功したときはpushしない（無駄な二重送信をしない）', async () => {
     gasGet.mockResolvedValueOnce({});
-    gasGet.mockResolvedValueOnce({ keyCode: 'pb_test123' });
     const client = makeClient();
 
-    await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env);
+    await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, makeKeycodeDb('pb_test123') as never);
 
     expect(client.replyMessage).toHaveBeenCalledTimes(1);
     expect(client.pushMessage).not.toHaveBeenCalled();

@@ -95,7 +95,7 @@ export async function handleKeywordAction(
     // 返信は「何がリセットされ・次に何をするか」の説明＋コピー用のキーコード単体を一括で送る
     // （2026-08-13 くろさん指示。「完了しました」だけでは次の行動が伝わらなかった）。
     // キーコードが取れなくてもリセット完了の案内は返す（メニュー誘導にフォールバック）
-    const keyCode = await fetchCurrentKeyCode(env.GAS_DEPLOY_ID, lineUserId);
+    const keyCode = await fetchCurrentKeyCode(db, lineUserId);
     const doneMessages = buildKeycodeResetMessages(keyCode) as never[];
     // GAS側のリセットは完了済みなので、返信は何があっても届けきる。
     // replyMessageが落ちると呼び出し元のcatchでエラー文言に化け、実際にはリセット済みなのに

@@ -1,8 +1,9 @@
 import type { LineClient } from '@line-crm/line-sdk';
-import { gasGet, gasPost } from './gas-client.js';
+import { gasPost } from './gas-client.js';
 import { carouselTemplate, surveyTemplate, copyTicketFlexMessage } from './messages.js';
 import { logOutgoing } from '../utils/message-log.js';
-import { absorbGasKeyCode, upsertFurimCustomer } from './customer-store.js';
+import { absorbGasKeyCode, upsertFurimCustomer, resolveStripeCustomerId } from './customer-store.js';
+import { buildTicketCheckoutUrl } from './ticket-checkout.js';
 
 export type ButtonActionsEnv = {
   GAS_DEPLOY_ID: string;
@@ -76,8 +77,16 @@ export async function handleButtonAction(
   if (text.includes('チケット購入')) {
     const match = text.match(/チケット購入\s*(\d+)/);
     const ticketCount = match ? parseInt(match[1], 10) : 0;
-    const data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getTicketCheckoutUrl', message: text, lineUserId, ticketCount: String(ticketCount) }) as Record<string, string>;
-    if (data.error) {
+    // 決済 URL は Worker で組む（GAS getTicketCheckoutUrl の移植・Capsec #243）。
+    // 顧客ID は D1（furim_customers → friends.metadata）、有料判定は friends.plan_name
+    const [stripeCustomerId, planName] = db
+      ? await Promise.all([
+          resolveStripeCustomerId(db, lineUserId),
+          db.prepare('SELECT plan_name FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ plan_name: string | null }>().then((r) => r?.plan_name ?? null),
+        ])
+      : [null, null];
+    const data = buildTicketCheckoutUrl({ ticketCount, planName, stripeCustomerId, env });
+    if ('error' in data) {
       await lineClient.replyMessage(replyToken, [{ type: 'text', text: data.error } as never]);
     } else {
       await lineClient.replyMessage(replyToken, [{

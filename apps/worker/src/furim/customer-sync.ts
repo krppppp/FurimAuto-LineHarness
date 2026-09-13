@@ -60,8 +60,13 @@ export function sheetRowToPatch(row: SheetRow): FurimCustomerPatch {
   };
 }
 
+// LINE ユーザーID の形式（U + 32 桁 hex）。getData はヘッダーより上のテンプレ行・型注記行
+// （LINE_ID="String"）も返すので、形式で弾く
+const LINE_USER_ID_RE = /^U[0-9a-f]{32}$/;
+
 export function sheetRowLineUserId(row: SheetRow): string {
-  return String(row['LINE_ID'] ?? '').trim();
+  const id = String(row['LINE_ID'] ?? '').trim();
+  return LINE_USER_ID_RE.test(id) ? id : '';
 }
 
 export async function fetchMasterRows(gasDeployId: string): Promise<SheetRow[]> {
