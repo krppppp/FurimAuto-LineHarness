@@ -22,6 +22,10 @@ export interface AdminTable {
   touchUpdatedAt: boolean;
   columns: AdminColumn[];
   keys: AdminKey[];
+  /** 一覧で friends を LEFT JOIN して _friend_created_at を付け、友だち登録の新しい順に並べる（#253 追加要望・顧客のみ） */
+  joinFriends?: boolean;
+  /** 一覧をページ分けせず全件返す（ブラウザ検索で表示名を探すため） */
+  allRows?: boolean;
 }
 
 const t = (name: string, editable = true, searchable = false): AdminColumn => ({ name, type: 'text', editable, searchable });
@@ -37,6 +41,8 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'line_user_id',
     orderBy: 'updated_at DESC',
     touchUpdatedAt: true,
+    joinFriends: true,
+    allRows: true,
     columns: [
       ro('line_user_id', true),
       t('stripe_customer_id', true, true),

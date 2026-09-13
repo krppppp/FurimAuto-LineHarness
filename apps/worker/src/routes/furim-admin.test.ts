@@ -152,20 +152,57 @@ describe('GET /api/furim/admin/:table', () => {
   it('q は検索可能列の LIKE、limit+1 で nextCursor を出す', async () => {
     const { db, statements } = makeDb({
       firstRows: [{ n: 3 }],
-      allRows: [[{ line_user_id: 'U1' }, { line_user_id: 'U2' }, { line_user_id: 'U3' }]],
+      allRows: [[{ invoice_id: 'in_1', line_user_id: 'U1' }, { invoice_id: 'in_2', line_user_id: 'U2' }, { invoice_id: 'in_3', line_user_id: 'U3' }]],
     });
-    const res = await req(db, 'GET', '/api/furim/admin/furim_customers?q=cus_&limit=2');
+    const res = await req(db, 'GET', '/api/furim/admin/furim_payments?q=cus_&limit=2');
     expect(res.status).toBe(200);
     const body = (await res.json()) as { data: unknown[]; meta: { total: number; nextCursor: string | null } };
     expect(body.data).toHaveLength(2);
     expect(body.meta.total).toBe(3);
     expect(body.meta.nextCursor).toBe('2');
-    const select = statements.find((s) => s.sql.startsWith('SELECT * FROM furim_customers'))!;
+    const select = statements.find((s) => s.sql.startsWith('SELECT * FROM furim_payments'))!;
     expect(select.sql).toContain('stripe_customer_id LIKE ?');
-    expect(select.sql).toContain('key_code LIKE ?');
-    expect(select.sql).toContain('ORDER BY updated_at DESC');
+    expect(select.sql).toContain('plan_name LIKE ?');
+    expect(select.sql).toContain('ORDER BY paid_at DESC');
     expect(select.args).toContain('%cus_%');
     expect(select.args.slice(-2)).toEqual([3, 0]);
+  });
+
+  it('顧客は friends を LEFT JOIN して友だち登録の新しい順・全件（limit/cursor を無視）', async () => {
+    const { db, statements } = makeDb({
+      firstRows: [{ n: 2 }],
+      allRows: [
+        [{ line_user_id: 'U1', _friend_created_at: '2026-09-14T07:00:00' }, { line_user_id: 'U2', _friend_created_at: null }],
+        [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_customers?q=cus_&limit=2&cursor=50');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: Array<{ _friend_created_at: string | null; _display_name: string | null }>;
+      meta: { total: number; limit: number; cursor: string; nextCursor: string | null; table: { joinFriends: boolean; allRows: boolean } };
+    };
+    expect(body.data.map((r) => r._friend_created_at)).toEqual(['2026-09-14T07:00:00', null]);
+    expect(body.data[0]._display_name).toBe('たろう');
+    expect(body.meta).toMatchObject({ total: 2, limit: 10000, cursor: '0', nextCursor: null });
+    expect(body.meta.table.joinFriends).toBe(true);
+    expect(body.meta.table.allRows).toBe(true);
+    const count = statements[0];
+    expect(count.sql).toBe('SELECT COUNT(*) AS n FROM furim_customers t LEFT JOIN friends f ON f.line_user_id = t.line_user_id WHERE t.line_user_id LIKE ? OR t.stripe_customer_id LIKE ? OR t.key_code LIKE ? OR t.subscription_id LIKE ? OR t.plan_label LIKE ? OR t.mercari_url LIKE ? OR t.customer_email LIKE ?');
+    const select = statements[1];
+    expect(select.sql).toContain('SELECT t.*, f.created_at AS _friend_created_at FROM furim_customers t LEFT JOIN friends f ON f.line_user_id = t.line_user_id WHERE');
+    expect(select.sql).toContain('ORDER BY f.created_at DESC, t.line_user_id LIMIT ? OFFSET ?');
+    expect(select.args.slice(-2)).toEqual([10001, 0]);
+  });
+
+  it('他のテーブルは JOIN せず limit/cursor がそのまま効く', async () => {
+    const { db, statements } = makeDb({ firstRows: [{ n: 0 }] });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_ticket_ledger?limit=10&cursor=20');
+    const body = (await res.json()) as { meta: { limit: number; cursor: string; table: { joinFriends: boolean; allRows: boolean } } };
+    expect(body.meta).toMatchObject({ limit: 10, cursor: '20' });
+    expect(body.meta.table).toMatchObject({ joinFriends: false, allRows: false });
+    expect(statements[1].sql).toBe('SELECT * FROM furim_ticket_ledger ORDER BY created_at DESC, id LIMIT ? OFFSET ?');
+    expect(statements[1].args).toEqual([11, 20]);
   });
 });
 

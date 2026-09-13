@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Header from '@/components/layout/header'
 import { fetchApi, getCsrfToken } from '@/lib/api'
-import { DISPLAY_NAME_COLUMN, type AdminTableMeta } from '../types'
+import { DISPLAY_NAME_COLUMN, FRIEND_CREATED_AT_COLUMN, type AdminTableMeta } from '../types'
 
 type Row = Record<string, unknown>
 
@@ -60,6 +60,10 @@ function cell(v: unknown): string {
 function tableHref(name: string, params: Record<string, string>): string {
   const sp = new URLSearchParams({ name, ...params })
   return `/data/table?${sp.toString()}`
+}
+
+function friendCreatedAt(row: Row): string {
+  return cell(row[FRIEND_CREATED_AT_COLUMN]).replace('T', ' ').slice(0, 19)
 }
 
 function DisplayName({ row }: { row: Row }) {
@@ -257,7 +261,7 @@ function RowEditor({
       const res = await patchRow(`/api/furim/admin/${table.name}/${encodeURIComponent(id)}`, changes)
       if (res.success) {
         setNotice(`保存しました（${(res.meta?.changed ?? []).join(', ') || '変更なし'}）`)
-        onSaved({ ...res.data, [DISPLAY_NAME_COLUMN]: row[DISPLAY_NAME_COLUMN] })
+        onSaved({ ...res.data, [DISPLAY_NAME_COLUMN]: row[DISPLAY_NAME_COLUMN], [FRIEND_CREATED_AT_COLUMN]: row[FRIEND_CREATED_AT_COLUMN] })
         setDraft(Object.fromEntries(table.columns.map((c) => [c.name, cell(res.data[c.name])])))
         await loadAudit()
       } else {
@@ -479,7 +483,11 @@ function DataTableInner() {
     <div>
       <Header
         title={table ? `${table.label}` : name}
-        description={table ? `${table.name}・主キー ${table.pk}・行をクリックで開く` : undefined}
+        description={
+          table
+            ? `${table.name}・主キー ${table.pk}・行をクリックで開く${table.allRows ? '・全件 1 ページ（友だち登録の新しい順）' : ''}`
+            : undefined
+        }
         action={
           <Link href="/data" className="text-sm text-gray-500 hover:text-gray-700">
             ← テーブル一覧
@@ -521,9 +529,10 @@ function DataTableInner() {
 
       <div className="mb-2 flex items-center justify-between text-xs text-gray-500">
         <span>
-          {total} 件{query ? `（「${query}」で絞り込み）` : ''}・{offset + 1}〜{Math.min(offset + rows.length, total)} 件目
+          {total} 件{query ? `（「${query}」で絞り込み）` : ''}
+          {table?.allRows ? '・全件表示' : `・${offset + 1}〜${Math.min(offset + rows.length, total)} 件目`}
         </span>
-        <span className="flex items-center gap-2">
+        <span className={`flex items-center gap-2 ${table?.allRows ? 'hidden' : ''}`}>
           <button
             disabled={!prevCursor && offset === 0}
             onClick={() => load(prevCursor ?? '0', query)}
@@ -551,6 +560,11 @@ function DataTableInner() {
                 <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 whitespace-nowrap sticky left-0 bg-gray-50" title="friends.display_name">
                   LINE 表示名
                 </th>
+                {table.joinFriends && (
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 whitespace-nowrap" title="friends.created_at">
+                    友だち登録日時
+                  </th>
+                )}
                 {table.columns.map((c) => (
                   <th
                     key={c.name}
@@ -565,7 +579,7 @@ function DataTableInner() {
             <tbody className="divide-y divide-gray-100">
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={table.columns.length + 1} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={table.columns.length + (table.joinFriends ? 2 : 1)} className="px-4 py-8 text-center text-gray-400">
                     行がありません
                   </td>
                 </tr>
@@ -579,6 +593,11 @@ function DataTableInner() {
                     <td className="px-3 py-2 whitespace-nowrap max-w-xs truncate sticky left-0 bg-white group-hover:bg-green-50">
                       <DisplayName row={r} />
                     </td>
+                    {table.joinFriends && (
+                      <td className="px-3 py-2 whitespace-nowrap text-gray-600">
+                        {friendCreatedAt(r) || <span className="text-gray-300">—</span>}
+                      </td>
+                    )}
                     {table.columns.map((c) => {
                       const v = cell(r[c.name])
                       return (

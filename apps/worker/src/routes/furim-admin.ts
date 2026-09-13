@@ -21,6 +21,7 @@ const furimAdmin = new Hono<Env>();
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const RELATED_LIMIT = 20;
+const ALL_ROWS_LIMIT = 10000;
 const IN_CHUNK = 100;
 
 type Row = Record<string, unknown>;
@@ -184,6 +185,8 @@ function serializeTable(table: AdminTable) {
       searchable: Boolean(c.searchable),
     })),
     keys: table.keys,
+    joinFriends: Boolean(table.joinFriends),
+    allRows: Boolean(table.allRows),
   };
 }
 
@@ -225,32 +228,42 @@ furimAdmin.get('/api/furim/admin/tables', async (c) => {
 });
 
 // GET /api/furim/admin/:table?q=&limit=&cursor= — 一覧・検索（cursor はオフセット）
+// joinFriends のテーブルは friends を LEFT JOIN して _friend_created_at を付け、友だち登録の新しい順。
+// allRows のテーブルは limit/cursor を無視して全件（上限 ALL_ROWS_LIMIT）。
 furimAdmin.get('/api/furim/admin/:table', async (c) => {
   const table = requireTable(c.req.param('table'));
   if (!table) return c.json({ success: false, error: 'このテーブルは扱えません' }, 404);
 
   const q = (c.req.query('q') ?? '').trim();
   const limitRaw = Number(c.req.query('limit') ?? DEFAULT_LIMIT);
-  const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, MAX_LIMIT) : DEFAULT_LIMIT;
+  const limit = table.allRows
+    ? ALL_ROWS_LIMIT
+    : Number.isInteger(limitRaw) && limitRaw > 0
+      ? Math.min(limitRaw, MAX_LIMIT)
+      : DEFAULT_LIMIT;
   const offsetRaw = Number(c.req.query('cursor') ?? 0);
-  const offset = Number.isInteger(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
+  const offset = table.allRows ? 0 : Number.isInteger(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
 
+  const join = Boolean(table.joinFriends);
+  const col = (name: string) => (join ? `t.${name}` : name);
   const searchable = table.columns.filter((col) => col.searchable).map((col) => col.name);
   let where = '';
   const binds: unknown[] = [];
   if (q && searchable.length > 0) {
-    where = ` WHERE ${searchable.map((name) => `${name} LIKE ?`).join(' OR ')}`;
+    where = ` WHERE ${searchable.map((name) => `${col(name)} LIKE ?`).join(' OR ')}`;
     for (let i = 0; i < searchable.length; i++) binds.push(`%${q}%`);
   }
 
-  const countRow = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table.name}${where}`)
+  const from = join ? `${table.name} t LEFT JOIN friends f ON f.line_user_id = t.${table.pk}` : table.name;
+  const select = join ? 't.*, f.created_at AS _friend_created_at' : '*';
+  const orderBy = join ? `f.created_at DESC, t.${table.pk}` : `${table.orderBy}, ${table.pk}`;
+
+  const countRow = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM ${from}${where}`)
     .bind(...binds)
     .first<{ n: number }>();
   const total = countRow?.n ?? 0;
 
-  const rows = await c.env.DB.prepare(
-    `SELECT * FROM ${table.name}${where} ORDER BY ${table.orderBy}, ${table.pk} LIMIT ? OFFSET ?`,
-  )
+  const rows = await c.env.DB.prepare(`SELECT ${select} FROM ${from}${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
     .bind(...binds, limit + 1, offset)
     .all<Row>();
   const results = rows.results ?? [];

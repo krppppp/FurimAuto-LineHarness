@@ -16,6 +16,9 @@ export type AdminTableMeta = {
   pk: string
   columns: AdminColumn[]
   keys: AdminKey[]
+  joinFriends: boolean
+  allRows: boolean
 }
 
 export const DISPLAY_NAME_COLUMN = '_display_name'
+export const FRIEND_CREATED_AT_COLUMN = '_friend_created_at'
