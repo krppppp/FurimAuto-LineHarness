@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { getFriendByLineUserId } from '@line-crm/db';
 import type { Context } from 'hono';
 import { gasGet } from '../furim/gas-client.js';
 import type { Env } from '../index.js';
@@ -265,6 +266,8 @@ export type PlanCheckoutEnv = {
   STRIPE_SECRET_KEY?: string;
   GAS_DEPLOY_ID?: string;
   WORKER_PUBLIC_URL?: string;
+  // GAS の顧客ID照合が落ちたときのフォールバック用（friends.metadata.stripeCustomerId）
+  DB?: D1Database;
 };
 
 // 選択内容を検証して価格情報つきで展開する（checkout / intent 共用）
@@ -380,6 +383,22 @@ export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: Plan
     if (env.GAS_DEPLOY_ID) {
       const cc = await getCustomerCoupon(secretKey, env.GAS_DEPLOY_ID, body.lineUserId);
       if (cc.customerId) params['customer'] = cc.customerId;
+      // GAS が一時的に落ちている（404等）と customerId が取れず、Stripe Checkout が新規顧客を
+      // 作ってしまう。すると以後の webhook が顧客IDでシート行を引けず、サブスク終了日時が
+      // 更新されずキーコードが「有効期限切れ」になる（2026-09-13 あおいさん事案）。
+      // D1 の friends.metadata.stripeCustomerId（友だち追加時に作成した顧客）で補う
+      if (!params['customer'] && env.DB) {
+        try {
+          const friend = await getFriendByLineUserId(env.DB, body.lineUserId);
+          const meta = JSON.parse((friend as { metadata?: string } | null)?.metadata || '{}') as { stripeCustomerId?: string };
+          if (meta.stripeCustomerId) {
+            params['customer'] = meta.stripeCustomerId;
+            console.warn('plan-builder: GAS customer lookup unavailable, using friends.metadata.stripeCustomerId', meta.stripeCustomerId);
+          }
+        } catch (e) {
+          console.error('plan-builder: D1 customer fallback failed', e);
+        }
+      }
       const comboCouponId = params['discounts[0][coupon]'];
       if (cc.exists && comboCouponId) {
         params['subscription_data[metadata][pendingComboCoupon]'] = comboCouponId;

@@ -489,6 +489,7 @@ async function handleEvent(
         STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
         GAS_DEPLOY_ID: env.GAS_DEPLOY_ID,
         WORKER_PUBLIC_URL: workerUrl,
+        DB: db,
       });
       return;
     }
