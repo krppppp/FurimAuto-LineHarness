@@ -273,42 +273,60 @@ furim.post('/api/furim/test-reset', async (c) => {
         }, 409);
       }
     }
+    // 消した件数（テーブル名 → 行数）。取りこぼしの確認用（Capsec #257）
+    const deleted: Record<string, number> = {};
+    const del = async (table: string, where: string, ...binds: unknown[]) => {
+      try {
+        const r = await db.prepare(`DELETE FROM ${table} WHERE ${where}`).bind(...binds).run();
+        const n = r.meta?.changes ?? 0;
+        if (n > 0) deleted[table] = (deleted[table] ?? 0) + n;
+      } catch (e) {
+        console.log(`[test-reset] ${table} skip:`, e);
+      }
+    };
+
     if (friend) {
       const meta = JSON.parse(friend.metadata || '{}') as Record<string, string>;
       if (meta.stripeCustomerId) stripeIds.add(meta.stripeCustomerId);
-      const tables = [
+      // friend_id キー。後半 6 表は friends を FK 参照しており、残ると friends の DELETE が落ちる（Capsec #257）
+      const friendTables = [
         'friend_tags', 'friend_scenarios', 'friend_scores', 'friend_reminders',
         'messages_log', 'chats', 'conversion_events', 'automation_logs',
         'stripe_events', 'ad_conversion_logs', 'ref_tracking',
+        'calendar_bookings', 'link_clicks', 'form_submissions', 'bookings', 'event_bookings', 'coupon_notifications',
       ];
-      for (const t of tables) {
-        try {
-          await db.prepare(`DELETE FROM ${t} WHERE friend_id = ?`).bind(friend.id).run();
-        } catch (e) {
-          console.log(`[test-reset] ${t} skip:`, e);
-        }
+      for (const t of friendTables) await del(t, 'friend_id = ?', friend.id);
+      // 紹介台帳（アンバサダー側・被紹介側どちらでも）とアンバサダー本体（affiliates は friends を FK 参照。
+      // affiliate_id を参照する affiliate_links / affiliate_clicks / conversion_events を先に消す）
+      await del('furim_referrals', 'ambassador_friend_id = ? OR introduced_friend_id = ?', friend.id, friend.id);
+      const affiliate = await db.prepare('SELECT id FROM affiliates WHERE friend_id = ?').bind(friend.id).first<{ id: string }>().catch(() => null);
+      if (affiliate) {
+        for (const t of ['furim_referrals', 'affiliate_links', 'affiliate_clicks', 'conversion_events']) await del(t, 'affiliate_id = ?', affiliate.id);
+        await del('affiliates', 'id = ?', affiliate.id);
       }
-      await db.prepare('DELETE FROM friends WHERE id = ?').bind(friend.id).run();
+      await del('friends', 'id = ?', friend.id);
       result.d1 = 'deleted';
     } else {
       result.d1 = 'not_found';
     }
-    // furim_customers / furim_sync_diffs は line_user_id キー（friend が無くても消す。
-    // 旧 key_code が残ると follow 時の試用キーコード生成がスキップされる）。
-    // 消す前に Stripe顧客ID を回収する（旧: GAS deleteCustomerRowByLineId がシート行から返していた。段階2.5 で削除）
+    // line_user_id キーの furim_*（friend が無くても消す。旧 key_code が残ると follow 時の試用キーコード生成がスキップされる）。
+    // 消す前に Stripe顧客ID とキーコードを回収する（無料アカウント台帳は key_code キー）
+    let keyCode: string | null = null;
     try {
-      const fc = await db.prepare('SELECT stripe_customer_id FROM furim_customers WHERE line_user_id = ?').bind(lineUserId).first<{ stripe_customer_id: string | null }>();
+      const fc = await db.prepare('SELECT stripe_customer_id, key_code FROM furim_customers WHERE line_user_id = ?').bind(lineUserId).first<{ stripe_customer_id: string | null; key_code: string | null }>();
       if (fc?.stripe_customer_id) stripeIds.add(fc.stripe_customer_id);
+      keyCode = fc?.key_code ?? null;
     } catch (e) {
-      console.log('[test-reset] furim_customers stripe id skip:', e);
+      console.log('[test-reset] furim_customers lookup skip:', e);
     }
-    for (const t of ['furim_customers', 'furim_sync_diffs']) {
-      try {
-        await db.prepare(`DELETE FROM ${t} WHERE line_user_id = ?`).bind(lineUserId).run();
-      } catch (e) {
-        console.log(`[test-reset] ${t} skip:`, e);
-      }
-    }
+    if (keyCode) await del('furim_free_accounts', 'key_code = ?', keyCode);
+    const lineUserIdTables = [
+      'furim_customers', 'furim_sync_diffs', 'furim_feature_flags', 'furim_survey_answers', 'furim_ticket_ledger',
+      'furim_payments', 'furim_cancellations', 'furim_coupon_applications', 'furim_execution_logs', 'furim_ext_errors',
+      'furim_manual_copy_logs', 'furim_shop_research_logs', 'furim_auto_copy_logs',
+    ];
+    for (const t of lineUserIdTables) await del(t, 'line_user_id = ?', lineUserId);
+    result.deleted = deleted;
 
     // 2) スプシ: 段階2.5（Capsec #250）からシートは凍結（閲覧用）なので行は消さない。GAS deleteCustomerRowByLineId は削除
     result.sheet = 'frozen (not deleted)';

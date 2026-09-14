@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 検証用: 指定LINEユーザーを「新規友達」状態に戻す。
-# 正規の test-reset エンドポイントを叩き、D1・マスターシート(GAS)・Stripe・Firebase を一括削除する。
+# 正規の test-reset エンドポイントを叩き、D1（friends と FK 参照表・furim_* 全表・紹介/アンバサダー・無料台帳）・Stripe・Firebase を一括削除する。
+# スプレッドシートは凍結済みなので消さない（2026-09-14〜）。応答の deleted に表ごとの件数が出る（Capsec #257）。
 # 使い方:
 #   ./reset-test-friend.sh                 # デフォルト=あじゃぱー
 #   ./reset-test-friend.sh Uxxxxxxxx...    # 任意のline_user_id
