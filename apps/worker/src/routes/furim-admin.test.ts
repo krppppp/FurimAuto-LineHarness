@@ -858,9 +858,9 @@ describe('#261 顧客に機能フラグを横持ちで出す', () => {
     { key: 'mChangePrice', display_name: '値段変更', payload: JSON.stringify({ site: 'mercari', value_type: 'bool' }) },
   ];
   const FLAG_COLUMNS = ['_flag_mChangePrice', '_flag_mBackup', '_flag_rChangePrice', '_flag_AutoMultiChannel', '_flag_zNewFeature'];
-  const grouped = (u: string, flags: Record<string, string>, locks: string[] = []) => ({
+  const grouped = (u: string, flags: Record<string, string>) => ({
     line_user_id: u,
-    f: Object.entries(flags).map(([k, v]) => `${k}${v}${locks.includes(k) ? '1' : '0'}`).join(''),
+    f: Object.entries(flags).map(([k, v]) => `${k}${v}`).join(''),
   });
 
   const kv = () => ({ get: vi.fn(), put: vi.fn(), delete: vi.fn().mockResolvedValue(undefined) });
@@ -875,55 +875,45 @@ describe('#261 顧客に機能フラグを横持ちで出す', () => {
     );
   }
 
-  it('一覧は機能列をシートの順（FEATURE_FLAG_ORDER・無いものはマスタ順で後ろ）で付け、見出しはサイト名＋マスタの日本語名', async () => {
-    const { db, statements } = makeDb({
-      firstRows: [{ n: 2 }],
-      allRows: [
-        [{ ...CUSTOMER, line_user_id: 'U1' }, { ...CUSTOMER, line_user_id: 'U2', key_code: 'DEF' }],
-        [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
-        MASTER,
-        [grouped('U1', { mChangePrice: '1', mBackup: '0', AutoMultiChannel: 'メルカリ/ラクマ' }, ['mBackup'])],
-      ],
-    });
+  it('一覧（全件表示）は機能列を付けず、マスタも flags も読まない（描画を軽くする・機能は行ドロワーで出す）', async () => {
+    const customers = Array.from({ length: 250 }, (_, i) => ({ ...CUSTOMER, line_user_id: `U${i}` }));
+    const { db, statements } = makeDb({ firstRows: [{ n: 250 }], allRows: [customers, [], [], []] });
     const res = await req(db, 'GET', '/api/furim/admin/furim_customers');
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      data: Array<Record<string, unknown>>;
-      meta: { table: { listColumns: string[]; virtualColumns: Array<{ name: string; label: string; featureKey: string; flag: string }> } };
-    };
-    expect(body.meta.table.listColumns.slice(-5)).toEqual(FLAG_COLUMNS);
-    const vc = Object.fromEntries(body.meta.table.virtualColumns.map((v) => [v.name, v]));
-    expect(vc._flag_mChangePrice).toMatchObject({ label: 'メルカリ値段変更', featureKey: 'mChangePrice', flag: 'bool' });
-    expect(vc._flag_rChangePrice.label).toBe('ラクマ値段変更');
-    expect(vc._flag_AutoMultiChannel).toMatchObject({ label: '自動併売・巡回オプション', flag: 'text' });
-    expect(FLAG_COLUMNS.map((n) => body.data[0][n])).toEqual(['1', '0', null, 'メルカリ/ラクマ', null]);
-    expect(FLAG_COLUMNS.map((n) => body.data[1][n])).toEqual([null, null, null, null, null]);
-    expect(body.data[0]._flaglock_mBackup).toBe(1);
-    expect(body.data[0]._flaglock_mChangePrice).toBeUndefined();
-    expect(Object.keys(body.data[1]).some((k) => k.startsWith('_flaglock_'))).toBe(false);
-    expect(body.data[0].key_code).toBe('ABC');
-    const flagStmts = statements.filter((s) => s.sql.includes('FROM furim_feature_flags'));
-    expect(flagStmts).toHaveLength(1);
-    expect(flagStmts[0].sql).toBe(
-      'SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value || char(31) || locked, char(30)) AS f FROM furim_feature_flags WHERE line_user_id IN (?,?) GROUP BY line_user_id',
-    );
+    const body = (await res.json()) as { data: Array<Record<string, unknown>>; meta: { table: { featureFlags: boolean; listColumns: string[]; virtualColumns: Array<{ name: string }> } } };
+    expect(body.data).toHaveLength(250);
+    expect(body.meta.table.featureFlags).toBe(true);
+    expect(body.meta.table.listColumns.some((n) => n.startsWith('_flag_'))).toBe(false);
+    expect(body.meta.table.virtualColumns.some((v) => v.name.startsWith('_flag_'))).toBe(false);
+    expect(Object.keys(body.data[0]).some((k) => k.startsWith('_flag'))).toBe(false);
+    expect(statements.some((s) => s.sql.includes('furim_master') || s.sql.includes('furim_feature_flags'))).toBe(false);
   });
 
-  it('全件表示でも機能フラグは 1 クエリ（顧客数に比例しない）', async () => {
-    const customers = Array.from({ length: 250 }, (_, i) => ({ ...CUSTOMER, line_user_id: `U${i}` }));
+  it('行ドロワーの機能: その 1 人分だけ読み、シートの順・サイト名＋マスタ名・0/1 か文字列・固定を返す（行が無い機能は null）', async () => {
     const { db, statements } = makeDb({
-      firstRows: [{ n: 250 }],
-      allRows: [customers, [], [], [], MASTER, [grouped('U7', { mChangePrice: '1' })]],
+      allRows: [
+        MASTER,
+        [
+          { feature_key: 'mChangePrice', value: '1', locked: 0 },
+          { feature_key: 'mBackup', value: '0', locked: 1 },
+          { feature_key: 'AutoMultiChannel', value: 'メルカリ/ラクマ', locked: 0 },
+        ],
+      ],
     });
-    const res = await req(db, 'GET', '/api/furim/admin/furim_customers');
+    const res = await req(db, 'GET', '/api/furim/admin/furim_customers/U1/feature-flags');
+    expect(res.status).toBe(200);
     const body = (await res.json()) as { data: Array<Record<string, unknown>> };
-    expect(body.data).toHaveLength(250);
-    expect(body.data[7]._flag_mChangePrice).toBe('1');
+    expect(body.data).toEqual([
+      { feature_key: 'mChangePrice', label: 'メルカリ値段変更', flag: 'bool', value: '1', locked: 0 },
+      { feature_key: 'mBackup', label: 'メルカリバックアップ', flag: 'bool', value: '0', locked: 1 },
+      { feature_key: 'rChangePrice', label: 'ラクマ値段変更', flag: 'bool', value: null, locked: 0 },
+      { feature_key: 'AutoMultiChannel', label: '自動併売・巡回オプション', flag: 'text', value: 'メルカリ/ラクマ', locked: 0 },
+      { feature_key: 'zNewFeature', label: 'メルカリ新機能', flag: 'bool', value: null, locked: 0 },
+    ]);
     const flagStmts = statements.filter((s) => s.sql.includes('FROM furim_feature_flags'));
     expect(flagStmts).toHaveLength(1);
-    expect(flagStmts[0].sql).toBe('SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value || char(31) || locked, char(30)) AS f FROM furim_feature_flags GROUP BY line_user_id');
-    expect(flagStmts[0].args).toEqual([]);
-    expect(statements.filter((s) => s.sql.includes('FROM furim_master'))).toHaveLength(1);
+    expect(flagStmts[0].sql).toBe('SELECT feature_key, value, locked FROM furim_feature_flags WHERE line_user_id = ?');
+    expect(flagStmts[0].args).toEqual(['U1']);
   });
 
   it('他のテーブルには機能列を付けず、マスタも flags も読まない', async () => {

@@ -122,7 +122,8 @@ function buildFeatureFlagUpserts(db: D1Database, lineUserId: string, flags: Reco
     db
       .prepare(
         `INSERT INTO furim_feature_flags (line_user_id, feature_key, value, source, updated_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(line_user_id, feature_key) DO UPDATE SET value = excluded.value, source = excluded.source, updated_at = excluded.updated_at`,
+         ON CONFLICT(line_user_id, feature_key) DO UPDATE SET value = excluded.value, source = excluded.source, updated_at = excluded.updated_at
+         WHERE furim_feature_flags.locked = 0`,
       )
       .bind(lineUserId, key, value, source, now),
   );
@@ -397,12 +398,18 @@ export async function reconcileFurimCustomers(
   const d1All = await db.prepare('SELECT * FROM furim_customers').all<FurimCustomer>();
   const d1 = new Map<string, FurimCustomer>();
   for (const r of d1All.results ?? []) d1.set(r.line_user_id, r);
-  const flagRows = await db.prepare('SELECT line_user_id, feature_key, value FROM furim_feature_flags').all<{ line_user_id: string; feature_key: string; value: string }>();
+  const flagRows = await db.prepare('SELECT line_user_id, feature_key, value, locked FROM furim_feature_flags').all<{ line_user_id: string; feature_key: string; value: string; locked: number | null }>();
   const flagsByUser = new Map<string, Record<string, string>>();
+  const lockedByUser = new Map<string, Set<string>>();
   for (const f of flagRows.results ?? []) {
     let m = flagsByUser.get(f.line_user_id);
     if (!m) { m = {}; flagsByUser.set(f.line_user_id, m); }
     m[f.feature_key] = f.value;
+    if (f.locked) {
+      let l = lockedByUser.get(f.line_user_id);
+      if (!l) { l = new Set(); lockedByUser.set(f.line_user_id, l); }
+      l.add(f.feature_key);
+    }
   }
 
   const stmts: D1PreparedStatement[] = [];
@@ -441,7 +448,8 @@ export async function reconcileFurimCustomers(
       const sheetFlags = sheetRowToFeatureFlags(row);
       const d1Flags = flagsByUser.get(lineUserId) ?? {};
       const changed: Record<string, string> = {};
-      for (const [k, v] of Object.entries(sheetFlags)) if (d1Flags[k] !== v) changed[k] = v;
+      const locked = lockedByUser.get(lineUserId);
+      for (const [k, v] of Object.entries(sheetFlags)) if (d1Flags[k] !== v && !locked?.has(k)) changed[k] = v;
       if (Object.keys(changed).length) {
         stmts.push(...buildFeatureFlagUpserts(db, lineUserId, changed, nowJst));
         flagsPulled++;

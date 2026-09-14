@@ -328,6 +328,32 @@ describe('reconcileFurimCustomers（段階3）', () => {
     expect(flagWrites).toHaveLength(1);
     expect(flagWrites[0].args.slice(0, 3)).toEqual([uid('1'), 'AutoMultiChannel', 'メルカリ']);
   });
+
+  it('#261 案 A: 固定した機能はシートと違っても取り込まず（UPSERT も出さない）、固定していない機能は従来どおり取り込む', async () => {
+    gasGet.mockResolvedValueOnce({
+      success: true,
+      rows: [sheetRow({ 'メルカリ値下げ機能\n(mChangePrice)': false, 'メルカリバックアップ\n(mBackup)': true })],
+    });
+    const { db, writes } = makeDb({
+      customers: [customer()],
+      flags: [
+        { line_user_id: uid('1'), feature_key: 'mChangePrice', value: '1', locked: 1 },
+        { line_user_id: uid('1'), feature_key: 'mBackup', value: '0', locked: 0 },
+      ],
+    });
+    const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
+    expect(r.flagsPulled).toBe(1);
+    const flagWrites = writes.filter((w) => /INSERT INTO furim_feature_flags/.test(w.sql));
+    expect(flagWrites.map((w) => w.args.slice(1, 3))).toEqual([['mBackup', '1']]);
+  });
+
+  it('#261 案 A: 固定だけが違う顧客は取り込み件数に数えない', async () => {
+    gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ 'メルカリ値下げ機能\n(mChangePrice)': false })] });
+    const { db, writes } = makeDb({ customers: [customer()], flags: [{ line_user_id: uid('1'), feature_key: 'mChangePrice', value: '1', locked: 1 }] });
+    const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
+    expect(r.flagsPulled).toBe(0);
+    expect(writes.some((w) => /INSERT INTO furim_feature_flags/.test(w.sql))).toBe(false);
+  });
 });
 
 describe('backfillFurimExtColumns', () => {
@@ -364,7 +390,7 @@ describe('backfillFurimExtColumns', () => {
   });
 });
 
-const { pullFeatureFlagsFromSheet } = await import('./customer-sync.js');
+const { pullFeatureFlagsFromSheet, upsertFeatureFlags } = await import('./customer-sync.js');
 
 describe('pullFeatureFlagsFromSheet', () => {
 
@@ -377,6 +403,14 @@ describe('pullFeatureFlagsFromSheet', () => {
     expect(flags.map((w) => [w.args[1], w.args[2]])).toEqual([['mChangePrice', '1'], ['AutoMultiChannel', '']]);
   });
 
+  it('#261 案 A: 機能フラグの UPSERT は固定（locked=1）の行を更新しない（全自動経路が通る 1 か所）', async () => {
+    gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ 'メルカリ値下げ機能\n(mChangePrice)': true })] });
+    const { db, writes } = makeDb();
+    await pullFeatureFlagsFromSheet(db, 'dep-1', uid('1'));
+    const upsert = writes.find((w) => /INSERT INTO furim_feature_flags/.test(w.sql));
+    expect(upsert?.sql.replace(/\s+/g, ' ')).toMatch(/ON CONFLICT\(line_user_id, feature_key\) DO UPDATE SET value = excluded\.value, source = excluded\.source, updated_at = excluded\.updated_at WHERE furim_feature_flags\.locked = 0$/);
+  });
+
   it('GAS が落ちても投げず false（cron が取り込む）。deploy ID / lineUserId が無ければ何もしない', async () => {
     gasGet.mockRejectedValueOnce(new Error('GAS down'));
     const { db, writes } = makeDb();
@@ -384,5 +418,19 @@ describe('pullFeatureFlagsFromSheet', () => {
     expect(writes).toHaveLength(0);
     expect(await pullFeatureFlagsFromSheet(db, undefined, uid('1'))).toBe(false);
     expect(await pullFeatureFlagsFromSheet(db, 'dep-1', null)).toBe(false);
+  });
+});
+
+describe('upsertFeatureFlags（#261 案 A）', () => {
+  it('legacy-keywords・trial-promo・在庫お試しボタン・決済時の再計算が使う UPSERT も固定の行を更新しない', async () => {
+    for (const source of ['plan', 'promo', 'clear', 'worker']) {
+      const { db, writes } = makeDb();
+      await upsertFeatureFlags(db, uid('1'), { InventorySheet: '1', AutoMultiChannel: 'メルカリ' }, source);
+      expect(writes).toHaveLength(2);
+      for (const w of writes) {
+        expect(w.args[3]).toBe(source);
+        expect(w.sql.replace(/\s+/g, ' ')).toMatch(/WHERE furim_feature_flags\.locked = 0$/);
+      }
+    }
   });
 });

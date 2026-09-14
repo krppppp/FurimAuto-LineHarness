@@ -4,7 +4,6 @@ import { requireRole } from '../middleware/role-guard.js';
 import {
   ADMIN_TABLES,
   DISPLAY_NAME_COLUMN,
-  FEATURE_FLAG_LOCK_PREFIX,
   FEATURE_FLAG_ORDER,
   FEATURE_FLAG_PREFIX,
   FEATURE_SITE_NAMES,
@@ -255,11 +254,11 @@ const FLAG_KV_SEP = '';
 const FLAG_ROW_SEP = '';
 type FlagGroupRow = { line_user_id: string; f: string | null };
 
-/** 行に _flag_<feature_key> を付ける。flags は line_user_id ごとに GROUP_CONCAT した 1 クエリ（顧客が IN_CHUNK を超えたら全件 1 クエリ） */
+/** CSV の行に _flag_<feature_key> を付ける。flags は line_user_id ごとに GROUP_CONCAT した 1 クエリ（顧客が IN_CHUNK を超えたら全件 1 クエリ） */
 export async function attachFeatureFlags(db: D1Database, columns: AdminVirtualColumn[], rows: Row[]): Promise<void> {
   if (columns.length === 0 || rows.length === 0) return;
   const ids = [...new Set(rows.map((r) => keyText(r.line_user_id)).filter((v): v is string => v !== null))];
-  const select = `SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value || char(31) || locked, char(30)) AS f FROM furim_feature_flags`;
+  const select = `SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value, char(30)) AS f FROM furim_feature_flags`;
   const groups =
     ids.length === 0
       ? []
@@ -267,28 +266,17 @@ export async function attachFeatureFlags(db: D1Database, columns: AdminVirtualCo
         ? ((await db.prepare(`${select} GROUP BY line_user_id`).bind().all<FlagGroupRow>()).results ?? [])
         : await selectIn<FlagGroupRow>(db, (ph) => `${select} WHERE line_user_id IN (${ph}) GROUP BY line_user_id`, ids);
   const byUser = new Map<string, Map<string, string>>();
-  const lockedByUser = new Map<string, Set<string>>();
   for (const g of groups) {
     const values = new Map<string, string>();
-    const locked = new Set<string>();
     for (const part of (g.f ?? '').split(FLAG_ROW_SEP)) {
-      const i = part.indexOf(FLAG_KV_SEP);
-      const j = part.lastIndexOf(FLAG_KV_SEP);
-      if (i <= 0 || j <= i) continue;
-      values.set(part.slice(0, i), part.slice(i + 1, j));
-      if (part.slice(j + 1) === '1') locked.add(part.slice(0, i));
+      const k = part.indexOf(FLAG_KV_SEP);
+      if (k > 0) values.set(part.slice(0, k), part.slice(k + 1));
     }
     byUser.set(g.line_user_id, values);
-    lockedByUser.set(g.line_user_id, locked);
   }
   for (const row of rows) {
-    const uid = keyText(row.line_user_id) ?? '';
-    const values = byUser.get(uid);
-    const locked = lockedByUser.get(uid);
-    for (const col of columns) {
-      row[col.name] = values?.get(col.featureKey!) ?? null;
-      if (locked?.has(col.featureKey!)) row[`${FEATURE_FLAG_LOCK_PREFIX}${col.featureKey}`] = 1;
-    }
+    const values = byUser.get(keyText(row.line_user_id) ?? '');
+    for (const col of columns) row[col.name] = values?.get(col.featureKey!) ?? null;
   }
 }
 
@@ -364,6 +352,7 @@ function serializeTable(table: AdminTable) {
     virtualColumns: table.virtualColumns ?? [],
     displayNameLabel: columnLabel(table, DISPLAY_NAME_COLUMN),
     joinFriends: Boolean(table.joinFriends),
+    featureFlags: Boolean(table.featureFlags),
     allRows: Boolean(table.allRows),
     timeColumn: table.timeColumn ?? null,
     timeColumnLabel: table.timeColumn ? columnLabel(table, table.timeColumn) : null,
@@ -482,14 +471,12 @@ furimAdmin.get('/api/furim/admin/:table', async (c) => {
   attachRowIds(table, data);
   await attachDisplayNames(c.env.DB, [{ table, rows: data }]);
   await attachVirtualColumns(c.env.DB, [{ table, rows: data }]);
-  const featureColumns = table.featureFlags ? await loadFeatureColumns(c.env.DB) : [];
-  await attachFeatureFlags(c.env.DB, featureColumns, data);
 
   return c.json({
     success: true,
     data,
     meta: {
-      table: serializeTable(withFeatureColumns(table, featureColumns)),
+      table: serializeTable(table),
       total,
       limit,
       cursor: String(offset),
@@ -697,6 +684,24 @@ furimAdmin.patch('/api/furim/admin/:table/:id', requireRole('owner', 'admin'), a
   const after = await fetchRow(c.env.DB, table, id);
   console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${table.name}/${id} の ${updates.map((u) => u.col.name).join(',')} を更新`);
   return c.json({ success: true, data: after, meta: { changed: updates.map((u) => u.col.name) } });
+});
+
+// GET /api/furim/admin/furim_customers/:id/feature-flags — 行ドロワーの「機能」（Capsec #261）。その 1 人分の flags だけ読む。
+// 並び・見出しは loadFeatureColumns（シートの順・サイト名＋機能マスタ名）。行が無い機能は value=null
+furimAdmin.get('/api/furim/admin/furim_customers/:id/feature-flags', async (c) => {
+  const lineUserId = c.req.param('id')!;
+  const [columns, flags] = await Promise.all([
+    loadFeatureColumns(c.env.DB),
+    c.env.DB.prepare('SELECT feature_key, value, locked FROM furim_feature_flags WHERE line_user_id = ?')
+      .bind(lineUserId)
+      .all<{ feature_key: string; value: string; locked: number | null }>(),
+  ]);
+  const byKey = new Map((flags.results ?? []).map((f) => [f.feature_key, f]));
+  const data = columns.map((col) => {
+    const f = byKey.get(col.featureKey!);
+    return { feature_key: col.featureKey!, label: col.label, flag: col.flag ?? 'bool', value: f?.value ?? null, locked: f?.locked ? 1 : 0 };
+  });
+  return c.json({ success: true, data });
 });
 
 // PATCH /api/furim/admin/furim_customers/:id/feature-flags {feature_key, value: 0|1} — 顧客一覧のチェックボックス（Capsec #261）。
