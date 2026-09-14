@@ -4,6 +4,7 @@ import { requireRole } from '../middleware/role-guard.js';
 import {
   ADMIN_TABLES,
   DISPLAY_NAME_COLUMN,
+  FEATURE_FLAG_LOCK_PREFIX,
   FEATURE_FLAG_ORDER,
   FEATURE_FLAG_PREFIX,
   FEATURE_SITE_NAMES,
@@ -26,7 +27,6 @@ import {
   type AdminTable,
   type AdminVirtualColumn,
 } from '../furim/admin-schema.js';
-import { upsertFeatureFlags } from '../furim/customer-sync.js';
 import { invalidateExtCache } from '../furim/ext-auth.js';
 import type { Env } from '../index.js';
 
@@ -259,7 +259,7 @@ type FlagGroupRow = { line_user_id: string; f: string | null };
 export async function attachFeatureFlags(db: D1Database, columns: AdminVirtualColumn[], rows: Row[]): Promise<void> {
   if (columns.length === 0 || rows.length === 0) return;
   const ids = [...new Set(rows.map((r) => keyText(r.line_user_id)).filter((v): v is string => v !== null))];
-  const select = `SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value, char(30)) AS f FROM furim_feature_flags`;
+  const select = `SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value || char(31) || locked, char(30)) AS f FROM furim_feature_flags`;
   const groups =
     ids.length === 0
       ? []
@@ -267,17 +267,28 @@ export async function attachFeatureFlags(db: D1Database, columns: AdminVirtualCo
         ? ((await db.prepare(`${select} GROUP BY line_user_id`).bind().all<FlagGroupRow>()).results ?? [])
         : await selectIn<FlagGroupRow>(db, (ph) => `${select} WHERE line_user_id IN (${ph}) GROUP BY line_user_id`, ids);
   const byUser = new Map<string, Map<string, string>>();
+  const lockedByUser = new Map<string, Set<string>>();
   for (const g of groups) {
     const values = new Map<string, string>();
+    const locked = new Set<string>();
     for (const part of (g.f ?? '').split(FLAG_ROW_SEP)) {
       const i = part.indexOf(FLAG_KV_SEP);
-      if (i > 0) values.set(part.slice(0, i), part.slice(i + 1));
+      const j = part.lastIndexOf(FLAG_KV_SEP);
+      if (i <= 0 || j <= i) continue;
+      values.set(part.slice(0, i), part.slice(i + 1, j));
+      if (part.slice(j + 1) === '1') locked.add(part.slice(0, i));
     }
     byUser.set(g.line_user_id, values);
+    lockedByUser.set(g.line_user_id, locked);
   }
   for (const row of rows) {
-    const values = byUser.get(keyText(row.line_user_id) ?? '');
-    for (const col of columns) row[col.name] = values?.get(col.featureKey!) ?? null;
+    const uid = keyText(row.line_user_id) ?? '';
+    const values = byUser.get(uid);
+    const locked = lockedByUser.get(uid);
+    for (const col of columns) {
+      row[col.name] = values?.get(col.featureKey!) ?? null;
+      if (locked?.has(col.featureKey!)) row[`${FEATURE_FLAG_LOCK_PREFIX}${col.featureKey}`] = 1;
+    }
   }
 }
 
@@ -689,7 +700,7 @@ furimAdmin.patch('/api/furim/admin/:table/:id', requireRole('owner', 'admin'), a
 });
 
 // PATCH /api/furim/admin/furim_customers/:id/feature-flags {feature_key, value: 0|1} — 顧客一覧のチェックボックス（Capsec #261）。
-// 保存は customer-sync の upsertFeatureFlags（source はその既定値のまま）。値が変わった時だけ監査ログ（table_name=furim_feature_flags・
+// 保存は手動なので固定（locked）でも書く（source=worker）。値が変わった時だけ監査ログ（table_name=furim_feature_flags・
 // row_id は機能フラグ表の行 id）を残し、拡張の KV キャッシュ（kc:<key_code>）を消す
 furimAdmin.patch('/api/furim/admin/furim_customers/:id/feature-flags', requireRole('owner', 'admin'), async (c) => {
   const lineUserId = c.req.param('id')!;
@@ -722,7 +733,12 @@ furimAdmin.patch('/api/furim/admin/furim_customers/:id/feature-flags', requireRo
   const staff = c.get('staff');
   const flagsTable = getAdminTable('furim_feature_flags')!;
   try {
-    await upsertFeatureFlags(c.env.DB, lineUserId, { [featureKey]: value });
+    await c.env.DB.prepare(
+      `INSERT INTO furim_feature_flags (line_user_id, feature_key, value, source, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(line_user_id, feature_key) DO UPDATE SET value = excluded.value, source = excluded.source, updated_at = excluded.updated_at`,
+    )
+      .bind(lineUserId, featureKey, value, 'worker', jstNow())
+      .run();
     await c.env.DB.prepare(
       `INSERT INTO furim_admin_audit (id, staff_id, staff_name, table_name, row_id, column_name, old_value, new_value, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -736,6 +752,63 @@ furimAdmin.patch('/api/furim/admin/furim_customers/:id/feature-flags', requireRo
   }
   await invalidateExtCache(c.env.FURIM_EXT_CACHE, customer.key_code);
   console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${lineUserId} の機能フラグ ${featureKey} を ${before?.value ?? '(なし)'} → ${value}`);
+  return c.json({ success: true, data, meta: { changed: true } });
+});
+
+// PATCH /api/furim/admin/furim_customers/:id/feature-flags/lock {feature_key, locked: 0|1} — 機能セルの固定（Capsec #261 案 A）。
+// 固定した機能は自動の書き込みで上書きしない。外しても値は残る。状態が変わった時だけ監査ログ（column=locked）と KV 無効化
+furimAdmin.patch('/api/furim/admin/furim_customers/:id/feature-flags/lock', requireRole('owner', 'admin'), async (c) => {
+  const lineUserId = c.req.param('id')!;
+  let body: { feature_key?: unknown; locked?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: 'JSON が不正です' }, 400);
+  }
+  const raw = body?.locked;
+  const locked = raw === 1 || raw === '1' ? 1 : raw === 0 || raw === '0' ? 0 : null;
+  if (locked === null) return c.json({ success: false, error: 'locked は 0 か 1 で指定してください' }, 400);
+  const featureKey = typeof body?.feature_key === 'string' ? body.feature_key : '';
+
+  const column = (await loadFeatureColumns(c.env.DB)).find((col) => col.featureKey === featureKey);
+  if (!column) return c.json({ success: false, error: `${featureKey || '(空)'} は機能マスタにありません` }, 400);
+
+  const customer = await c.env.DB.prepare('SELECT line_user_id, key_code FROM furim_customers WHERE line_user_id = ?')
+    .bind(lineUserId)
+    .first<{ line_user_id: string; key_code: string | null }>();
+  if (!customer) return c.json({ success: false, error: '顧客が見つかりません' }, 404);
+
+  const before = await c.env.DB.prepare('SELECT value, locked FROM furim_feature_flags WHERE line_user_id = ? AND feature_key = ?')
+    .bind(lineUserId, featureKey)
+    .first<{ value: string; locked: number | null }>();
+  const beforeLocked = before?.locked ? 1 : 0;
+  const data = { line_user_id: lineUserId, feature_key: featureKey, locked };
+  if (beforeLocked === locked) return c.json({ success: true, data, meta: { changed: false } });
+
+  const staff = c.get('staff');
+  const flagsTable = getAdminTable('furim_feature_flags')!;
+  const now = jstNow();
+  try {
+    if (before) {
+      await c.env.DB.prepare('UPDATE furim_feature_flags SET locked = ? WHERE line_user_id = ? AND feature_key = ?').bind(locked, lineUserId, featureKey).run();
+    } else {
+      await c.env.DB.prepare('INSERT INTO furim_feature_flags (line_user_id, feature_key, value, source, updated_at, locked) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(lineUserId, featureKey, column.flag === 'bool' ? '0' : '', 'worker', now, locked)
+        .run();
+    }
+    await c.env.DB.prepare(
+      `INSERT INTO furim_admin_audit (id, staff_id, staff_name, table_name, row_id, column_name, old_value, new_value, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(crypto.randomUUID(), staff.id, staff.name, flagsTable.name, rowIdOf(flagsTable, data), 'locked', String(beforeLocked), String(locked), now)
+      .run();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[furim-admin] PATCH feature-flags/lock ${lineUserId}/${featureKey} failed: ${msg}`);
+    return c.json({ success: false, error: `保存に失敗しました: ${msg}` }, 400);
+  }
+  await invalidateExtCache(c.env.FURIM_EXT_CACHE, customer.key_code);
+  console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${lineUserId} の機能フラグ ${featureKey} の固定を ${beforeLocked} → ${locked}`);
   return c.json({ success: true, data, meta: { changed: true } });
 });
 

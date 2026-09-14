@@ -7,6 +7,7 @@ import Header from '@/components/layout/header'
 import { fetchApi, getCsrfToken } from '@/lib/api'
 import {
   DISPLAY_NAME_COLUMN,
+  FEATURE_FLAG_LOCK_PREFIX,
   ROW_ID_COLUMN,
   listColumnsOf,
   rowId,
@@ -581,6 +582,35 @@ function DataTableInner() {
     }
   }
 
+  // 機能セルの固定（Capsec #261 案 A）: 固定中は自動の書き込みで上書きされない。外しても値は残る
+  const toggleLock = async (row: Row, col: ListColumn) => {
+    if (!table || !col.featureKey) return
+    const id = rowId(row, table)
+    const key = `${id}|${col.featureKey}|lock`
+    if (savingFlagsRef.current.has(key)) return
+    savingFlagsRef.current.add(key)
+    setSavingFlags(new Set(savingFlagsRef.current))
+    const lockName = `${FEATURE_FLAG_LOCK_PREFIX}${col.featureKey}`
+    const before = row[lockName] ?? null
+    const next = before === 1 ? 0 : 1
+    const setLock = (v: unknown) => setRows((rs) => rs.map((x) => (rowId(x, table) === id ? { ...x, [lockName]: v } : x)))
+    setLock(next === 1 ? 1 : null)
+    setError('')
+    try {
+      const res = await mutate('PATCH', `/api/furim/admin/${table.name}/${encodeURIComponent(id)}/feature-flags/lock`, {
+        feature_key: col.featureKey,
+        locked: next,
+      })
+      if (!res.success) throw new Error(res.error ?? '保存に失敗しました')
+    } catch (e) {
+      setLock(before)
+      setError(`${cell(row[DISPLAY_NAME_COLUMN]) || id} の「${col.label}」の固定を切り替えられませんでした: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      savingFlagsRef.current.delete(key)
+      setSavingFlags(new Set(savingFlagsRef.current))
+    }
+  }
+
   const load = useCallback(async (cur: string, search: string) => {
     if (!name) return
     setLoading(true)
@@ -800,22 +830,47 @@ function DataTableInner() {
                       <DisplayName row={r} />
                     </td>
                     {cols.map((c) => {
-                      if (c.flag === 'bool' && c.featureKey) {
+                      if (c.featureKey) {
                         const saving = savingFlags.has(`${rowId(r, table)}|${c.featureKey}`)
+                        const lockSaving = savingFlags.has(`${rowId(r, table)}|${c.featureKey}|lock`)
+                        const locked = r[`${FEATURE_FLAG_LOCK_PREFIX}${c.featureKey}`] === 1
+                        const text = cell(r[c.name])
                         return (
                           <td
                             key={c.name}
-                            className="px-3 py-2 text-center border-b border-gray-100 cursor-default"
-                            title={`${c.label}（${c.featureKey}）`}
+                            className={`px-2 py-2 whitespace-nowrap border-b border-gray-100 cursor-default ${locked ? 'bg-amber-50' : ''}`}
+                            title={`${c.label}（${c.featureKey}）${locked ? '・固定中: 決済やシート取り込みなどの自動書き込みで変わりません' : ''}`}
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <input
-                              type="checkbox"
-                              checked={cell(r[c.name]) === '1'}
-                              disabled={saving}
-                              onChange={(e) => toggleFlag(r, c, e.target.checked)}
-                              className="h-4 w-4 cursor-pointer accent-green-600 disabled:cursor-wait disabled:opacity-50"
-                            />
+                            <div className={`flex items-center gap-1 ${c.flag === 'bool' ? 'justify-center' : ''}`}>
+                              {c.flag === 'bool' ? (
+                                <input
+                                  type="checkbox"
+                                  checked={text === '1'}
+                                  disabled={saving}
+                                  onChange={(e) => toggleFlag(r, c, e.target.checked)}
+                                  className="h-4 w-4 cursor-pointer accent-green-600 disabled:cursor-wait disabled:opacity-50"
+                                />
+                              ) : (
+                                <span className="max-w-xs truncate text-gray-800">{text === '' ? <span className="text-gray-300">—</span> : text}</span>
+                              )}
+                              <button
+                                type="button"
+                                disabled={lockSaving}
+                                onClick={() => toggleLock(r, c)}
+                                aria-label={locked ? '固定を外す' : '固定する'}
+                                title={locked ? '固定中（クリックで外す・値はそのまま残り、次の再計算から契約どおり）' : '固定する（自動の書き込みで上書きしない）'}
+                                className={`p-0.5 rounded disabled:cursor-wait disabled:opacity-50 ${locked ? 'text-amber-600' : 'text-gray-300 hover:text-gray-500'}`}
+                              >
+                                <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+                                  {locked ? (
+                                    <path fillRule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clipRule="evenodd" />
+                                  ) : (
+                                    <path fillRule="evenodd" d="M14.5 1A4.5 4.5 0 0 0 10 5.5V9H3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1.5V5.5a3 3 0 1 1 6 0v2.75a.75.75 0 0 0 1.5 0V5.5A4.5 4.5 0 0 0 14.5 1Z" clipRule="evenodd" />
+                                  )}
+                                </svg>
+                              </button>
+                            </div>
                           </td>
                         )
                       }

@@ -858,9 +858,9 @@ describe('#261 顧客に機能フラグを横持ちで出す', () => {
     { key: 'mChangePrice', display_name: '値段変更', payload: JSON.stringify({ site: 'mercari', value_type: 'bool' }) },
   ];
   const FLAG_COLUMNS = ['_flag_mChangePrice', '_flag_mBackup', '_flag_rChangePrice', '_flag_AutoMultiChannel', '_flag_zNewFeature'];
-  const grouped = (u: string, flags: Record<string, string>) => ({
+  const grouped = (u: string, flags: Record<string, string>, locks: string[] = []) => ({
     line_user_id: u,
-    f: Object.entries(flags).map(([k, v]) => `${k}${v}`).join(''),
+    f: Object.entries(flags).map(([k, v]) => `${k}${v}${locks.includes(k) ? '1' : '0'}`).join(''),
   });
 
   const kv = () => ({ get: vi.fn(), put: vi.fn(), delete: vi.fn().mockResolvedValue(undefined) });
@@ -882,7 +882,7 @@ describe('#261 顧客に機能フラグを横持ちで出す', () => {
         [{ ...CUSTOMER, line_user_id: 'U1' }, { ...CUSTOMER, line_user_id: 'U2', key_code: 'DEF' }],
         [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
         MASTER,
-        [grouped('U1', { mChangePrice: '1', mBackup: '0', AutoMultiChannel: 'メルカリ/ラクマ' })],
+        [grouped('U1', { mChangePrice: '1', mBackup: '0', AutoMultiChannel: 'メルカリ/ラクマ' }, ['mBackup'])],
       ],
     });
     const res = await req(db, 'GET', '/api/furim/admin/furim_customers');
@@ -898,11 +898,14 @@ describe('#261 顧客に機能フラグを横持ちで出す', () => {
     expect(vc._flag_AutoMultiChannel).toMatchObject({ label: '自動併売・巡回オプション', flag: 'text' });
     expect(FLAG_COLUMNS.map((n) => body.data[0][n])).toEqual(['1', '0', null, 'メルカリ/ラクマ', null]);
     expect(FLAG_COLUMNS.map((n) => body.data[1][n])).toEqual([null, null, null, null, null]);
+    expect(body.data[0]._flaglock_mBackup).toBe(1);
+    expect(body.data[0]._flaglock_mChangePrice).toBeUndefined();
+    expect(Object.keys(body.data[1]).some((k) => k.startsWith('_flaglock_'))).toBe(false);
     expect(body.data[0].key_code).toBe('ABC');
     const flagStmts = statements.filter((s) => s.sql.includes('FROM furim_feature_flags'));
     expect(flagStmts).toHaveLength(1);
     expect(flagStmts[0].sql).toBe(
-      'SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value, char(30)) AS f FROM furim_feature_flags WHERE line_user_id IN (?,?) GROUP BY line_user_id',
+      'SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value || char(31) || locked, char(30)) AS f FROM furim_feature_flags WHERE line_user_id IN (?,?) GROUP BY line_user_id',
     );
   });
 
@@ -918,7 +921,7 @@ describe('#261 顧客に機能フラグを横持ちで出す', () => {
     expect(body.data[7]._flag_mChangePrice).toBe('1');
     const flagStmts = statements.filter((s) => s.sql.includes('FROM furim_feature_flags'));
     expect(flagStmts).toHaveLength(1);
-    expect(flagStmts[0].sql).toBe('SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value, char(30)) AS f FROM furim_feature_flags GROUP BY line_user_id');
+    expect(flagStmts[0].sql).toBe('SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value || char(31) || locked, char(30)) AS f FROM furim_feature_flags GROUP BY line_user_id');
     expect(flagStmts[0].args).toEqual([]);
     expect(statements.filter((s) => s.sql.includes('FROM furim_master'))).toHaveLength(1);
   });
@@ -946,7 +949,7 @@ describe('#261 顧客に機能フラグを横持ちで出す', () => {
     expect(first.slice(0, 2)).toEqual(['たろう', '2023/05/25 19:53:19']);
   });
 
-  it('チェックボックス保存: 値が変わったら既存の UPSERT（source は既定値）・監査ログ 1 行・KV 無効化', async () => {
+  it('チェックボックス保存: 値が変わったら UPSERT（source=worker・固定でも手動なので書く）・監査ログ 1 行・KV 無効化', async () => {
     const cache = kv();
     const { db, statements, batches } = makeDb({ firstRows: [CUSTOMER, { value: '0' }], allRows: [MASTER] });
     const res = await reqWithKv(db, cache, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags', { feature_key: 'mBackup', value: 1 });
@@ -954,10 +957,11 @@ describe('#261 顧客に機能フラグを横持ちで出す', () => {
     const body = (await res.json()) as { data: { feature_key: string; value: string }; meta: { changed: boolean } };
     expect(body.meta.changed).toBe(true);
     expect(body.data).toMatchObject({ feature_key: 'mBackup', value: '1' });
-    expect(batches).toHaveLength(1);
-    expect(batches[0]).toHaveLength(1);
-    expect(batches[0][0].sql).toContain('INSERT INTO furim_feature_flags');
-    expect(batches[0][0].args).toEqual(['U1', 'mBackup', '1', 'worker', '2026-09-14T00:30:00.000+09:00']);
+    expect(batches).toHaveLength(0);
+    const upserts = statements.filter((s) => s.sql.includes('INSERT INTO furim_feature_flags'));
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0].sql).not.toContain('locked');
+    expect(upserts[0].args).toEqual(['U1', 'mBackup', '1', 'worker', '2026-09-14T00:30:00.000+09:00']);
     const audits = statements.filter((s) => s.sql.includes('INSERT INTO furim_admin_audit'));
     expect(audits).toHaveLength(1);
     expect(audits[0].args.slice(1)).toEqual(['env-owner', 'Owner', 'furim_feature_flags', 'U1|mBackup', 'value', '0', '1', '2026-09-14T00:30:00.000+09:00']);
@@ -1001,5 +1005,65 @@ describe('#261 顧客に機能フラグを横持ちで出す', () => {
     expect(res.status).toBe(403);
     expect(batches).toHaveLength(0);
     expect(statements).toHaveLength(0);
+  });
+  it('固定の切り替え: 状態が変わったら locked を UPDATE・監査ログ（column=locked）1 行・KV 無効化。値は触らない', async () => {
+    const cache = kv();
+    const { db, statements } = makeDb({ firstRows: [CUSTOMER, { value: '1', locked: 0 }], allRows: [MASTER] });
+    const res = await reqWithKv(db, cache, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags/lock', { feature_key: 'mBackup', locked: 1 });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { locked: number }; meta: { changed: boolean } };
+    expect(body).toMatchObject({ data: { locked: 1 }, meta: { changed: true } });
+    const updates = statements.filter((s) => s.sql.includes('furim_feature_flags') && !s.sql.startsWith('SELECT'));
+    expect(updates).toHaveLength(1);
+    expect(updates[0].sql).toBe('UPDATE furim_feature_flags SET locked = ? WHERE line_user_id = ? AND feature_key = ?');
+    expect(updates[0].args).toEqual([1, 'U1', 'mBackup']);
+    const audits = statements.filter((s) => s.sql.includes('INSERT INTO furim_admin_audit'));
+    expect(audits).toHaveLength(1);
+    expect(audits[0].args.slice(1)).toEqual(['env-owner', 'Owner', 'furim_feature_flags', 'U1|mBackup', 'locked', '0', '1', '2026-09-14T00:30:00.000+09:00']);
+    expect(cache.delete).toHaveBeenCalledWith('kc:ABC');
+
+    const off = makeDb({ firstRows: [CUSTOMER, { value: '1', locked: 1 }], allRows: [MASTER] });
+    const offRes = await reqWithKv(off.db, kv(), 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags/lock', { feature_key: 'mBackup', locked: 0 });
+    expect(((await offRes.json()) as { meta: { changed: boolean } }).meta.changed).toBe(true);
+    const offAudit = off.statements.find((s) => s.sql.includes('INSERT INTO furim_admin_audit'));
+    expect(offAudit?.args.slice(5, 8)).toEqual(['locked', '1', '0']);
+    expect(off.statements.some((s) => /SET value|INSERT INTO furim_feature_flags/.test(s.sql))).toBe(false);
+  });
+
+  it('固定の切り替え: 行が無い機能は値を既定（0/1 は 0・文字列は空）で作って固定する', async () => {
+    const { db, statements } = makeDb({ firstRows: [CUSTOMER, null], allRows: [MASTER] });
+    const res = await req(db, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags/lock', { feature_key: 'AutoMultiChannel', locked: 1 });
+    expect(res.status).toBe(200);
+    const ins = statements.find((s) => s.sql.includes('INSERT INTO furim_feature_flags'));
+    expect(ins?.args).toEqual(['U1', 'AutoMultiChannel', '', 'worker', '2026-09-14T00:30:00.000+09:00', 1]);
+  });
+
+  it('固定の切り替え: 同じ状態を送っても書かず、監査ログも KV 無効化もしない', async () => {
+    const cases: Array<[Record<string, unknown> | null, number | string]> = [[{ value: '1', locked: 1 }, 1], [{ value: '1', locked: 0 }, 0], [null, '0']];
+    for (const [before, locked] of cases) {
+      const cache = kv();
+      const { db, statements } = makeDb({ firstRows: [CUSTOMER, before], allRows: [MASTER] });
+      const res = await reqWithKv(db, cache, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags/lock', { feature_key: 'mBackup', locked });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { meta: { changed: boolean } }).meta.changed).toBe(false);
+      expect(statements.some((s) => s.sql.includes('furim_admin_audit') || /UPDATE|INSERT/.test(s.sql))).toBe(false);
+      expect(cache.delete).not.toHaveBeenCalled();
+    }
+  });
+
+  it('固定の切り替え: locked が 0/1 以外・マスタに無い機能は 400、顧客が無ければ 404、staff は 403', async () => {
+    for (const locked of [2, true, null, '']) {
+      const { db, statements } = makeDb();
+      const res = await req(db, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags/lock', { feature_key: 'mBackup', locked });
+      expect(res.status, String(locked)).toBe(400);
+      expect(statements).toHaveLength(0);
+    }
+    const nope = makeDb({ firstRows: [CUSTOMER], allRows: [MASTER] });
+    expect((await req(nope.db, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags/lock', { feature_key: 'nope', locked: 1 })).status).toBe(400);
+    const missing = makeDb({ firstRows: [null], allRows: [MASTER] });
+    expect((await req(missing.db, 'PATCH', '/api/furim/admin/furim_customers/U9/feature-flags/lock', { feature_key: 'mBackup', locked: 1 })).status).toBe(404);
+    const staff = makeDb({ firstRows: [CUSTOMER, { value: '0', locked: 0 }], allRows: [MASTER] });
+    expect((await req(staff.db, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags/lock', { feature_key: 'mBackup', locked: 1 }, STAFF_KEY)).status).toBe(403);
+    expect(staff.statements).toHaveLength(0);
   });
 });

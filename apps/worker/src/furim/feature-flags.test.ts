@@ -38,7 +38,7 @@ const DURING_PROMO = Date.parse('2026-09-14T12:00:00+09:00');
 type Write = { sql: string; args: unknown[] };
 
 /** SQL でルーティングする簡易 D1。batch も run 相当で記録する */
-function makeDb(opts: { customer?: Record<string, unknown> | null; masterRows?: Array<{ kind: string; key: string; payload: string }>; flagKeys?: string[] } = {}) {
+function makeDb(opts: { customer?: Record<string, unknown> | null; masterRows?: Array<{ kind: string; key: string; payload: string }>; flagKeys?: string[]; lockedFlags?: Record<string, string> } = {}) {
   const writes: Write[] = [];
   const db = {
     prepare(sql: string) {
@@ -51,7 +51,14 @@ function makeDb(opts: { customer?: Record<string, unknown> | null; masterRows?: 
         },
         all: async () => {
           if (/FROM furim_master/.test(sql)) return { results: opts.masterRows ?? [] };
-          if (/SELECT feature_key FROM furim_feature_flags/.test(sql)) return { results: (opts.flagKeys ?? []).map((k) => ({ feature_key: k })) };
+          if (/SELECT feature_key, value, locked FROM furim_feature_flags/.test(sql)) {
+            return {
+              results: [
+                ...(opts.flagKeys ?? []).map((k) => ({ feature_key: k, value: '1', locked: 0 })),
+                ...Object.entries(opts.lockedFlags ?? {}).map(([k, v]) => ({ feature_key: k, value: v, locked: 1 })),
+              ],
+            };
+          }
           return { results: [] };
         },
         sql,
@@ -224,6 +231,43 @@ describe('applyPlanBuilderSync', () => {
     expect(r.flags).toMatchObject({ mChangePrice: '0', mCopyRakumaListing: '1', AutoMultiChannel: '' });
     const upsert = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql));
     expect(upsert?.args.slice(1, 4)).toEqual([null, null, null]);
+  });
+
+  it('#261 案 A: 固定した機能は再計算でも解約でも書かず、返す flags（GAS へ渡す値）は固定値。固定していない機能は従来どおり上書き', async () => {
+    const customer = { line_user_id: 'U1', key_code: 'pb_keep1234', packages: 'm_full', features: '', multi_channel_sites: '' };
+    const locked = { mBackup: '1', mChangePrice: '0', AutoMultiChannel: 'ヤフフリ' };
+    for (const clearAll of [false, true]) {
+      const { db, writes } = makeDb({ customer, masterRows, lockedFlags: locked });
+      const r = await applyPlanBuilderSync(db, undefined, undefined, { lineUserId: 'U1', packages: clearAll ? '' : 'm_full', features: '', multiChannelSites: '', clearAll, nowMs: AFTER_PROMO });
+      const flagWrites = writes.filter((w) => /INSERT INTO furim_feature_flags/.test(w.sql));
+      const writtenKeys = flagWrites.map((w) => w.args[1]);
+      for (const k of Object.keys(locked)) expect(writtenKeys, `${clearAll} ${k}`).not.toContain(k);
+      expect(r.flags).toMatchObject(locked);
+      expect(flagWrites.length).toBe(Object.keys(r.flags).length - Object.keys(locked).length);
+      expect(flagWrites.every((w) => w.args[3] === (clearAll ? 'clear' : 'plan'))).toBe(true);
+      expect(writtenKeys).toContain('rChangePrice');
+    }
+  });
+
+  it('#261 案 A: 固定を外した後（locked=0・手動値 1 が残っている）の再計算は契約どおり 0 に戻す', async () => {
+    const customer = { line_user_id: 'U1', key_code: 'pb_keep1234', packages: 'm_full', features: '', multi_channel_sites: '' };
+    const { db, writes } = makeDb({ customer, masterRows, flagKeys: ['mBackup'] });
+    const r = await applyPlanBuilderSync(db, undefined, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '', nowMs: AFTER_PROMO });
+    const mBackup = writes.find((w) => /INSERT INTO furim_feature_flags/.test(w.sql) && w.args[1] === 'mBackup');
+    expect(mBackup?.args[2]).toBe(r.flags.mBackup);
+    expect(r.flags.mBackup).toBe('0');
+    expect(mBackup?.args[3]).toBe('plan');
+  });
+
+  it('#261 案 A: 在庫管理シートのプロモ中の付与は、固定していなければ従来どおり', async () => {
+    const customer = { line_user_id: 'U1', key_code: 'pb_keep1234', packages: 'm_full', features: '', multi_channel_sites: '' };
+    const plain = await applyPlanBuilderSync(makeDb({ customer, masterRows }).db, undefined, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '', nowMs: DURING_PROMO });
+    const { db, writes } = makeDb({ customer, masterRows, lockedFlags: { mBackup: '1' } });
+    const r = await applyPlanBuilderSync(db, undefined, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '', nowMs: DURING_PROMO });
+    expect(r.flags.InventorySheet).toBe(plain.flags.InventorySheet);
+    expect(r.flags.AutoMultiChannel).toBe(plain.flags.AutoMultiChannel);
+    const inv = writes.find((w) => /INSERT INTO furim_feature_flags/.test(w.sql) && w.args[1] === 'InventorySheet');
+    expect(inv?.args[2]).toBe(plain.flags.InventorySheet);
   });
 
   it('マスタが空でパッケージ指定があれば投げる（呼び出し側が GAS 判定にフォールバック）', async () => {

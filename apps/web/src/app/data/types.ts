@@ -49,6 +49,8 @@ export type AdminTableMeta = {
 
 export const DISPLAY_NAME_COLUMN = '_display_name'
 export const FRIEND_CREATED_AT_COLUMN = '_friend_created_at'
+/** 機能セルの固定（Capsec #261 案 A）。固定中の機能だけ行に 1 が付く */
+export const FEATURE_FLAG_LOCK_PREFIX = '_flaglock_'
 /** API が全行に付ける行 id（単一主キーはその値、複合主キーは値を | で連結） */
 export const ROW_ID_COLUMN = '_id'
 

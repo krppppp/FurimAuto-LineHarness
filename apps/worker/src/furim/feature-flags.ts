@@ -269,9 +269,18 @@ export async function applyPlanBuilderSync(db: D1Database, kv: ExtCache | undefi
   const master = await ensureFurimMaster(db, gasDeployId);
   if (!input.clearAll && input.packages && master.packages.length === 0) throw new Error('furim_master にパッケージが無い（refresh-master 未実行）');
   const customer = await getFurimCustomer(db, input.lineUserId);
-  const existing = await db.prepare('SELECT feature_key FROM furim_feature_flags WHERE line_user_id = ?').bind(input.lineUserId).all<{ feature_key: string }>();
+  const existing = await db
+    .prepare('SELECT feature_key, value, locked FROM furim_feature_flags WHERE line_user_id = ?')
+    .bind(input.lineUserId)
+    .all<{ feature_key: string; value: string; locked: number | null }>();
   const sel: PlanSelection = { packages: input.packages ?? '', features: input.features ?? '', multiChannelSites: input.multiChannelSites ?? '' };
   const flags = computeFeatureFlags(master, (existing.results ?? []).map((r) => r.feature_key), sel, { clearAll: input.clearAll, nowMs: input.nowMs });
+  const writable = { ...flags };
+  for (const r of existing.results ?? []) {
+    if (!r.locked) continue;
+    flags[r.feature_key] = r.value;
+    delete writable[r.feature_key];
+  }
   const planLabel = input.clearAll ? '' : (buildPlanLabel(master, sel, true) || input.planLabel || '');
   const decision = decidePlanBuilderKeyCode(customer, sel, { clearAll: input.clearAll });
 
@@ -297,7 +306,7 @@ export async function applyPlanBuilderSync(db: D1Database, kv: ExtCache | undefi
     }
   }
   await upsertFurimCustomer(db, input.lineUserId, patch);
-  await upsertFeatureFlags(db, input.lineUserId, flags, input.clearAll ? 'clear' : 'plan');
+  await upsertFeatureFlags(db, input.lineUserId, writable, input.clearAll ? 'clear' : 'plan');
 
   let ticketsGranted = 0;
   if (input.grantPremiumTickets && !input.clearAll && input.invoiceId) {
