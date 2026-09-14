@@ -14,6 +14,12 @@ const GAS_BASE = 'https://script.google.com/macros/s';
 // 単発になったぶんタイムアウトは7秒→15秒に緩和（30秒枠に後続処理の余地は残る）。
 const GAS_FETCH_TIMEOUT_MS = 15_000;
 
+let sharedSecret = '';
+
+export function setGasSharedSecret(secret: string | undefined): void {
+  sharedSecret = secret ?? '';
+}
+
 export type GasCallOptions = {
   // cron（壁時計15分）から呼ぶ場合はGASのコールドスタートやシートロック待ちを
   // 悠然と待てるため、長いタイムアウトを指定する
@@ -44,6 +50,7 @@ export async function gasGet(deployId: string, params: Record<string, string>, o
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, v);
   }
+  if (sharedSecret) url.searchParams.set('token', sharedSecret);
   const res = await fetchGasOnce(url.toString(), { redirect: 'follow', headers: { 'User-Agent': GAS_USER_AGENT } }, opts?.timeoutMs);
   if (!res.ok) throw new Error(`GAS GET ${res.status}: ${await res.text()}`);
   const text = await res.text();
@@ -71,7 +78,7 @@ export async function gasPost(deployId: string, body: Record<string, unknown>, o
     method: 'POST',
     redirect: 'follow',
     headers: { 'Content-Type': 'application/json', 'User-Agent': GAS_USER_AGENT },
-    body: JSON.stringify(body),
+    body: JSON.stringify(sharedSecret ? { ...body, token: sharedSecret } : body),
   }, opts?.timeoutMs);
   if (!res.ok) throw new Error(`GAS POST ${res.status}: ${await res.text()}`);
   const text = await res.text();

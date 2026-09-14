@@ -27,6 +27,7 @@ import { sendBookingNotification } from './services/booking-notifier.js';
 import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
 import { authMiddleware } from './middleware/auth.js';
 import { setFirebaseAuthToken } from './furim/firebase-client.js';
+import { setGasSharedSecret } from './furim/gas-client.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
@@ -147,6 +148,7 @@ export type Env = {
     ADMIN_PUBLIC_URL?: string;
     LIFF_PUBLIC_URL?: string;
     GAS_DEPLOY_ID?: string;
+    GAS_SHARED_SECRET?: string;
     // アンバサダー紹介offer の id（環境ごとに別値）。ref がこの offer の affiliate_link
     // なら紹介URL経由の紹介成立処理を走らせる。未設定なら URL経由紹介は静かに無効。
     FURIM_AMBASSADOR_OFFER_ID?: string;
@@ -211,6 +213,7 @@ app.use('*', authMiddleware);
 // Firebase RTDB auth — ルール非公開のためRESTに?auth=が必要
 app.use('*', async (c, next) => {
   setFirebaseAuthToken(c.env.FIREBASE_DB_SECRET);
+  setGasSharedSecret(c.env.GAS_SHARED_SECRET);
   await next();
 });
 
@@ -982,6 +985,7 @@ async function scheduled(
   ctx: ExecutionContext,
 ): Promise<void> {
   setFirebaseAuthToken(env.FIREBASE_DB_SECRET);
+  setGasSharedSecret(env.GAS_SHARED_SECRET);
   // FurimAuto: 毎時0分のセグメント判定・シナリオ切替は syncSegments（D1 算出）が担う。
   // 旧 GAS sendStepMessages の POST は段階2.5（Capsec #250）で廃止
 
