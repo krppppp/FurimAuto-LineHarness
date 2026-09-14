@@ -311,7 +311,7 @@ export async function updateInsightResult(
     result.delivered && result.uniqueClick
       ? result.uniqueClick / result.delivered
       : null;
-  const now = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString();
+  const now = jstNow();
   await db
     .prepare(
       `UPDATE broadcast_insights
