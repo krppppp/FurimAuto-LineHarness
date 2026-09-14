@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Header from '@/components/layout/header'
 import { fetchApi, getCsrfToken } from '@/lib/api'
-import { DISPLAY_NAME_COLUMN, FRIEND_CREATED_AT_COLUMN, type AdminTableMeta } from '../types'
+import { DISPLAY_NAME_COLUMN, FRIEND_CREATED_AT_COLUMN, ROW_ID_COLUMN, rowId, type AdminTableMeta } from '../types'
 
 type Row = Record<string, unknown>
 
@@ -41,15 +41,36 @@ type RelatedResponse = { success: boolean; error?: string; data: { identity: Ide
 
 const LIMIT = 50
 
-// fetchApi は 4xx を例外にして本文を捨てるので、PATCH のエラー文（列の型違い・UNIQUE 制約など）を出すために本文を読む
-async function patchRow(path: string, changes: Record<string, string>): Promise<RowResponse> {
+// fetchApi は 4xx を例外にして本文を捨てるので、PATCH/POST/DELETE のエラー文（列の型違い・UNIQUE 制約など）を出すために本文を読む
+async function mutate(method: 'PATCH' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<RowResponse> {
   const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}${path}`, {
-    method: 'PATCH',
+    method,
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
-    body: JSON.stringify({ changes }),
+    body: body === undefined ? undefined : JSON.stringify(body),
   })
   return res.json() as Promise<RowResponse>
+}
+
+// CSV 書き出し: Cookie 認証付きで取得して blob をダウンロードする（<a href> だと Pages プロキシ経由の Cookie が付かない）
+async function downloadCsv(tableName: string, q: string): Promise<void> {
+  const params = new URLSearchParams()
+  if (q) params.set('q', q)
+  const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/furim/admin/${encodeURIComponent(tableName)}/export.csv?${params.toString()}`, {
+    credentials: 'include',
+  })
+  if (!res.ok) throw new Error(`CSV の取得に失敗しました（${res.status}）`)
+  const blob = await res.blob()
+  const disposition = res.headers.get('content-disposition') ?? ''
+  const m = disposition.match(/filename="([^"]+)"/)
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = m?.[1] ?? `${tableName}.csv`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }
 
 function cell(v: unknown): string {
@@ -72,7 +93,7 @@ function DisplayName({ row }: { row: Row }) {
 }
 
 function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
-  const id = cell(row[table.pk])
+  const id = rowId(row, table)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [identity, setIdentity] = useState<Identity | null>(null)
@@ -163,7 +184,7 @@ function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {r.rows.map((x) => {
-                  const pk = cell(x[r.table.pk])
+                  const pk = rowId(x, r.table)
                   return (
                     <tr key={pk} className="hover:bg-green-50">
                       <td className="px-2 py-1.5 whitespace-nowrap">
@@ -175,7 +196,7 @@ function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
                         const v = cell(x[c.name])
                         return (
                           <td key={c.name} className="px-2 py-1.5 whitespace-nowrap max-w-[16rem] truncate text-gray-800" title={v}>
-                            {c.name === r.table.pk ? (
+                            {r.table.pkColumns.includes(c.name) ? (
                               <Link href={tableHref(r.table.name, { open: pk })} className="font-mono text-green-700 hover:underline">
                                 {v}
                               </Link>
@@ -211,15 +232,21 @@ function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
 function RowEditor({
   table,
   row,
+  mode = 'edit',
   onClose,
   onSaved,
+  onDeleted,
 }: {
   table: AdminTableMeta
   row: Row
+  /** insert: 空のフォームで新規行を作る（主キーと全列を入力可） */
+  mode?: 'edit' | 'insert'
   onClose: () => void
   onSaved: (row: Row) => void
+  onDeleted?: (id: string) => void
 }) {
-  const id = cell(row[table.pk])
+  const insert = mode === 'insert'
+  const id = insert ? '' : rowId(row, table)
   const [tab, setTab] = useState<'edit' | 'related'>('edit')
   const [draft, setDraft] = useState<Record<string, string>>(() =>
     Object.fromEntries(table.columns.map((c) => [c.name, cell(row[c.name])])),
@@ -228,8 +255,12 @@ function RowEditor({
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [audit, setAudit] = useState<AuditRow[]>([])
+  // 追加モードでは主キー（id が自動採番のものを除く）と全列を入力できる
+  const autoId = insert && table.pkColumns.length === 1 && table.pkColumns[0] === 'id'
+  const canEdit = (c: { name: string; editable: boolean }) => (insert ? !(autoId && c.name === 'id') : c.editable)
 
   const loadAudit = useCallback(async () => {
+    if (insert) return
     try {
       const res = await fetchApi<{ success: boolean; data: AuditRow[] }>(
         `/api/furim/admin/${table.name}/${encodeURIComponent(id)}/audit`,
@@ -238,7 +269,7 @@ function RowEditor({
     } catch {
       /* 監査ログが取れなくても編集は続けられる */
     }
-  }, [table.name, id])
+  }, [table.name, id, insert])
 
   useEffect(() => {
     loadAudit()
@@ -246,11 +277,11 @@ function RowEditor({
 
   const changes: Record<string, string> = {}
   for (const c of table.columns) {
-    if (!c.editable) continue
-    if (draft[c.name] !== cell(row[c.name])) changes[c.name] = draft[c.name]
+    if (!canEdit(c)) continue
+    if (insert ? draft[c.name] !== '' : draft[c.name] !== cell(row[c.name])) changes[c.name] = draft[c.name]
   }
   const changedCount = Object.keys(changes).length
-  const editable = table.columns.some((c) => c.editable)
+  const editable = insert || table.columns.some((c) => c.editable)
 
   const handleSave = async () => {
     if (changedCount === 0) return
@@ -258,17 +289,41 @@ function RowEditor({
     setError('')
     setNotice('')
     try {
-      const res = await patchRow(`/api/furim/admin/${table.name}/${encodeURIComponent(id)}`, changes)
+      const res = insert
+        ? await mutate('POST', `/api/furim/admin/${table.name}`, { values: changes })
+        : await mutate('PATCH', `/api/furim/admin/${table.name}/${encodeURIComponent(id)}`, { changes })
       if (res.success) {
+        if (insert) {
+          onSaved(res.data)
+          return
+        }
         setNotice(`保存しました（${(res.meta?.changed ?? []).join(', ') || '変更なし'}）`)
         onSaved({ ...res.data, [DISPLAY_NAME_COLUMN]: row[DISPLAY_NAME_COLUMN], [FRIEND_CREATED_AT_COLUMN]: row[FRIEND_CREATED_AT_COLUMN] })
         setDraft(Object.fromEntries(table.columns.map((c) => [c.name, cell(res.data[c.name])])))
         await loadAudit()
       } else {
-        setError(res.error ?? '保存に失敗しました')
+        setError(res.error ?? (insert ? '追加に失敗しました' : '保存に失敗しました'))
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存に失敗しました')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!window.confirm(`${table.label} の行（${table.pk} = ${id}）を削除します。元に戻せません。よろしいですか？`)) return
+    setSaving(true)
+    setError('')
+    try {
+      const res = await mutate('DELETE', `/api/furim/admin/${table.name}/${encodeURIComponent(id)}`)
+      if (res.success) {
+        onDeleted?.(id)
+      } else {
+        setError(res.error ?? '削除に失敗しました')
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '削除に失敗しました')
     } finally {
       setSaving(false)
     }
@@ -286,11 +341,20 @@ function RowEditor({
           <div className="flex items-center justify-between px-5 py-3">
             <div>
               <div className="text-sm font-semibold text-gray-900">
-                {displayName ? `${displayName} ・ ` : ''}{table.label}
+                {insert ? `${table.label} に行を追加` : `${displayName ? `${displayName} ・ ` : ''}${table.label}`}
               </div>
-              <div className="text-xs font-mono text-gray-500 break-all">{table.pk} = {id}</div>
+              <div className="text-xs font-mono text-gray-500 break-all">{insert ? `主キー: ${table.pk}${autoId ? '（自動採番）' : ''}` : `${table.pk} = ${id}`}</div>
             </div>
             <div className="flex items-center gap-2">
+              {tab === 'edit' && !insert && table.deletable && onDeleted && (
+                <button
+                  onClick={handleDelete}
+                  disabled={saving}
+                  className="px-3 py-2 text-sm font-medium text-red-700 bg-white border border-red-300 rounded-lg hover:bg-red-50 disabled:opacity-50"
+                >
+                  削除
+                </button>
+              )}
               {tab === 'edit' && editable && (
                 <button
                   onClick={handleSave}
@@ -298,7 +362,7 @@ function RowEditor({
                   className="px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity hover:opacity-90"
                   style={{ backgroundColor: '#06C755' }}
                 >
-                  {saving ? '保存中...' : `保存${changedCount ? `（${changedCount}）` : ''}`}
+                  {saving ? (insert ? '追加中...' : '保存中...') : insert ? `追加${changedCount ? `（${changedCount} 列）` : ''}` : `保存${changedCount ? `（${changedCount}）` : ''}`}
                 </button>
               )}
               <button
@@ -311,10 +375,12 @@ function RowEditor({
           </div>
           <div className="flex gap-1 px-5">
             {(
-              [
-                ['edit', editable ? '編集' : '内容'],
-                ['related', '関連データ'],
-              ] as const
+              insert
+                ? ([['edit', '入力']] as const)
+                : ([
+                    ['edit', editable ? '編集' : '内容'],
+                    ['related', '関連データ'],
+                  ] as const)
             ).map(([key, label]) => (
               <button
                 key={key}
@@ -337,20 +403,24 @@ function RowEditor({
               {error && <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>}
               {notice && <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">{notice}</div>}
               {table.columns.map((c) => {
-                const changed = c.editable && draft[c.name] !== cell(row[c.name])
+                const editableHere = canEdit(c)
+                const changed = editableHere && (insert ? draft[c.name] !== '' : draft[c.name] !== cell(row[c.name]))
                 return (
                   <div key={c.name}>
                     <label className="block text-xs font-medium text-gray-700 mb-1">
                       <span className="font-mono">{c.name}</span>
-                      <span className="ml-2 text-gray-400">{c.type}{c.editable ? '' : '・読み取り専用'}</span>
+                      <span className="ml-2 text-gray-400">
+                        {c.type}
+                        {insert && table.pkColumns.includes(c.name) ? (autoId ? '・自動採番' : '・主キー（必須）') : editableHere ? '' : '・読み取り専用'}
+                      </span>
                     </label>
                     <input
                       type="text"
                       value={draft[c.name] ?? ''}
-                      readOnly={!c.editable}
+                      readOnly={!editableHere}
                       onChange={(e) => setDraft((d) => ({ ...d, [c.name]: e.target.value }))}
                       className={`w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 ${
-                        c.editable
+                        editableHere
                           ? changed
                             ? 'border-yellow-400 bg-yellow-50'
                             : 'border-gray-300'
@@ -362,6 +432,7 @@ function RowEditor({
               })}
             </div>
 
+            {!insert && (
             <div className="border-t border-gray-200 px-5 py-4">
               <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">変更履歴</div>
               {audit.length === 0 ? (
@@ -380,6 +451,7 @@ function RowEditor({
                 </ul>
               )}
             </div>
+            )}
           </>
         )}
       </div>
@@ -404,6 +476,8 @@ function DataTableInner() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<Row | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   const load = useCallback(async (cur: string, search: string) => {
     if (!name) return
@@ -489,9 +563,38 @@ function DataTableInner() {
             : undefined
         }
         action={
-          <Link href="/data" className="text-sm text-gray-500 hover:text-gray-700">
-            ← テーブル一覧
-          </Link>
+          <div className="flex items-center gap-2">
+            {table?.insertable && (
+              <button
+                onClick={() => setAdding(true)}
+                className="px-3 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
+                style={{ backgroundColor: '#06C755' }}
+              >
+                ＋ 行を追加
+              </button>
+            )}
+            <button
+              onClick={async () => {
+                setExporting(true)
+                setError('')
+                try {
+                  await downloadCsv(name, query)
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : 'CSV の取得に失敗しました')
+                } finally {
+                  setExporting(false)
+                }
+              }}
+              disabled={exporting || !table}
+              className="px-3 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              title={query ? `「${query}」で絞り込んだ行を CSV に書き出す` : '全行を CSV に書き出す'}
+            >
+              {exporting ? '書き出し中...' : 'CSV 書き出し'}
+            </button>
+            <Link href="/data" className="text-sm text-gray-500 hover:text-gray-700">
+              ← テーブル一覧
+            </Link>
+          </div>
         }
       />
 
@@ -586,7 +689,7 @@ function DataTableInner() {
               ) : (
                 rows.map((r) => (
                   <tr
-                    key={cell(r[table.pk])}
+                    key={rowId(r, table)}
                     onClick={() => setEditing(r)}
                     className="cursor-pointer hover:bg-green-50 transition-colors group"
                   >
@@ -621,7 +724,28 @@ function DataTableInner() {
           onClose={closeEditor}
           onSaved={(updated) => {
             setEditing(updated)
-            setRows((rs) => rs.map((r) => (cell(r[table.pk]) === cell(updated[table.pk]) ? updated : r)))
+            setRows((rs) => rs.map((r) => (rowId(r, table) === rowId(updated, table) ? updated : r)))
+          }}
+          onDeleted={(deletedId) => {
+            setEditing(null)
+            setRows((rs) => rs.filter((r) => rowId(r, table) !== deletedId))
+            setTotal((t) => Math.max(0, t - 1))
+            if (openId) router.replace(tableHref(name, query ? { q: query } : {}))
+          }}
+        />
+      )}
+
+      {adding && table && (
+        <RowEditor
+          table={table}
+          row={Object.fromEntries(table.columns.map((c) => [c.name, '']))}
+          mode="insert"
+          onClose={() => setAdding(false)}
+          onSaved={(created) => {
+            setAdding(false)
+            setRows((rs) => [created, ...rs])
+            setTotal((t) => t + 1)
+            setEditing({ ...created, [ROW_ID_COLUMN]: rowId(created, table) })
           }}
         />
       )}

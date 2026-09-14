@@ -560,7 +560,7 @@ async function handleEvent(
         : 'もう一度お試しください';
       const gasDeployId = env.GAS_DEPLOY_ID;
       await runHandlerSafely('handleKeywordAction', loggingClient, userId, retryHint, () =>
-        handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE }, db));
+        handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, LIFF_URL: env.LIFF_URL, WORKER_NAME: env.WORKER_NAME }, db));
       return;
     }
 

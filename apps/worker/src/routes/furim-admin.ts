@@ -1,14 +1,28 @@
 import { Hono } from 'hono';
 import { jstNow } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
-import { ADMIN_TABLES, getAdminTable, type AdminColumn, type AdminKeyKind, type AdminTable } from '../furim/admin-schema.js';
+import {
+  ADMIN_TABLES,
+  getAdminTable,
+  isDeletable,
+  isInsertable,
+  parseRowId,
+  pkColumns,
+  pkLabel,
+  rowIdOf,
+  type AdminColumn,
+  type AdminKeyKind,
+  type AdminTable,
+} from '../furim/admin-schema.js';
 import type { Env } from '../index.js';
 
 /**
  * 管理画面「データ」区画の汎用 CRUD（Capsec #251・段階4-A の最小）。
  * furim/admin-schema.ts のホワイトリストにあるテーブル・列だけを扱う。
  * 認証は authMiddleware（スタッフ）。PATCH は owner/admin のみで、変更列ごとに
- * furim_admin_audit に前後の値を残す。追加・削除・CSV は親 #246 で。
+ * furim_admin_audit に前後の値を残す。
+ * #246: 追加（POST・監査 column=(insert)）・削除（DELETE・監査 column=(delete) に行 JSON）・CSV 書き出し
+ * （GET :table/export.csv）・複合主キー（行 id は admin-schema の rowIdOf。全行に _id を付ける）。
  *
  * #253: 一覧・1 行のレスポンスに付加列 _display_name（friends.display_name）を付ける。
  * テーブルの keys（line_user_id / friend_id / stripe_customer_id / key_code）の順で最初に値がある列から
@@ -22,7 +36,10 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const RELATED_LIMIT = 20;
 const ALL_ROWS_LIMIT = 10000;
+const EXPORT_LIMIT = 50000;
 const IN_CHUNK = 100;
+const AUDIT_INSERT = '(insert)';
+const AUDIT_DELETE = '(delete)';
 
 type Row = Record<string, unknown>;
 
@@ -177,7 +194,10 @@ function serializeTable(table: AdminTable) {
   return {
     name: table.name,
     label: table.label,
-    pk: table.pk,
+    pk: pkLabel(table),
+    pkColumns: pkColumns(table),
+    insertable: isInsertable(table),
+    deletable: isDeletable(table),
     columns: table.columns.map((c) => ({
       name: c.name,
       type: c.type,
@@ -218,8 +238,49 @@ function toAuditText(v: unknown): string | null {
   return typeof v === 'string' ? v : String(v);
 }
 
+/** 主キー条件（複合主キー対応）。id が形式不正なら null */
+function pkWhere(table: AdminTable, id: string): { where: string; binds: string[] } | null {
+  const parsed = parseRowId(table, id);
+  if (!parsed) return null;
+  const cols = pkColumns(table);
+  return { where: cols.map((c) => `${c} = ?`).join(' AND '), binds: cols.map((c) => parsed[c]) };
+}
+
+function attachRowIds(table: AdminTable, rows: Row[]): void {
+  for (const row of rows) row._id = rowIdOf(table, row);
+}
+
 export async function fetchRow(db: D1Database, table: AdminTable, id: string): Promise<Row | null> {
-  return db.prepare(`SELECT * FROM ${table.name} WHERE ${table.pk} = ?`).bind(id).first<Row>();
+  const pk = pkWhere(table, id);
+  if (!pk) return null;
+  const row = await db.prepare(`SELECT * FROM ${table.name} WHERE ${pk.where}`).bind(...pk.binds).first<Row>();
+  if (row) attachRowIds(table, [row]);
+  return row;
+}
+
+/** 一覧・CSV 共通の検索条件 */
+function buildListQuery(table: AdminTable, q: string): { from: string; select: string; where: string; binds: unknown[]; orderBy: string } {
+  const join = Boolean(table.joinFriends);
+  const col = (name: string) => (join ? `t.${name}` : name);
+  const searchable = table.columns.filter((c) => c.searchable).map((c) => c.name);
+  let where = '';
+  const binds: unknown[] = [];
+  if (q && searchable.length > 0) {
+    where = ` WHERE ${searchable.map((name) => `${col(name)} LIKE ?`).join(' OR ')}`;
+    for (let i = 0; i < searchable.length; i++) binds.push(`%${q}%`);
+  }
+  const pkFirst = pkColumns(table)[0];
+  const from = join ? `${table.name} t LEFT JOIN friends f ON f.line_user_id = t.${pkFirst}` : table.name;
+  const select = join ? 't.*, f.created_at AS _friend_created_at' : '*';
+  const pkOrder = pkColumns(table).map((c) => (join ? `t.${c}` : c)).join(', ');
+  const orderBy = join ? `f.created_at DESC, ${pkOrder}` : `${table.orderBy}, ${pkOrder}`;
+  return { from, select, where, binds, orderBy };
+}
+
+function csvCell(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  const s = typeof v === 'string' ? v : String(v);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 // GET /api/furim/admin/tables — 扱えるテーブルとスキーマ
@@ -244,19 +305,7 @@ furimAdmin.get('/api/furim/admin/:table', async (c) => {
   const offsetRaw = Number(c.req.query('cursor') ?? 0);
   const offset = table.allRows ? 0 : Number.isInteger(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
 
-  const join = Boolean(table.joinFriends);
-  const col = (name: string) => (join ? `t.${name}` : name);
-  const searchable = table.columns.filter((col) => col.searchable).map((col) => col.name);
-  let where = '';
-  const binds: unknown[] = [];
-  if (q && searchable.length > 0) {
-    where = ` WHERE ${searchable.map((name) => `${col(name)} LIKE ?`).join(' OR ')}`;
-    for (let i = 0; i < searchable.length; i++) binds.push(`%${q}%`);
-  }
-
-  const from = join ? `${table.name} t LEFT JOIN friends f ON f.line_user_id = t.${table.pk}` : table.name;
-  const select = join ? 't.*, f.created_at AS _friend_created_at' : '*';
-  const orderBy = join ? `f.created_at DESC, t.${table.pk}` : `${table.orderBy}, ${table.pk}`;
+  const { from, select, where, binds, orderBy } = buildListQuery(table, q);
 
   const countRow = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM ${from}${where}`)
     .bind(...binds)
@@ -269,6 +318,7 @@ furimAdmin.get('/api/furim/admin/:table', async (c) => {
   const results = rows.results ?? [];
   const hasMore = results.length > limit;
   const data = hasMore ? results.slice(0, limit) : results;
+  attachRowIds(table, data);
   await attachDisplayNames(c.env.DB, [{ table, rows: data }]);
 
   return c.json({
@@ -280,6 +330,36 @@ furimAdmin.get('/api/furim/admin/:table', async (c) => {
       limit,
       cursor: String(offset),
       nextCursor: hasMore ? String(offset + limit) : null,
+    },
+  });
+});
+
+// GET /api/furim/admin/:table/export.csv?q= — 一覧と同じ条件で CSV（BOM 付き・Excel でそのまま開ける・上限 EXPORT_LIMIT）
+furimAdmin.get('/api/furim/admin/:table/export.csv', async (c) => {
+  const table = requireTable(c.req.param('table'));
+  if (!table) return c.json({ success: false, error: 'このテーブルは扱えません' }, 404);
+  const q = (c.req.query('q') ?? '').trim();
+  const { from, select, where, binds, orderBy } = buildListQuery(table, q);
+  const rows = await c.env.DB.prepare(`SELECT ${select} FROM ${from}${where} ORDER BY ${orderBy} LIMIT ?`)
+    .bind(...binds, EXPORT_LIMIT)
+    .all<Row>();
+  const data = rows.results ?? [];
+  await attachDisplayNames(c.env.DB, [{ table, rows: data }]);
+  const columns = table.columns.map((x) => x.name);
+  const header = ['LINE表示名', ...(table.joinFriends ? ['友だち登録日時'] : []), ...columns];
+  const lines = [header.map(csvCell).join(',')];
+  for (const row of data) {
+    const cells = [row._display_name, ...(table.joinFriends ? [row._friend_created_at] : []), ...columns.map((name) => row[name])];
+    lines.push(cells.map(csvCell).join(','));
+  }
+  const stamp = jstNow().slice(0, 19).replace(/[-:T]/g, '').replace(/\.\d+$/, '');
+  const staff = c.get('staff');
+  console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${table.name} を CSV 書き出し（${data.length} 行・q=${q}）`);
+  return new Response('\ufeff' + lines.join('\r\n') + '\r\n', {
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${table.name}-${stamp}.csv"`,
+      'Cache-Control': 'no-store',
     },
   });
 });
@@ -321,21 +401,25 @@ furimAdmin.get('/api/furim/admin/:table/:id/related', async (c) => {
     if (conds.length === 0) continue;
     let where = `(${conds.join(' OR ')})`;
     if (t.name === table.name) {
-      where += ` AND ${t.pk} != ?`;
-      binds.push(rowId);
+      const self = pkWhere(t, rowId);
+      if (self) {
+        where += ` AND NOT (${self.where})`;
+        binds.push(...self.binds);
+      }
     }
     targets.push({ table: t, where, binds, q });
   }
 
   const statements = targets.flatMap((tg) => [
     c.env.DB.prepare(`SELECT COUNT(*) AS n FROM ${tg.table.name} WHERE ${tg.where}`).bind(...tg.binds),
-    c.env.DB.prepare(`SELECT * FROM ${tg.table.name} WHERE ${tg.where} ORDER BY ${tg.table.orderBy}, ${tg.table.pk} LIMIT ?`).bind(...tg.binds, RELATED_LIMIT),
+    c.env.DB.prepare(`SELECT * FROM ${tg.table.name} WHERE ${tg.where} ORDER BY ${tg.table.orderBy}, ${pkColumns(tg.table).join(', ')} LIMIT ?`).bind(...tg.binds, RELATED_LIMIT),
   ]);
   const results = statements.length ? await c.env.DB.batch<Row>(statements) : [];
 
   const related = targets.map((tg, i) => {
     const countRow = (results[i * 2]?.results ?? [])[0] as { n?: number } | undefined;
     const rows = results[i * 2 + 1]?.results ?? [];
+    attachRowIds(tg.table, rows);
     return { table: serializeTable(tg.table), total: Number(countRow?.n ?? 0), rows, q: tg.q };
   });
   await attachDisplayNames(c.env.DB, related.map((r, i) => ({ table: targets[i].table, rows: r.rows })));
@@ -397,8 +481,9 @@ furimAdmin.patch('/api/furim/admin/:table/:id', requireRole('owner', 'admin'), a
     setBinds.push(now);
   }
 
+  const pk = pkWhere(table, id)!;
   const statements = [
-    c.env.DB.prepare(`UPDATE ${table.name} SET ${setClauses.join(', ')} WHERE ${table.pk} = ?`).bind(...setBinds, id),
+    c.env.DB.prepare(`UPDATE ${table.name} SET ${setClauses.join(', ')} WHERE ${pk.where}`).bind(...setBinds, ...pk.binds),
     ...updates.map((u) =>
       c.env.DB.prepare(
         `INSERT INTO furim_admin_audit (id, staff_id, staff_name, table_name, row_id, column_name, old_value, new_value, created_at)
@@ -428,6 +513,99 @@ furimAdmin.patch('/api/furim/admin/:table/:id', requireRole('owner', 'admin'), a
   const after = await fetchRow(c.env.DB, table, id);
   console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${table.name}/${id} の ${updates.map((u) => u.col.name).join(',')} を更新`);
   return c.json({ success: true, data: after, meta: { changed: updates.map((u) => u.col.name) } });
+});
+
+// POST /api/furim/admin/:table {values:{列:値}} — 1 行追加（owner/admin）。主キーが 'id' 1 列なら UUID を採番。
+// created_at / updated_at / imported_at が列にあって未指定なら現在時刻。監査ログは column=(insert) に行 JSON
+furimAdmin.post('/api/furim/admin/:table', requireRole('owner', 'admin'), async (c) => {
+  const table = requireTable(c.req.param('table')!);
+  if (!table) return c.json({ success: false, error: 'このテーブルは扱えません' }, 404);
+  if (!isInsertable(table)) return c.json({ success: false, error: 'このテーブルには追加できません' }, 400);
+
+  let body: { values?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: 'JSON が不正です' }, 400);
+  }
+  const values = body?.values;
+  if (!values || typeof values !== 'object' || Array.isArray(values)) {
+    return c.json({ success: false, error: 'values を {列: 値} で指定してください' }, 400);
+  }
+
+  const now = jstNow();
+  const record: Record<string, string | number | null> = {};
+  for (const [name, raw] of Object.entries(values as Record<string, unknown>)) {
+    const col = table.columns.find((x) => x.name === name);
+    if (!col) return c.json({ success: false, error: `${name} は存在しない列です` }, 400);
+    const coerced = coerceValue(col, raw);
+    if (!coerced.ok) return c.json({ success: false, error: coerced.error }, 400);
+    record[name] = coerced.value;
+  }
+  const cols = pkColumns(table);
+  if (cols.length === 1 && cols[0] === 'id' && (record.id === undefined || record.id === null)) record.id = crypto.randomUUID();
+  for (const name of cols) {
+    if (record[name] === undefined || record[name] === null || record[name] === '') {
+      return c.json({ success: false, error: `主キー ${name} を指定してください` }, 400);
+    }
+  }
+  for (const name of ['created_at', 'updated_at', 'imported_at']) {
+    if (table.columns.some((x) => x.name === name) && (record[name] === undefined || record[name] === null)) record[name] = now;
+  }
+
+  const names = Object.keys(record);
+  const staff = c.get('staff');
+  const id = rowIdOf(table, record);
+  const statements = [
+    c.env.DB.prepare(`INSERT INTO ${table.name} (${names.join(', ')}) VALUES (${names.map(() => '?').join(', ')})`).bind(...names.map((n) => record[n])),
+    c.env.DB.prepare(
+      `INSERT INTO furim_admin_audit (id, staff_id, staff_name, table_name, row_id, column_name, old_value, new_value, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(crypto.randomUUID(), staff.id, staff.name, table.name, id, AUDIT_INSERT, null, JSON.stringify(record), now),
+  ];
+  try {
+    await c.env.DB.batch(statements);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[furim-admin] POST ${table.name} failed: ${msg}`);
+    return c.json({ success: false, error: `追加に失敗しました: ${msg}` }, 400);
+  }
+  const after = await fetchRow(c.env.DB, table, id);
+  if (after) await attachDisplayNames(c.env.DB, [{ table, rows: [after] }]);
+  console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${table.name}/${id} を追加`);
+  return c.json({ success: true, data: after ?? { ...record, _id: id }, meta: { id } }, 201);
+});
+
+// DELETE /api/furim/admin/:table/:id — 1 行削除（owner/admin）。監査ログは column=(delete) に消した行の JSON
+furimAdmin.delete('/api/furim/admin/:table/:id', requireRole('owner', 'admin'), async (c) => {
+  const table = requireTable(c.req.param('table')!);
+  if (!table) return c.json({ success: false, error: 'このテーブルは扱えません' }, 404);
+  if (!isDeletable(table)) return c.json({ success: false, error: 'このテーブルの行は削除できません' }, 400);
+  const id = c.req.param('id')!;
+  const pk = pkWhere(table, id);
+  if (!pk) return c.json({ success: false, error: '行 id の形式が不正です' }, 400);
+  const before = await fetchRow(c.env.DB, table, id);
+  if (!before) return c.json({ success: false, error: '行が見つかりません' }, 404);
+  const { _id: _ignored, ...snapshot } = before;
+  void _ignored;
+
+  const staff = c.get('staff');
+  const now = jstNow();
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare(`DELETE FROM ${table.name} WHERE ${pk.where}`).bind(...pk.binds),
+      c.env.DB.prepare(
+        `INSERT INTO furim_admin_audit (id, staff_id, staff_name, table_name, row_id, column_name, old_value, new_value, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(crypto.randomUUID(), staff.id, staff.name, table.name, id, AUDIT_DELETE, JSON.stringify(snapshot), null, now),
+    ]);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[furim-admin] DELETE ${table.name}/${id} failed: ${msg}`);
+    return c.json({ success: false, error: `削除に失敗しました: ${msg}` }, 400);
+  }
+  console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${table.name}/${id} を削除`);
+  return c.json({ success: true, data: snapshot, meta: { id } });
 });
 
 export { furimAdmin };

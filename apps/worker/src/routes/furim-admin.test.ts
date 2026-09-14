@@ -291,6 +291,7 @@ describe('GET /api/furim/admin/:table/:id/related', () => {
       'furim_customers', 'furim_payments', 'furim_ticket_ledger', 'furim_cancellations', 'furim_referrals', 'affiliates',
       'furim_execution_logs', 'furim_ext_errors', 'furim_free_accounts', 'furim_manual_copy_logs', 'furim_shop_research_logs',
       'furim_auto_copy_logs', 'furim_survey_answers', 'furim_coupon_applications', 'furim_referral_cashbacks',
+      'furim_feature_flags',
     ]);
     const payments = body.data.related[1];
     expect(payments.total).toBe(2);
@@ -302,8 +303,8 @@ describe('GET /api/furim/admin/:table/:id/related', () => {
 
     expect(batches).toHaveLength(1);
     const stmts = batches[0];
-    expect(stmts).toHaveLength(30);
-    expect(stmts[0].sql).toBe('SELECT COUNT(*) AS n FROM furim_customers WHERE (line_user_id = ? OR stripe_customer_id = ? OR key_code = ?) AND line_user_id != ?');
+    expect(stmts).toHaveLength(32);
+    expect(stmts[0].sql).toBe('SELECT COUNT(*) AS n FROM furim_customers WHERE (line_user_id = ? OR stripe_customer_id = ? OR key_code = ?) AND NOT (line_user_id = ?)');
     expect(stmts[0].args).toEqual(['U1', 'cus_1', 'ABC', 'U1']);
     expect(stmts[3].sql).toBe('SELECT * FROM furim_payments WHERE (line_user_id = ? OR stripe_customer_id = ?) ORDER BY paid_at DESC, invoice_id LIMIT ?');
     expect(stmts[3].args).toEqual(['U1', 'cus_1', 20]);
@@ -438,5 +439,94 @@ describe('GET /api/furim/admin/:table/:id/audit', () => {
     const body = (await res.json()) as { data: Array<{ column_name: string }> };
     expect(body.data[0].column_name).toBe('key_code');
     expect(statements[0].args).toEqual(['furim_customers', 'U1']);
+  });
+});
+
+describe('#246 段階4 本体: 複合主キー・追加・削除・CSV', () => {
+  it('tables に pkColumns / insertable / deletable が付き、複合主キーは pk を "," で表す', async () => {
+    const { db } = makeDb();
+    const res = await req(db, 'GET', '/api/furim/admin/tables');
+    const body = (await res.json()) as { data: Array<{ name: string; pk: string; pkColumns: string[]; insertable: boolean; deletable: boolean }> };
+    const flags = body.data.find((t) => t.name === 'furim_feature_flags')!;
+    expect(flags.pk).toBe('line_user_id,feature_key');
+    expect(flags.pkColumns).toEqual(['line_user_id', 'feature_key']);
+    expect(flags.insertable).toBe(true);
+    const logs = body.data.find((t) => t.name === 'furim_execution_logs')!;
+    expect(logs.insertable).toBe(false);
+    expect(logs.deletable).toBe(true);
+    expect(body.data.find((t) => t.name === 'furim_master')!.pkColumns).toEqual(['kind', 'key']);
+  });
+
+  it('一覧の各行に _id が付き、複合主キーは値を | で連結した id になる', async () => {
+    const { db, statements } = makeDb({ firstRows: [{ n: 1 }], allRows: [[{ line_user_id: 'U1', feature_key: 'mChangePrice', value: '1' }]] });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_feature_flags?limit=10');
+    const body = (await res.json()) as { data: Array<Record<string, unknown>> };
+    expect(body.data[0]._id).toBe('U1|mChangePrice');
+    expect(statements.find((st) => st.sql.startsWith('SELECT * FROM furim_feature_flags'))?.sql).toContain('ORDER BY updated_at DESC, line_user_id, feature_key');
+  });
+
+  it('複合主キーの 1 行取得・PATCH は AND 条件で引く', async () => {
+    const before = { line_user_id: 'U1', feature_key: 'mChangePrice', value: '0', updated_at: 'x' };
+    const { db, statements, batches } = makeDb({ firstRows: [before, { ...before, value: '1' }] });
+    const res = await req(db, 'PATCH', '/api/furim/admin/furim_feature_flags/U1%7CmChangePrice', { changes: { value: '1' } });
+    expect(res.status).toBe(200);
+    expect(statements[0].sql).toBe('SELECT * FROM furim_feature_flags WHERE line_user_id = ? AND feature_key = ?');
+    expect(statements[0].args).toEqual(['U1', 'mChangePrice']);
+    expect(batches[0][0].sql).toBe('UPDATE furim_feature_flags SET value = ?, updated_at = ? WHERE line_user_id = ? AND feature_key = ?');
+    expect(batches[0][1].args[4]).toBe('U1|mChangePrice');
+  });
+
+  it('POST は列を型チェックして INSERT し、id 主キーは UUID・created_at は現在時刻で埋め、監査 (insert) を残す', async () => {
+    const { db, batches } = makeDb({ firstRows: [{ id: 'x', line_user_id: 'U1', delta: 5 }] });
+    const res = await req(db, 'POST', '/api/furim/admin/furim_ticket_ledger', {
+      values: { line_user_id: 'U1', delta: '5', reason: 'manual', idempotency_key: 'manual:U1:1' },
+    });
+    expect(res.status).toBe(201);
+    const [insert, audit] = batches[0];
+    expect(insert.sql).toBe('INSERT INTO furim_ticket_ledger (line_user_id, delta, reason, idempotency_key, id, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+    expect(insert.args[1]).toBe(5);
+    expect(String(insert.args[4])).toMatch(/^[0-9a-f-]{36}$/);
+    expect(insert.args[5]).toBe('2026-09-14T00:30:00.000+09:00');
+    expect(audit.args[5]).toBe('(insert)');
+    expect(JSON.parse(String(audit.args[7])).reason).toBe('manual');
+  });
+
+  it('POST: 主キー未指定（複合）・未知の列・追加不可テーブル・staff ロールは弾く', async () => {
+    let r = await req(makeDb().db, 'POST', '/api/furim/admin/furim_feature_flags', { values: { line_user_id: 'U1', value: '1' } });
+    expect(r.status).toBe(400);
+    r = await req(makeDb().db, 'POST', '/api/furim/admin/furim_coupons', { values: { name: 'x', coupon_id: 'c', nope: 1 } });
+    expect(r.status).toBe(400);
+    r = await req(makeDb().db, 'POST', '/api/furim/admin/furim_execution_logs', { values: { id: 'a' } });
+    expect(r.status).toBe(400);
+    r = await req(makeDb().db, 'POST', '/api/furim/admin/furim_coupons', { values: { name: 'x', coupon_id: 'c' } }, STAFF_KEY);
+    expect(r.status).toBe(403);
+  });
+
+  it('DELETE は行を消して監査 (delete) に消した行の JSON を残す。無ければ 404', async () => {
+    const { db, batches } = makeDb({ firstRows: [{ name: 'c1', coupon_id: 'X', is_active: 1 }] });
+    const res = await req(db, 'DELETE', '/api/furim/admin/furim_coupons/c1');
+    expect(res.status).toBe(200);
+    const [del, audit] = batches[0];
+    expect(del.sql).toBe('DELETE FROM furim_coupons WHERE name = ?');
+    expect(del.args).toEqual(['c1']);
+    expect(audit.args[5]).toBe('(delete)');
+    expect(JSON.parse(String(audit.args[6]))).toEqual({ name: 'c1', coupon_id: 'X', is_active: 1 });
+    const gone = await req(makeDb().db, 'DELETE', '/api/furim/admin/furim_coupons/none');
+    expect(gone.status).toBe(404);
+  });
+
+  it('export.csv は BOM 付き CSV を返し、先頭列は LINE 表示名', async () => {
+    const { db } = makeDb({ allRows: [[{ name: 'クーポン,A', coupon_id: 'c"1', is_active: 1 }]] });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_coupons/export.csv');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/csv');
+    expect(res.headers.get('content-disposition')).toContain('furim_coupons-');
+    // Body.text() は仕様で先頭の BOM を落とすのでバイト列で確認する
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const text = new TextDecoder().decode(bytes);
+    const lines = text.trim().split('\r\n');
+    expect(lines[0]).toBe('LINE表示名,name,coupon_id,is_active');
+    expect(lines[1]).toBe(',"クーポン,A","c""1",1');
   });
 });

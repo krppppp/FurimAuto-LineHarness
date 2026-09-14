@@ -17,7 +17,8 @@ export interface AdminKey {
 export interface AdminTable {
   name: string;
   label: string;
-  pk: string;
+  /** 主キー。複合主キー（furim_feature_flags / furim_master）は配列。行 id は rowIdOf() で 1 文字列にする（#246） */
+  pk: string | string[];
   orderBy: string;
   touchUpdatedAt: boolean;
   columns: AdminColumn[];
@@ -26,6 +27,54 @@ export interface AdminTable {
   joinFriends?: boolean;
   /** 一覧をページ分けせず全件返す（ブラウザ検索で表示名を探すため） */
   allRows?: boolean;
+  /** 追加（POST）を許すか。省略時は true。主キーが 'id' 1 列のテーブルは省略時に UUID を採番する */
+  insertable?: boolean;
+  /** 削除（DELETE）を許すか。省略時は true */
+  deletable?: boolean;
+}
+
+export function pkColumns(table: AdminTable): string[] {
+  return Array.isArray(table.pk) ? table.pk : [table.pk];
+}
+
+export function pkLabel(table: AdminTable): string {
+  return pkColumns(table).join(',');
+}
+
+const ROW_ID_SEP = '|';
+
+/** 行を 1 文字列の id にする（単一主キーはそのまま、複合主キーは各値を encodeURIComponent して | で連結） */
+export function rowIdOf(table: AdminTable, row: Record<string, unknown>): string {
+  const cols = pkColumns(table);
+  const text = (v: unknown) => (v === null || v === undefined ? '' : typeof v === 'string' ? v : String(v));
+  if (cols.length === 1) return text(row[cols[0]]);
+  return cols.map((c) => encodeURIComponent(text(row[c]))).join(ROW_ID_SEP);
+}
+
+/** rowIdOf の逆。列数と合わなければ null */
+export function parseRowId(table: AdminTable, id: string): Record<string, string> | null {
+  const cols = pkColumns(table);
+  if (cols.length === 1) return { [cols[0]]: id };
+  const parts = id.split(ROW_ID_SEP);
+  if (parts.length !== cols.length) return null;
+  const out: Record<string, string> = {};
+  cols.forEach((c, i) => {
+    try {
+      out[c] = decodeURIComponent(parts[i]);
+    } catch {
+      out[c] = parts[i];
+    }
+  });
+  return out;
+}
+
+export function isInsertable(table: AdminTable): boolean {
+  if (table.insertable !== undefined) return table.insertable;
+  return table.columns.some((c) => c.editable);
+}
+
+export function isDeletable(table: AdminTable): boolean {
+  return table.deletable !== false;
 }
 
 const t = (name: string, editable = true, searchable = false): AdminColumn => ({ name, type: 'text', editable, searchable });
@@ -135,7 +184,8 @@ export const ADMIN_TABLES: AdminTable[] = [
       t('mercari_url', true, true),
       t('canceled_at'),
       ro('display_name', true),
-      ro('side_job_judgment', true),
+      // 副業継続判定（旧 GAS setCancelJudgment のG列。段階4 で管理画面から直接編集・Capsec #246）
+      t('side_job_judgment', true, true),
     ],
     keys: [k('line_user_id', 'line_user_id')],
   },
@@ -364,6 +414,40 @@ export const ADMIN_TABLES: AdminTable[] = [
       ro('imported_at'),
     ],
     keys: [k('introduced_line_user_id', 'line_user_id'), k('ambassador_line_user_id', 'line_user_id')],
+  },
+  // 段階4 本体（Capsec #246）: 複合主キーのテーブル
+  {
+    name: 'furim_feature_flags',
+    label: '機能フラグ',
+    pk: ['line_user_id', 'feature_key'],
+    orderBy: 'updated_at DESC',
+    touchUpdatedAt: true,
+    columns: [
+      ro('line_user_id', true),
+      ro('feature_key', true),
+      t('value', true, true),
+      t('source'),
+      ro('updated_at'),
+    ],
+    keys: [k('line_user_id', 'line_user_id')],
+  },
+  {
+    name: 'furim_master',
+    label: 'マスタ（機能/パッケージ/プラン/チケット単価）',
+    pk: ['kind', 'key'],
+    orderBy: 'kind ASC',
+    touchUpdatedAt: false,
+    columns: [
+      ro('kind', true),
+      ro('key', true),
+      t('display_name', true, true),
+      t('stripe_price_id', true, true),
+      i('monthly_price'),
+      i('active'),
+      t('payload'),
+      ro('fetched_at'),
+    ],
+    keys: [],
   },
 ];
 

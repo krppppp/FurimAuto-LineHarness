@@ -1,10 +1,10 @@
 import type { LineClient } from '@line-crm/line-sdk';
-import { gasGet, gasPost } from './gas-client.js';
 import { buildKeycodeResetMessages, fetchCurrentKeyCode } from './gas-retry-queue.js';
 import { copyTicketFlexMessage } from './messages.js';
-import { absorbGasKeyCode, upsertFurimCustomer, resolveStripeCustomerId, extendSubscriptionEnd, getFurimCustomer } from './customer-store.js';
+import { upsertFurimCustomer, resolveStripeCustomerId, extendSubscriptionEnd, getFurimCustomer } from './customer-store.js';
 import { mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
 import { invalidateExtCache, type ExtCache } from './ext-auth.js';
+import { applyTrialCampaign, buildLegacyCheckoutUrl } from './legacy-keywords.js';
 import { isPaidPlan } from './ticket-checkout.js';
 import {
   INTRODUCED_COUPON_NAME,
@@ -65,6 +65,9 @@ export type KeywordActionsEnv = {
   STRIPE_SECRET_KEY?: string;
   DB?: D1Database;
   FURIM_EXT_CACHE?: ExtCache;
+  // 登録URL発行（旧プランの決済 LIFF）用。WORKER_NAME で dev/prod を判定
+  LIFF_URL?: string;
+  WORKER_NAME?: string;
 };
 
 export async function handleKeywordAction(
@@ -110,13 +113,28 @@ export async function handleKeywordAction(
   const text = rawText.replace('【キーワード】', '');
 
   if (text.includes('登録URL発行')) {
-    const data = await gasGet(env.GAS_DEPLOY_ID, { method: 'getLIFFCheckoutUrl', message: text.trim(), lineUserId }) as Record<string, string>;
+    // 段階4（Capsec #246）: 旧 GAS getLIFFCheckoutUrl の移植。プラン一覧は D1 furim_master（kind='plan'）
+    const planName = text.trim().split('\n').map((s) => s.trim()).filter(Boolean)[0] ?? '';
+    const checkoutURL = db && env.LIFF_URL
+      ? await buildLegacyCheckoutUrl(db, {
+          liffUrl: env.LIFF_URL,
+          isDev: env.WORKER_NAME === 'line-harness',
+          lineUserId,
+          planName,
+          stripeCustomerId: await resolveStripeCustomerId(db, lineUserId),
+        })
+      : null;
+    if (!checkoutURL) {
+      console.warn('[furim] 登録URL発行: プランが見つからないか LIFF_URL 未設定', planName);
+      await lineClient.replyMessage(replyToken, [{ type: 'text', text: '該当するプランが見つかりませんでした。リッチメニューの「プラン診断」からお申し込みください🙇' } as never]);
+      return true;
+    }
     await lineClient.replyMessage(replyToken, [{
       type: 'imagemap',
       baseUrl: 'https://storage.googleapis.com/furimauto_line/images/checkout_image',
       altText: '決済ページURL含む画像',
       baseSize: { width: 1040, height: 1040 },
-      actions: [{ type: 'uri', linkUri: data.checkoutURL, area: { x: 0, y: 0, width: 1040, height: 1040 } }],
+      actions: [{ type: 'uri', linkUri: checkoutURL, area: { x: 0, y: 0, width: 1040, height: 1040 } }],
     } as never]);
     return true;
   }
@@ -124,10 +142,9 @@ export async function handleKeywordAction(
   if (text.includes('無料お試し1週間')) {
     const match = text.match(/無料お試し1週間(\d{8})/);
     const expiryDate = match ? match[1] : null;
-    const data = await gasPost(env.GAS_DEPLOY_ID, { method: 'setKeyCodeExpiry', lineUserId, expiryDate }) as Record<string, unknown>;
-    // 発行されたキーコードを D1 furim_customers に取り込む（Capsec #243）
-    await absorbGasKeyCode(db, lineUserId, data);
-    if (data?.success) {
+    // 段階4（Capsec #246）: 旧 GAS setKeyCodeExpiry の移植。D1 に先に書き、シートへは setCustomerFields で鏡写し
+    const data = db ? await applyTrialCampaign(db, env.FURIM_EXT_CACHE, lineUserId, expiryDate) : ({ success: false, message: 'D1 なし' } as const);
+    if (data.success) {
       await lineClient.replyMessage(replyToken, [
         { type: 'text', text: `🎉【キャンペーン参加完了！】🎉\n\nFurimAutoの全機能を2週間無料でお試しいただけます！\n\nキーコードの準備ができましたので、\nリッチメニューの「キーコード発行」をタップしてください👇\n\n使い方は簡単3ステップ！\n①キーコードを発行\n②PCブラウザにFurimAutoを導入\n③キーコードを入力する\nだけ！✋\n\n初回の導入方法は下の1分動画を参考に最短3分で導入してみてください♪` } as never,
         { type: 'video', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/install.mp4', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png', trackingId: 'setup' } as never,
@@ -137,6 +154,7 @@ export async function handleKeywordAction(
     } else {
       await lineClient.replyMessage(replyToken, [{ type: 'text', text: `申し訳ございません。\nこのキャンペーンを既にご利用いただいているか、\nすでに終了いたしました。` } as never]);
     }
+    if (db && data.success) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, data.mirror, data.flags ?? undefined);
     return true;
   }
 
