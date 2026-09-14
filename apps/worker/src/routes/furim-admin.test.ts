@@ -188,7 +188,7 @@ describe('GET /api/furim/admin/:table', () => {
     expect(body.meta.table.joinFriends).toBe(true);
     expect(body.meta.table.allRows).toBe(true);
     const count = statements[0];
-    expect(count.sql).toBe('SELECT COUNT(*) AS n FROM furim_customers t LEFT JOIN friends f ON f.line_user_id = t.line_user_id WHERE t.line_user_id LIKE ? OR t.stripe_customer_id LIKE ? OR t.key_code LIKE ? OR t.subscription_id LIKE ? OR t.plan_label LIKE ? OR t.mercari_url LIKE ? OR t.customer_email LIKE ?');
+    expect(count.sql).toBe('SELECT COUNT(*) AS n FROM furim_customers t LEFT JOIN friends f ON f.line_user_id = t.line_user_id WHERE t.line_user_id LIKE ? OR t.stripe_customer_id LIKE ? OR t.mercari_url LIKE ? OR t.shops_url LIKE ? OR t.rakuma_url LIKE ? OR t.yahoo_flea_url LIKE ? OR t.plan_label LIKE ? OR t.subscription_id LIKE ? OR t.key_code LIKE ?');
     const select = statements[1];
     expect(select.sql).toContain('SELECT t.*, f.created_at AS _friend_created_at FROM furim_customers t LEFT JOIN friends f ON f.line_user_id = t.line_user_id WHERE');
     expect(select.sql).toContain('ORDER BY f.created_at DESC, t.line_user_id LIMIT ? OFFSET ?');
@@ -752,7 +752,7 @@ describe('#253 decision #378: アンバサダー・紹介履歴をスプシの�
       'ref_code', 'source', 'reward_coupon_id', 'introduced_coupon_id', 'trial_extended_days',
     ]);
     expect(ref.displayNameLabel).toBe('被紹介者LINE表示名');
-    expect(body.data.find((t) => t.name === 'furim_customers')!.virtualColumns).toEqual([]);
+    expect(body.data.find((t) => t.name === 'furim_customers')!.virtualColumns.map((v) => v.name)).toEqual(['_last_paid_amount', '_payment_count', '_payment_total']);
   });
 
   it('アンバサダーの一覧に紹介数・クーポン付与数・適用済み数・キャッシュバック件数/合計を GROUP BY 2 回で付ける', async () => {
@@ -927,6 +927,7 @@ describe('#261 顧客に機能フラグを横持ちで出す', () => {
       allRows: [
         [{ ...CUSTOMER, _friend_created_at: '2023-05-25T19:53:19.000+09:00' }],
         [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
+        [],
         MASTER,
         [grouped('U1', { mChangePrice: '1', mBackup: '0', rChangePrice: '1', AutoMultiChannel: 'メルカリ' })],
       ],
@@ -1055,5 +1056,182 @@ describe('#261 顧客に機能フラグを横持ちで出す', () => {
     const staff = makeDb({ firstRows: [CUSTOMER, { value: '0', locked: 0 }], allRows: [MASTER] });
     expect((await req(staff.db, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags/lock', { feature_key: 'mBackup', locked: 1 }, STAFF_KEY)).status).toBe(403);
     expect(staff.statements).toHaveLength(0);
+  });
+});
+
+describe('#262 顧客マスターの列をシートの並びに合わせる・不要列を外す・サブスク 4 列', () => {
+  const SHEET_ORDER = [
+    '_friend_created_at',
+    'line_user_id',
+    'stripe_customer_id',
+    'mercari_url',
+    'shops_url',
+    'rakuma_url',
+    'yahoo_flea_url',
+    'plan_label',
+    'subscription_id',
+    'subscription_start_at',
+    'subscription_end_at',
+    'subscription_price',
+    '_last_paid_amount',
+    '_payment_count',
+    '_payment_total',
+    'youtube_coupon',
+    'extend_keyword',
+    'survey_answer',
+    'key_code_issued',
+    'key_code',
+    'device_code',
+    'free30_ticket',
+    'copy_tickets',
+    'inventory_sheet_url',
+    'canceled_at',
+    'sheet_synced_at',
+    'created_at',
+    'updated_at',
+  ];
+  const HIDDEN = [
+    'customer_email',
+    'last_invoice_id',
+    'subscription_status',
+    'subscription_source',
+    'multi_channel_sites',
+    'features',
+    'packages',
+    'plan_label_legacy',
+    'device_activated',
+  ];
+  const FULL = {
+    ...CUSTOMER,
+    customer_email: 'a@example.com',
+    last_invoice_id: 'in_9',
+    subscription_status: 'active',
+    subscription_source: 'plan-builder',
+    multi_channel_sites: 'メルカリ/ラクマ',
+    features: 'mChangePrice',
+    packages: 'basic',
+    plan_label_legacy: '旧',
+    shops_url: 'https://mercari-shops.com/shops/s1',
+    rakuma_url: 'https://fril.jp/shop/r1',
+    yahoo_flea_url: 'https://paypayfleamarket.yahoo.co.jp/user/y1',
+    subscription_price: 8980,
+  };
+
+  it('一覧・ドロワーの列はシートの並び（友だち登録日時→LINE_ID→…→在庫管理シート→シートに無い D1 の列）で、外した列は columns にも出ない', async () => {
+    const { db } = makeDb();
+    const res = await req(db, 'GET', '/api/furim/admin/tables');
+    const body = (await res.json()) as {
+      data: Array<{ name: string; listColumns: string[]; columns: Array<{ name: string; label: string; searchable: boolean }>; virtualColumns: Array<{ name: string; label: string }> }>;
+    };
+    const t = body.data.find((x) => x.name === 'furim_customers')!;
+    expect(t.listColumns).toEqual(SHEET_ORDER);
+    for (const name of HIDDEN) {
+      expect(t.columns.map((c) => c.name), name).not.toContain(name);
+      expect(t.listColumns, name).not.toContain(name);
+    }
+    const label = (n: string) => t.columns.find((c) => c.name === n)?.label ?? t.virtualColumns.find((v) => v.name === n)?.label;
+    expect(['shops_url', 'rakuma_url', 'yahoo_flea_url', 'subscription_price', '_last_paid_amount', '_payment_count', '_payment_total'].map(label)).toEqual([
+      'ShopsURL',
+      'ラクマURL',
+      'ヤフフリURL',
+      'サブスク価格',
+      '支払い金額',
+      '通算支払い回数',
+      '通算支払い総額',
+    ]);
+    expect(t.columns.find((c) => c.name === 'customer_email')).toBeUndefined();
+  });
+
+  it('全件の一覧はサブスク 4 列の集計を furim_payments の GROUP BY 1 回で付け（顧客数に比例しない）、外した列は応答から消す', async () => {
+    const customers = Array.from({ length: 250 }, (_, i) => ({ ...FULL, line_user_id: `U${i}` }));
+    const { db, statements } = makeDb({
+      firstRows: [{ n: 250 }],
+      allRows: [
+        customers,
+        [],
+        [],
+        [],
+        [
+          { k: 'U0', n: 3, total: 26934, last_paid: 8228, last_paid_at: '2026-09-14T15:14:04.793+09:00' },
+          { k: 'U1', n: 1, total: 5456, last_paid: 5456, last_paid_at: '2026-09-14T13:40:56.572+09:00' },
+        ],
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_customers');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<Record<string, unknown>> };
+    const paymentStmts = statements.filter((s) => s.sql.includes('FROM furim_payments'));
+    expect(paymentStmts).toHaveLength(1);
+    expect(paymentStmts[0].sql).toBe(
+      'SELECT line_user_id AS k, COUNT(*) AS n, SUM(actual_paid_amount) AS total, actual_paid_amount AS last_paid, MAX(paid_at) AS last_paid_at FROM furim_payments WHERE line_user_id IS NOT NULL GROUP BY line_user_id',
+    );
+    expect(paymentStmts[0].args).toEqual([]);
+    expect(body.data[0]).toMatchObject({ _last_paid_amount: 8228, _payment_count: 3, _payment_total: 26934, subscription_price: 8980, shops_url: 'https://mercari-shops.com/shops/s1' });
+    expect(body.data[1]).toMatchObject({ _last_paid_amount: 5456, _payment_count: 1, _payment_total: 5456 });
+    expect(body.data[2]).toMatchObject({ _last_paid_amount: null, _payment_count: 0, _payment_total: 0 });
+    for (const name of HIDDEN) expect(Object.keys(body.data[0]), name).not.toContain(name);
+  });
+
+  it('1 行取得は本人分だけ IN で集計する', async () => {
+    const { db, statements } = makeDb({
+      firstRows: [{ ...FULL }, { created_at: '2023-05-25T19:53:19.000+09:00' }],
+      allRows: [[], [{ k: 'U1', n: 2, total: 19756, last_paid: 9878, last_paid_at: '2026-09-13T23:10:26.765+09:00' }]],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_customers/U1');
+    const body = (await res.json()) as { data: Record<string, unknown> };
+    const paymentStmts = statements.filter((s) => s.sql.includes('FROM furim_payments'));
+    expect(paymentStmts).toHaveLength(1);
+    expect(paymentStmts[0].sql).toContain('WHERE line_user_id IN (?) GROUP BY line_user_id');
+    expect(paymentStmts[0].args).toEqual(['U1']);
+    expect(body.data).toMatchObject({ _last_paid_amount: 9878, _payment_count: 2, _payment_total: 19756 });
+    expect(body.data.customer_email).toBeUndefined();
+  });
+
+  it('CSV も一覧と同じ並びで、外した列は出ず、サブスク 4 列が出る', async () => {
+    const { db } = makeDb({
+      allRows: [
+        [{ ...FULL, _friend_created_at: '2023-05-25T19:53:19.000+09:00' }],
+        [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
+        [{ k: 'U1', n: 2, total: 19756, last_paid: 9878, last_paid_at: '2026-09-13T23:10:26.765+09:00' }],
+        [],
+        [],
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_customers/export.csv');
+    const text = new TextDecoder().decode(new Uint8Array(await res.arrayBuffer()));
+    const [head, first] = text.replace(/^﻿/, '').trim().split('\r\n').map((l) => l.split(','));
+    expect(head.slice(0, 16)).toEqual([
+      'LINE表示名',
+      '友だち登録日時',
+      'LINEユーザーID',
+      'Stripe顧客ID',
+      'メルカリURL',
+      'ShopsURL',
+      'ラクマURL',
+      'ヤフフリURL',
+      'プラン名',
+      'サブスクID',
+      'サブスク開始日時',
+      'サブスク終了日時',
+      'サブスク価格',
+      '支払い金額',
+      '通算支払い回数',
+      '通算支払い総額',
+    ]);
+    for (const l of ['メールアドレス', '最終請求書ID', 'サブスク状態', '契約経路', '多チャネル出品先', '機能', 'パッケージ', '旧プラン名', '端末判定済み']) {
+      expect(head, l).not.toContain(l);
+    }
+    expect(first.slice(12, 16)).toEqual(['8980', '9878', '2', '19756']);
+    expect(first).not.toContain('a@example.com');
+  });
+
+  it('外した列は PATCH / POST できない（D1 の列は残るが管理画面からは触らない）', async () => {
+    const { db, statements } = makeDb({ firstRows: [{ ...FULL }] });
+    const res = await req(db, 'PATCH', '/api/furim/admin/furim_customers/U1', { changes: { customer_email: 'b@example.com' } });
+    expect(res.status).toBe(400);
+    expect(statements.some((s) => s.sql.startsWith('UPDATE'))).toBe(false);
+    const post = makeDb();
+    const created = await req(post.db, 'POST', '/api/furim/admin/furim_customers', { values: { line_user_id: 'U9', subscription_status: 'active' } });
+    expect(created.status).toBe(400);
   });
 });

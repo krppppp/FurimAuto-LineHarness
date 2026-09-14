@@ -15,6 +15,7 @@ import {
   listColumnNames,
   toDisplayDateTime,
   virtualColumnOf,
+  visibleColumns,
   isDeletable,
   isInsertable,
   parseRowId,
@@ -153,8 +154,35 @@ export async function attachDisplayNames(db: D1Database, groups: Array<{ table: 
 }
 
 type AggregateRow = { k: string; n: number; rewarded: number | null; applied: number | null; total: number | null };
+type PaymentAggregateRow = { k: string; n: number; total: number | null; last_paid: number | null };
+
+export async function attachPaymentTotals(db: D1Database, rows: Row[]): Promise<void> {
+  if (rows.length === 0) return;
+  const ids = [...new Set(rows.map((r) => keyText(r.line_user_id)).filter((v): v is string => v !== null))];
+  const select = 'SELECT line_user_id AS k, COUNT(*) AS n, SUM(actual_paid_amount) AS total, actual_paid_amount AS last_paid, MAX(paid_at) AS last_paid_at FROM furim_payments';
+  const groups =
+    ids.length === 0
+      ? []
+      : ids.length > IN_CHUNK
+        ? ((await db.prepare(`${select} WHERE line_user_id IS NOT NULL GROUP BY line_user_id`).bind().all<PaymentAggregateRow>()).results ?? [])
+        : await selectIn<PaymentAggregateRow>(db, (ph) => `${select} WHERE line_user_id IN (${ph}) GROUP BY line_user_id`, ids);
+  const byUser = new Map(groups.map((g) => [g.k, g]));
+  for (const row of rows) {
+    const agg = byUser.get(keyText(row.line_user_id) ?? '');
+    row._last_paid_amount = agg?.last_paid ?? null;
+    row._payment_count = Number(agg?.n ?? 0);
+    row._payment_total = Number(agg?.total ?? 0);
+  }
+}
+
+export function stripHiddenColumns(table: AdminTable, rows: Row[]): void {
+  if (!table.hidden?.length) return;
+  for (const row of rows) for (const name of table.hidden) delete row[name];
+}
 
 export async function attachVirtualColumns(db: D1Database, groups: Array<{ table: AdminTable; rows: Row[] }>): Promise<void> {
+  for (const g of groups) stripHiddenColumns(g.table, g.rows);
+  await attachPaymentTotals(db, groups.filter((g) => g.table.name === 'furim_customers').flatMap((g) => g.rows));
   const affiliates = groups.filter((g) => g.table.name === 'affiliates').flatMap((g) => g.rows);
   const referrals = groups.filter((g) => g.table.name === 'furim_referrals').flatMap((g) => g.rows);
   if (affiliates.length === 0 && referrals.length === 0) return;
@@ -339,7 +367,7 @@ function serializeTable(table: AdminTable) {
     pkColumns: pkColumns(table),
     insertable: isInsertable(table),
     deletable: isDeletable(table),
-    columns: table.columns.map((c) => ({
+    columns: visibleColumns(table).map((c) => ({
       name: c.name,
       type: c.type,
       editable: c.editable,
@@ -412,7 +440,7 @@ export async function fetchRow(db: D1Database, table: AdminTable, id: string): P
 function buildListQuery(table: AdminTable, q: string): { from: string; select: string; where: string; binds: unknown[]; orderBy: string } {
   const join = Boolean(table.joinFriends);
   const col = (name: string) => (join ? `t.${name}` : name);
-  const searchable = table.columns.filter((c) => c.searchable).map((c) => c.name);
+  const searchable = visibleColumns(table).filter((c) => c.searchable).map((c) => c.name);
   let where = '';
   const binds: unknown[] = [];
   if (q && searchable.length > 0) {
@@ -629,7 +657,7 @@ furimAdmin.patch('/api/furim/admin/:table/:id', requireRole('owner', 'admin'), a
 
   const updates: { col: AdminColumn; value: string | number | null }[] = [];
   for (const [name, raw] of Object.entries(changes as Record<string, unknown>)) {
-    const col = table.columns.find((x) => x.name === name);
+    const col = visibleColumns(table).find((x) => x.name === name);
     if (!col && virtualColumnOf(table, name)) return c.json({ success: false, error: `${name} は集計・表示用の列で編集できません` }, 400);
     if (!col) return c.json({ success: false, error: `${name} は存在しない列です` }, 400);
     if (!col.editable) return c.json({ success: false, error: `${name} は編集できません` }, 400);
@@ -640,6 +668,7 @@ furimAdmin.patch('/api/furim/admin/:table/:id', requireRole('owner', 'admin'), a
   }
 
   if (updates.length === 0) {
+    stripHiddenColumns(table, [before]);
     return c.json({ success: true, data: before, meta: { changed: [] } });
   }
 
@@ -682,6 +711,7 @@ furimAdmin.patch('/api/furim/admin/:table/:id', requireRole('owner', 'admin'), a
   }
 
   const after = await fetchRow(c.env.DB, table, id);
+  if (after) stripHiddenColumns(table, [after]);
   console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${table.name}/${id} の ${updates.map((u) => u.col.name).join(',')} を更新`);
   return c.json({ success: true, data: after, meta: { changed: updates.map((u) => u.col.name) } });
 });
@@ -838,7 +868,7 @@ furimAdmin.post('/api/furim/admin/:table', requireRole('owner', 'admin'), async 
   const now = jstNow();
   const record: Record<string, string | number | null> = {};
   for (const [name, raw] of Object.entries(values as Record<string, unknown>)) {
-    const col = table.columns.find((x) => x.name === name);
+    const col = visibleColumns(table).find((x) => x.name === name);
     if (!col && virtualColumnOf(table, name)) return c.json({ success: false, error: `${name} は集計・表示用の列で編集できません` }, 400);
     if (!col) return c.json({ success: false, error: `${name} は存在しない列です` }, 400);
     const coerced = coerceValue(col, raw);

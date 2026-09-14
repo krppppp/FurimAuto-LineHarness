@@ -316,6 +316,30 @@ describe('reconcileFurimCustomers（段階3）', () => {
     expect(pull?.args).toContain('0.sheet');
   });
 
+  it('#262 旧拡張の顧客は ShopsURL・ラクマURL・ヤフフリURL もシートから取り込み、同じ値や空は書かない', async () => {
+    gasGet.mockResolvedValueOnce({
+      success: true,
+      rows: [sheetRow({ 'ShopsURL': 'https://mercari-shops.com/shops/s1', 'ラクマURL': 'https://fril.jp/shop/r1', 'ヤフフリURL': '' })],
+    });
+    const { db, writes } = makeDb({
+      customers: [customer({ ext_last_seen_at: null, shops_url: null, rakuma_url: 'https://fril.jp/shop/r1', yahoo_flea_url: null })],
+    });
+    const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
+    expect(r.pulled).toBe(1);
+    const pull = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql));
+    expect(pull?.sql).toMatch(/shops_url/);
+    expect(pull?.sql).not.toMatch(/rakuma_url|yahoo_flea_url/);
+    expect(pull?.args).toContain('https://mercari-shops.com/shops/s1');
+  });
+
+  it('#262 Worker 経由で認証済みの顧客は他 PF の URL もシートから取り込まない', async () => {
+    gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ 'ShopsURL': 'https://mercari-shops.com/shops/s1' })] });
+    const { db, writes } = makeDb({ customers: [customer({ ext_last_seen_at: '2026-09-14T03:00:00.000+09:00', shops_url: null })] });
+    const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
+    expect(r.pulled).toBe(0);
+    expect(writes.some((w) => /INSERT INTO furim_customers/.test(w.sql))).toBe(false);
+  });
+
   it('機能フラグは D1 と違う分だけ upsert する', async () => {
     gasGet.mockResolvedValueOnce({
       success: true,

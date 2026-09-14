@@ -168,7 +168,7 @@ export async function pullFeatureFlagsFromSheet(db: D1Database, gasDeployId: str
 // 旧拡張（GAS 経路）の間だけシートが正の列: 差分検知 cron が D1 に取り込む。
 // Worker 経由で 1 度でも認証した顧客（ext_last_seen_at が非 NULL）は D1 だけが正（段階3・Capsec #245）。
 // copy_tickets は段階2.5（#254）から D1 が正（旧拡張の消費は GAS updateCopyCredit → /api/furim/ticket-consumed で届く）
-const SHEET_OWNED_FIELDS = ['device_activated', 'device_code', 'mercari_url'] as const;
+const SHEET_OWNED_FIELDS = ['device_activated', 'device_code', 'mercari_url', 'shops_url', 'rakuma_url', 'yahoo_flea_url'] as const;
 
 // LINE ユーザーID の形式（U + 32 桁 hex）。getData はヘッダーより上のテンプレ行・型注記行
 // （LINE_ID="String"）も返すので、形式で弾く

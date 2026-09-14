@@ -47,6 +47,7 @@ export interface AdminTable {
   labels?: Record<string, string>;
   virtualColumns?: AdminVirtualColumn[];
   listOrder?: string[];
+  hidden?: string[];
   /** CSV に furim_feature_flags を 1 機能 1 列（_flag_<feature_key>）で横持ちにして付ける。一覧では行ドロワーの「機能」で出す（Capsec #261・顧客のみ） */
   featureFlags?: boolean;
 }
@@ -144,6 +145,8 @@ export const COLUMN_LABELS: Record<string, string> = {
   subscription_status: 'サブスク状態',
   copy_tickets: 'コピー出品チケット残数',
   mercari_url: 'メルカリURL',
+  device_code: '端末判定文字列',
+  inventory_sheet_url: '在庫管理シート',
   customer_email: 'メールアドレス',
   last_invoice_id: '最終請求書ID',
   canceled_at: '解約日時',
@@ -243,13 +246,21 @@ export function virtualColumnOf(table: AdminTable, name: string): AdminVirtualCo
   return table.virtualColumns?.find((v) => v.name === name);
 }
 
+export function isHiddenColumn(table: AdminTable, name: string): boolean {
+  return (table.hidden ?? []).includes(name);
+}
+
+export function visibleColumns(table: AdminTable): AdminColumn[] {
+  return table.columns.filter((c) => !isHiddenColumn(table, c.name));
+}
+
 export function isInternalColumn(table: AdminTable, name: string): boolean {
   return (table.internal ?? []).includes(name);
 }
 
 /** 一覧の列順: 基準日時 → 残り（内部 ID を除く）。LINE 表示名はこの前に付ける */
 export function listColumnNames(table: AdminTable): string[] {
-  const names = [...table.columns.map((c) => c.name), ...(table.virtualColumns ?? []).map((v) => v.name)].filter(
+  const names = [...visibleColumns(table).map((c) => c.name), ...(table.virtualColumns ?? []).map((v) => v.name)].filter(
     (n) => n !== table.timeColumn && !isInternalColumn(table, n),
   );
   const order = (table.listOrder ?? []).filter((n) => names.includes(n));
@@ -259,7 +270,7 @@ export function listColumnNames(table: AdminTable): string[] {
 
 /** CSV の列順: LINE 表示名 → 一覧と同じ列 → 内部 ID */
 export function csvColumnNames(table: AdminTable): string[] {
-  const internal = table.columns.map((c) => c.name).filter((n) => isInternalColumn(table, n));
+  const internal = visibleColumns(table).map((c) => c.name).filter((n) => isInternalColumn(table, n));
   return [DISPLAY_NAME_COLUMN, ...listColumnNames(table), ...internal];
 }
 
@@ -396,30 +407,77 @@ export const ADMIN_TABLES: AdminTable[] = [
     joinFriends: true,
     allRows: true,
     featureFlags: true,
+    labels: { subscription_price: 'サブスク価格' },
+    hidden: [
+      'customer_email',
+      'last_invoice_id',
+      'subscription_status',
+      'subscription_source',
+      'multi_channel_sites',
+      'features',
+      'packages',
+      'plan_label_legacy',
+      'device_activated',
+    ],
+    virtualColumns: [
+      { name: '_last_paid_amount', label: '支払い金額', type: 'integer' },
+      { name: '_payment_count', label: '通算支払い回数', type: 'integer' },
+      { name: '_payment_total', label: '通算支払い総額', type: 'integer' },
+    ],
+    listOrder: [
+      'line_user_id',
+      'stripe_customer_id',
+      'mercari_url',
+      'shops_url',
+      'rakuma_url',
+      'yahoo_flea_url',
+      'plan_label',
+      'subscription_id',
+      'subscription_start_at',
+      'subscription_end_at',
+      'subscription_price',
+      '_last_paid_amount',
+      '_payment_count',
+      '_payment_total',
+      'youtube_coupon',
+      'extend_keyword',
+      'survey_answer',
+      'key_code_issued',
+      'key_code',
+      'device_code',
+      'free30_ticket',
+      'copy_tickets',
+      'inventory_sheet_url',
+    ],
     columns: [
       ro('line_user_id', true),
       t('stripe_customer_id', true, true),
-      t('key_code', true, true),
-      i('key_code_issued'),
-      i('device_activated'),
-      t('survey_answer'),
-      i('free30_ticket'),
-      t('youtube_coupon'),
-      t('extend_keyword'),
+      t('customer_email', true, true),
+      t('mercari_url', true, true),
+      t('shops_url', true, true),
+      t('rakuma_url', true, true),
+      t('yahoo_flea_url', true, true),
+      t('plan_label', true, true),
       t('subscription_id', true, true),
       t('subscription_start_at'),
       t('subscription_end_at'),
       i('subscription_price'),
-      t('plan_label', true, true),
+      t('youtube_coupon'),
+      t('extend_keyword'),
+      t('survey_answer'),
+      i('key_code_issued'),
+      t('key_code', true, true),
+      ro('device_code'),
+      i('device_activated'),
+      i('free30_ticket'),
+      i('copy_tickets'),
+      ro('inventory_sheet_url'),
       t('plan_label_legacy'),
       t('packages'),
       t('features'),
       t('multi_channel_sites'),
       t('subscription_source'),
       t('subscription_status'),
-      i('copy_tickets'),
-      t('mercari_url', true, true),
-      t('customer_email', true, true),
       t('last_invoice_id'),
       t('canceled_at'),
       ro('sheet_synced_at'),
