@@ -6,6 +6,7 @@ import { SHEET_BACKFILL_SPECS, backfillSheet, countTableRows, getSheetSpec } fro
 import { moveConsumeRowsToAutoCopyLogs } from '../furim/ticket-ledger.js';
 import { FIX_TARGETS, fixDatetimes, isFixTarget, type SheetCache } from '../furim/fix-datetimes.js';
 import { fillPaymentsFromStripe, makeStripeInvoiceFetcher } from '../furim/fill-payments-from-stripe.js';
+import { MAX_CUSTOMER_IDS, backfillStripeInvoices, fixSharedCustomers, makeStripeApi, parseSince } from '../furim/backfill-stripe-invoices.js';
 
 const furimBackfill = new Hono<Env>();
 
@@ -128,6 +129,44 @@ furimBackfill.post('/api/furim/fill-payments-from-stripe', async (c) => {
     return c.json({ success: true, ...result });
   } catch (err) {
     console.error('[furim/fill-payments-from-stripe] error:', err);
+    return c.json({ success: false, error: String(err) }, 500);
+  }
+});
+
+furimBackfill.post('/api/furim/backfill-stripe-invoices', async (c) => {
+  const isDev = c.env.WORKER_NAME === 'line-harness';
+  type Body = { mode?: string; since?: string; customerIds?: unknown; cursor?: string; limit?: number; dryRun?: boolean; confirmProd?: boolean };
+  try {
+    const body = await c.req.json<Body>().catch(() => ({}) as Body);
+    const dryRun = body.dryRun !== false;
+    if (!dryRun && !isDev && body.confirmProd !== true) {
+      return c.json({ success: false, error: '本番workerでの実行には confirmProd: true が必要です' }, 403);
+    }
+    if (body.mode === 'fix-shared-customers') {
+      const result = await fixSharedCustomers(c.env.DB, { dryRun, staffId: c.get('staff').id });
+      return c.json({ success: true, ...result });
+    }
+    if (body.mode !== undefined && body.mode !== 'invoices') {
+      return c.json({ success: false, error: 'mode は invoices か fix-shared-customers です' }, 400);
+    }
+    const since = parseSince(body.since);
+    if (since === 'invalid') return c.json({ success: false, error: 'since が不正です' }, 400);
+    const customerIds = body.customerIds === undefined ? [] : body.customerIds;
+    if (!Array.isArray(customerIds) || customerIds.length > MAX_CUSTOMER_IDS || customerIds.some((v) => typeof v !== 'string' || !v.startsWith('cus_'))) {
+      return c.json({ success: false, error: `customerIds は cus_ で始まる文字列の配列（${MAX_CUSTOMER_IDS} 件まで）です` }, 400);
+    }
+    if (!c.env.STRIPE_SECRET_KEY) return c.json({ success: false, error: 'STRIPE_SECRET_KEY not configured' }, 500);
+    const result = await backfillStripeInvoices(c.env.DB, makeStripeApi(c.env.STRIPE_SECRET_KEY), {
+      dryRun,
+      staffId: c.get('staff').id,
+      since,
+      customerIds: customerIds as string[],
+      cursor: body.cursor,
+      limit: body.limit,
+    });
+    return c.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[furim/backfill-stripe-invoices] error:', err);
     return c.json({ success: false, error: String(err) }, 500);
   }
 });
