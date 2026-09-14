@@ -43,6 +43,7 @@ export interface AdminTable {
   timeColumn?: string;
   /** D1 が付与した内部 ID。一覧では出さず、行ドロワーでは末尾の「内部情報」に入れる */
   internal?: string[];
+  idColumns?: string[];
   /** このテーブルだけの日本語ラベル（COLUMN_LABELS より優先） */
   labels?: Record<string, string>;
   virtualColumns?: AdminVirtualColumn[];
@@ -251,23 +252,28 @@ export function visibleColumns(table: AdminTable): AdminColumn[] {
 }
 
 export function isInternalColumn(table: AdminTable, name: string): boolean {
-  return (table.internal ?? []).includes(name);
+  return (table.internal ?? []).includes(name) || (table.idColumns ?? []).includes(name);
 }
 
-/** 一覧の列順: 基準日時 → 残り（内部 ID を除く）。LINE 表示名はこの前に付ける */
-export function listColumnNames(table: AdminTable): string[] {
+function orderedColumnNames(table: AdminTable, excluded: (name: string) => boolean): string[] {
   const names = [...visibleColumns(table).map((c) => c.name), ...(table.virtualColumns ?? []).map((v) => v.name)].filter(
-    (n) => n !== table.timeColumn && !isInternalColumn(table, n),
+    (n) => n !== table.timeColumn && !excluded(n),
   );
   const order = (table.listOrder ?? []).filter((n) => names.includes(n));
   const rest = [...order, ...names.filter((n) => !order.includes(n))];
   return table.timeColumn ? [table.timeColumn, ...rest] : rest;
 }
 
+/** 一覧の列順: 基準日時 → 残り（内部 ID を除く）。LINE 表示名はこの前に付ける */
+export function listColumnNames(table: AdminTable): string[] {
+  return orderedColumnNames(table, (n) => isInternalColumn(table, n));
+}
+
 /** CSV の列順: LINE 表示名 → 一覧と同じ列 → 内部 ID */
 export function csvColumnNames(table: AdminTable): string[] {
-  const internal = visibleColumns(table).map((c) => c.name).filter((n) => isInternalColumn(table, n));
-  return [DISPLAY_NAME_COLUMN, ...listColumnNames(table), ...internal];
+  const isOldInternal = (n: string) => (table.internal ?? []).includes(n);
+  const internal = visibleColumns(table).map((c) => c.name).filter(isOldInternal);
+  return [DISPLAY_NAME_COLUMN, ...orderedColumnNames(table, isOldInternal), ...internal];
 }
 
 /**
@@ -481,6 +487,8 @@ export const ADMIN_TABLES: AdminTable[] = [
     orderBy: 'paid_at DESC',
     touchUpdatedAt: false,
     timeColumn: 'paid_at',
+    idColumns: ['invoice_id', 'stripe_event_id', 'line_user_id', 'stripe_customer_id', 'subscription_id'],
+    listOrder: ['plan_name', 'billing_reason', 'subscription_price', 'discount_amount', 'price_excl_tax', 'tax_amount', 'actual_paid_amount'],
     columns: [
       ro('invoice_id', true),
       ro('stripe_event_id'),
@@ -508,6 +516,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'created_at',
     internal: ['id'],
+    idColumns: ['line_user_id', 'idempotency_key', 'payment_intent_id', 'invoice_id'],
     labels: { delta: '付与枚数', reason: '付与の種類', created_at: '付与日時' },
     columns: [
       ro('id'),
@@ -531,6 +540,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'canceled_at',
     internal: ['id'],
+    idColumns: ['line_user_id', 'stripe_event_id', 'subscription_id'],
     labels: { display_name: 'LINE表示名（解約時点）' },
     columns: [
       ro('id'),
@@ -554,6 +564,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'created_at',
     internal: ['id', 'affiliate_id', 'ambassador_friend_id', 'introduced_friend_id'],
+    idColumns: ['_ambassador_line_user_id', '_introduced_line_user_id', 'reward_coupon_id', 'introduced_coupon_id'],
     labels: {
       _display_name: '被紹介者LINE表示名',
       created_at: '紹介日時',
@@ -592,6 +603,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'created_at',
     internal: ['id', 'friend_id', 'name', 'commission_rate', 'is_active'],
+    idColumns: ['_line_user_id'],
     labels: { name: 'アンバサダー名', code: 'アンバサダーコード', created_at: '登録日時' },
     virtualColumns: [
       { name: '_line_user_id', label: 'LINE_ID', type: 'text' },
@@ -619,6 +631,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'name',
     orderBy: 'name ASC',
     touchUpdatedAt: false,
+    idColumns: ['coupon_id'],
     labels: { name: 'クーポン名' },
     columns: [
       ro('name', true),
@@ -635,6 +648,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'created_at',
     internal: ['id'],
+    idColumns: ['line_user_id', 'key_code'],
     columns: [
       ro('id'),
       ro('line_user_id', true),
@@ -660,6 +674,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'created_at',
     internal: ['id'],
+    idColumns: ['line_user_id', 'key_code', 'discrimination_code'],
     columns: [
       ro('id'),
       ro('line_user_id', true),
@@ -680,6 +695,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     orderBy: 'updated_at DESC',
     touchUpdatedAt: false,
     timeColumn: 'created_at',
+    idColumns: ['install_id', 'key_code'],
     columns: [
       ro('install_id', true),
       ro('mercari_url', true),
@@ -701,6 +717,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'started_at',
     internal: ['id'],
+    idColumns: ['install_id', 'key_code', 'line_user_id', 'item_id'],
     columns: [
       ro('id'),
       ro('install_id', true),
@@ -726,6 +743,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'created_at',
     internal: ['id'],
+    idColumns: ['install_id', 'key_code', 'line_user_id'],
     labels: { target_url: '調査先URL' },
     columns: [
       ro('id'),
@@ -748,6 +766,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'processed_at',
     internal: ['id', 'idempotency_key'],
+    idColumns: ['line_user_id'],
     labels: { display_name: 'LINE表示名（記録時点）', target_url: 'コピー先URL', remaining_tickets: '残チケット数（消費後）', delta: '使った枚数', imported_at: '記録日時' },
     columns: [
       ro('id'),
@@ -771,6 +790,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'created_at',
     internal: ['id'],
+    idColumns: ['line_user_id'],
     labels: { display_name: 'LINE表示名（回答時点）' },
     columns: [
       ro('id'),
@@ -789,6 +809,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'created_at',
     internal: ['id'],
+    idColumns: ['line_user_id', 'stripe_customer_id', 'coupon_id'],
     columns: [
       ro('id'),
       ro('line_user_id', true),
@@ -808,6 +829,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'occurred_at',
     internal: ['id'],
+    idColumns: ['introduced_line_user_id', 'stripe_customer_id', 'ambassador_line_user_id'],
     columns: [
       ro('id'),
       ro('occurred_at'),
@@ -830,6 +852,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     orderBy: 'updated_at DESC',
     touchUpdatedAt: true,
     timeColumn: 'updated_at',
+    idColumns: ['line_user_id'],
     labels: { source: '設定元' },
     columns: [
       ro('line_user_id', true),
@@ -847,6 +870,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     orderBy: 'kind ASC',
     touchUpdatedAt: false,
     timeColumn: 'fetched_at',
+    idColumns: ['stripe_price_id'],
     columns: [
       ro('kind', true),
       ro('key', true),

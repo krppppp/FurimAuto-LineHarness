@@ -483,7 +483,24 @@ function RowEditor({
 
   const columnByName = new Map(table.columns.map((c) => [c.name, c]))
   const internalColumns = table.columns.filter((c) => c.internal)
+  const internalVirtualColumns = insert ? [] : (table.virtualColumns ?? []).filter((v) => v.internal && !v.featureKey)
+  const internalCount = internalColumns.length + internalVirtualColumns.length
   const listColumns = listColumnsOf(table).filter((lc) => !lc.featureKey)
+
+  const renderReadOnly = (lc: { name: string; label: string; datetime: DateTimeStorage | null }) => (
+    <div key={lc.name}>
+      <label className="block text-xs font-medium text-gray-700 mb-1" title={lc.name}>
+        <span>{lc.label}</span>
+        <span className="ml-2 text-gray-400">読み取り専用</span>
+      </label>
+      <input
+        type="text"
+        value={shown(row[lc.name], lc.datetime)}
+        readOnly
+        className="w-full px-3 py-2 text-sm border rounded-lg border-gray-200 bg-gray-50 text-gray-500"
+      />
+    </div>
+  )
 
   const renderField = (c: AdminColumn) => {
     const editableHere = canEdit(c)
@@ -596,20 +613,7 @@ function RowEditor({
                 const col = columnByName.get(lc.name)
                 if (col) return renderField(col)
                 if (insert) return null
-                return (
-                  <div key={lc.name}>
-                    <label className="block text-xs font-medium text-gray-700 mb-1" title={lc.name}>
-                      <span>{lc.label}</span>
-                      <span className="ml-2 text-gray-400">読み取り専用</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={shown(row[lc.name], lc.datetime)}
-                      readOnly
-                      className="w-full px-3 py-2 text-sm border rounded-lg border-gray-200 bg-gray-50 text-gray-500"
-                    />
-                  </div>
-                )
+                return renderReadOnly(lc)
               })}
             </div>
 
@@ -638,12 +642,15 @@ function RowEditor({
             </div>
             )}
 
-            {internalColumns.length > 0 && (
+            {internalCount > 0 && (
               <details open={insert} className="border-t border-gray-200 px-5 py-4">
                 <summary className="cursor-pointer text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                  内部情報（{internalColumns.length}）
+                  内部情報（{internalCount}）
                 </summary>
-                <div className="mt-3 space-y-3">{internalColumns.map(renderField)}</div>
+                <div className="mt-3 space-y-3">
+                  {internalColumns.map(renderField)}
+                  {internalVirtualColumns.map((v) => renderReadOnly({ name: v.name, label: v.label, datetime: null }))}
+                </div>
               </details>
             )}
           </>

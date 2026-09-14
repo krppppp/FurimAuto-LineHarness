@@ -566,22 +566,20 @@ describe('#253 decision #372: 列順・内部 ID・日本語ラベル・日時�
     // 基準日時が先頭、残りは schema 順
     const payments = by('furim_payments');
     expect(payments.listColumns[0]).toBe('paid_at');
-    expect(payments.listColumns.slice(1, 4)).toEqual(['invoice_id', 'stripe_event_id', 'line_user_id']);
+    expect(payments.listColumns.slice(1, 4)).toEqual(['plan_name', 'billing_reason', 'subscription_price']);
     expect(payments.listColumns.filter((n) => n === 'paid_at')).toHaveLength(1);
     expect(by('furim_customers').listColumns.slice(0, 3)).toEqual(['_friend_created_at', 'line_user_id', 'stripe_customer_id']);
 
     // 内部 ID は一覧から外れ、外部 ID は残る
     const referrals = by('furim_referrals');
-    expect(referrals.columns.filter((c) => c.internal).map((c) => c.name)).toEqual(['id', 'affiliate_id', 'ambassador_friend_id', 'introduced_friend_id']);
+    expect(referrals.columns.filter((c) => c.internal).map((c) => c.name)).toEqual(['id', 'affiliate_id', 'ambassador_friend_id', 'introduced_friend_id', 'reward_coupon_id', 'introduced_coupon_id']);
     expect(referrals.listColumns).not.toContain('introduced_friend_id');
     expect(referrals.listColumns[0]).toBe('created_at');
     expect(by('affiliates').listColumns).not.toContain('friend_id');
-    expect(by('furim_ticket_ledger').listColumns).toEqual(expect.arrayContaining(['line_user_id', 'payment_intent_id', 'invoice_id']));
     expect(by('furim_ticket_ledger').listColumns).not.toContain('id');
     expect(by('furim_customers').columns.some((c) => c.internal)).toBe(false);
-    expect(by('furim_feature_flags').columns.some((c) => c.internal)).toBe(false);
     for (const t of body.data) {
-      expect(t.listColumns.length + t.columns.filter((c) => c.internal).length, t.name).toBe(
+      expect(t.listColumns.length + t.columns.filter((c) => c.internal).length + t.virtualColumns.filter((v) => (v as { internal?: boolean }).internal).length, t.name).toBe(
         t.columns.length + t.virtualColumns.length + (t.timeColumn?.startsWith('_') ? 1 : 0),
       );
     }
@@ -740,7 +738,7 @@ describe('#253 decision #378: アンバサダー・紹介履歴をスプシの�
     const body = (await res.json()) as { data: Tbl[] };
     const aff = body.data.find((t) => t.name === 'affiliates')!;
     expect(aff.listColumns).toEqual([
-      'created_at', '_line_user_id', 'code', '_referral_count', '_reward_coupon_count', '_applied_coupon_count', '_cashback_count', '_cashback_total',
+      'created_at', 'code', '_referral_count', '_reward_coupon_count', '_applied_coupon_count', '_cashback_count', '_cashback_total',
     ]);
     expect(aff.columns.filter((c) => c.internal).map((c) => c.name)).toEqual(['id', 'name', 'commission_rate', 'is_active', 'friend_id']);
     expect(aff.virtualColumns.map((v) => v.label)).toEqual(['LINE_ID', '紹介数', 'クーポン付与数', '適用済み数', 'キャッシュバック件数', 'キャッシュバック合計']);
@@ -748,8 +746,8 @@ describe('#253 decision #378: アンバサダー・紹介履歴をスプシの�
 
     const ref = body.data.find((t) => t.name === 'furim_referrals')!;
     expect(ref.listColumns).toEqual([
-      'created_at', '_ambassador_display_name', '_ambassador_line_user_id', 'ambassador_plan_name', 'reward_coupon_name', 'reward_applied_at', '_introduced_line_user_id',
-      'ref_code', 'source', 'reward_coupon_id', 'introduced_coupon_id', 'trial_extended_days',
+      'created_at', '_ambassador_display_name', 'ambassador_plan_name', 'reward_coupon_name', 'reward_applied_at',
+      'ref_code', 'source', 'trial_extended_days',
     ]);
     expect(ref.displayNameLabel).toBe('被紹介者LINE表示名');
     expect(body.data.find((t) => t.name === 'furim_customers')!.virtualColumns.map((v) => v.name)).toEqual(['_last_paid_amount', '_payment_count', '_payment_total']);
@@ -846,6 +844,89 @@ describe('#253 decision #378: アンバサダー・紹介履歴をスプシの�
       'LINE表示名,登録日時,LINE_ID,アンバサダーコード,紹介数,クーポン付与数,適用済み数,キャッシュバック件数,キャッシュバック合計,内部ID,アンバサダー名,報酬率,有効,友だち内部ID',
     );
     expect(first).toBe('たろう,2026/09/13 22:54:22,U1,AAA,3,2,1,2,4000,a1,Ambassador AAA,0,1,f1');
+  });
+});
+
+describe('#263 顧客マスター以外の ID 類は一覧から外しドロワーの内部情報へ・CSV は全列', () => {
+  const ID_COLUMNS: Record<string, string[]> = {
+    furim_payments: ['invoice_id', 'stripe_event_id', 'line_user_id', 'stripe_customer_id', 'subscription_id'],
+    furim_ticket_ledger: ['id', 'line_user_id', 'idempotency_key', 'payment_intent_id', 'invoice_id'],
+    furim_cancellations: ['id', 'line_user_id', 'stripe_event_id', 'subscription_id'],
+    furim_referrals: ['id', 'affiliate_id', 'ambassador_friend_id', 'introduced_friend_id', 'reward_coupon_id', 'introduced_coupon_id', '_ambassador_line_user_id', '_introduced_line_user_id'],
+    affiliates: ['id', 'friend_id', 'name', 'commission_rate', 'is_active', '_line_user_id'],
+    furim_coupons: ['coupon_id'],
+    furim_execution_logs: ['id', 'line_user_id', 'key_code'],
+    furim_ext_errors: ['id', 'line_user_id', 'key_code', 'discrimination_code'],
+    furim_free_accounts: ['install_id', 'key_code'],
+    furim_manual_copy_logs: ['id', 'install_id', 'key_code', 'line_user_id', 'item_id'],
+    furim_shop_research_logs: ['id', 'install_id', 'key_code', 'line_user_id'],
+    furim_auto_copy_logs: ['id', 'line_user_id', 'idempotency_key'],
+    furim_survey_answers: ['id', 'line_user_id'],
+    furim_coupon_applications: ['id', 'line_user_id', 'stripe_customer_id', 'coupon_id'],
+    furim_referral_cashbacks: ['id', 'introduced_line_user_id', 'stripe_customer_id', 'ambassador_line_user_id'],
+    furim_feature_flags: ['line_user_id'],
+    furim_master: ['stripe_price_id'],
+  };
+
+  type Tbl = {
+    name: string;
+    listColumns: string[];
+    columns: Array<{ name: string; internal: boolean }>;
+    virtualColumns: Array<{ name: string; internal: boolean }>;
+  };
+
+  async function tables(): Promise<Tbl[]> {
+    const res = await req(makeDb().db, 'GET', '/api/furim/admin/tables');
+    return ((await res.json()) as { data: Tbl[] }).data;
+  }
+
+  it('顧客マスター以外は ID 類が一覧に無く、列・付加列の internal が立つ。顧客マスターは内部情報なし', async () => {
+    const data = await tables();
+    for (const t of data) {
+      if (t.name === 'furim_customers') {
+        expect(t.columns.some((c) => c.internal)).toBe(false);
+        expect(t.virtualColumns.some((v) => v.internal)).toBe(false);
+        expect(t.listColumns).toEqual(expect.arrayContaining(['line_user_id', 'stripe_customer_id', 'subscription_id', 'key_code']));
+        continue;
+      }
+      const ids = ID_COLUMNS[t.name];
+      expect(ids, t.name).toBeDefined();
+      for (const n of ids) expect(t.listColumns, `${t.name}.${n}`).not.toContain(n);
+      const internal = [...t.columns.filter((c) => c.internal), ...t.virtualColumns.filter((v) => v.internal)].map((c) => c.name);
+      expect(internal.sort(), t.name).toEqual([...ids].sort());
+    }
+  });
+
+  it('サブスク取引の一覧は 決済日時 → プラン名 → 請求理由 → サブスク金額 → 割引額 → 税抜金額 → 消費税額 → 実支払額 → 残り', async () => {
+    const payments = (await tables()).find((t) => t.name === 'furim_payments')!;
+    expect(payments.listColumns).toEqual([
+      'paid_at', 'plan_name', 'billing_reason', 'subscription_price', 'discount_amount', 'price_excl_tax', 'tax_amount', 'actual_paid_amount', 'customer_email', 'created_at',
+    ]);
+  });
+
+  it('CSV は ID 類も含めた全列を出す（チケット取引）', async () => {
+    const { db } = makeDb({
+      allRows: [
+        [{ id: 'l1', line_user_id: 'U1', delta: 10, reason: 'purchase', idempotency_key: 'pi_1:10', payment_intent_id: 'pi_1', invoice_id: 'in_1', amount: 1000, currency: 'jpy', created_at: '2026-09-13T23:45:43.193+09:00' }],
+        [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_ticket_ledger/export.csv');
+    const text = new TextDecoder().decode(new Uint8Array(await res.arrayBuffer()));
+    const [head, first] = text.replace(/^\ufeff/, '').trim().split('\r\n');
+    expect(head).toBe('LINE表示名,付与日時,LINEユーザーID,付与枚数,付与の種類,重複防止キー,PaymentIntent ID,請求書ID,金額,通貨,内部ID');
+    expect(first).toBe('たろう,2026/09/13 23:45:43,U1,10,purchase,pi_1:10,pi_1,in_1,1000,jpy,l1');
+  });
+
+  it('ID 類を一覧から外しても表示名は ID で解決し、関連データも ID で紐づける', async () => {
+    const list = makeDb({ firstRows: [{ n: 1 }], allRows: [[{ invoice_id: 'in_1', line_user_id: 'U1', plan_name: 'PB' }], [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }]] });
+    const res = await req(list.db, 'GET', '/api/furim/admin/furim_payments');
+    const body = (await res.json()) as { data: Array<Record<string, unknown>> };
+    expect(body.data[0]).toMatchObject({ _display_name: 'たろう', line_user_id: 'U1', invoice_id: 'in_1' });
+
+    const rel = makeDb({ firstRows: [{ invoice_id: 'in_1', line_user_id: 'U1', stripe_customer_id: 'cus_1' }] });
+    await req(rel.db, 'GET', '/api/furim/admin/furim_payments/in_1/related');
+    expect(rel.batches[0][0].sql).toBe('SELECT COUNT(*) AS n FROM furim_customers WHERE (line_user_id = ? OR stripe_customer_id = ?)');
   });
 });
 

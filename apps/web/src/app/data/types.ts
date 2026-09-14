@@ -19,6 +19,7 @@ export type AdminVirtualColumn = {
   type: 'text' | 'integer' | 'real'
   featureKey?: string
   flag?: 'bool' | 'text'
+  internal?: boolean
 }
 
 export type AdminKey = {
