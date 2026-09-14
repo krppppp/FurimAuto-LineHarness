@@ -409,9 +409,6 @@ export async function processStripeEvent(
           features: isPlanBuilder ? (subMetadata.features ?? '') : undefined,
           multi_channel_sites: isPlanBuilder ? (subMetadata.multiChannelSites ?? '') : undefined,
           subscription_source: isPlanBuilder ? 'plan-builder' : 'legacy',
-          subscription_status: 'active',
-          customer_email: obj.customer_email || undefined,
-          last_invoice_id: obj.id,
           canceled_at: null,
         });
         await db
@@ -616,7 +613,6 @@ export async function processStripeEvent(
         await clearFurimCustomerKeyCode(db, resolvedLineUserId);
         await upsertFurimCustomer(db, resolvedLineUserId, {
           ...(stripeCustomerId ? { stripe_customer_id: stripeCustomerId } : {}),
-          subscription_status: 'canceled',
           canceled_at: jstNow(),
           subscription_price: 0,
           plan_label: 'キャンセル済み',

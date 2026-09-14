@@ -1091,26 +1091,18 @@ describe('#262 顧客マスターの列をシートの並びに合わせる・�
     'updated_at',
   ];
   const HIDDEN = [
-    'customer_email',
-    'last_invoice_id',
-    'subscription_status',
     'subscription_source',
     'multi_channel_sites',
     'features',
     'packages',
-    'plan_label_legacy',
     'device_activated',
   ];
   const FULL = {
     ...CUSTOMER,
-    customer_email: 'a@example.com',
-    last_invoice_id: 'in_9',
-    subscription_status: 'active',
     subscription_source: 'plan-builder',
     multi_channel_sites: 'メルカリ/ラクマ',
     features: 'mChangePrice',
     packages: 'basic',
-    plan_label_legacy: '旧',
     shops_url: 'https://mercari-shops.com/shops/s1',
     rakuma_url: 'https://fril.jp/shop/r1',
     yahoo_flea_url: 'https://paypayfleamarket.yahoo.co.jp/user/y1',
@@ -1139,7 +1131,7 @@ describe('#262 顧客マスターの列をシートの並びに合わせる・�
       '通算支払い回数',
       '通算支払い総額',
     ]);
-    expect(t.columns.find((c) => c.name === 'customer_email')).toBeUndefined();
+    expect(t.columns.find((c) => c.name === 'subscription_source')).toBeUndefined();
   });
 
   it('全件の一覧はサブスク 4 列の集計を furim_payments の GROUP BY 1 回で付け（顧客数に比例しない）、外した列は応答から消す', async () => {
@@ -1184,7 +1176,7 @@ describe('#262 顧客マスターの列をシートの並びに合わせる・�
     expect(paymentStmts[0].sql).toContain('WHERE line_user_id IN (?) GROUP BY line_user_id');
     expect(paymentStmts[0].args).toEqual(['U1']);
     expect(body.data).toMatchObject({ _last_paid_amount: 9878, _payment_count: 2, _payment_total: 19756 });
-    expect(body.data.customer_email).toBeUndefined();
+    expect(body.data.subscription_source).toBeUndefined();
   });
 
   it('CSV も一覧と同じ並びで、外した列は出ず、サブスク 4 列が出る', async () => {
@@ -1222,16 +1214,16 @@ describe('#262 顧客マスターの列をシートの並びに合わせる・�
       expect(head, l).not.toContain(l);
     }
     expect(first.slice(12, 16)).toEqual(['8980', '9878', '2', '19756']);
-    expect(first).not.toContain('a@example.com');
+    expect(first).not.toContain('plan-builder');
   });
 
   it('外した列は PATCH / POST できない（D1 の列は残るが管理画面からは触らない）', async () => {
     const { db, statements } = makeDb({ firstRows: [{ ...FULL }] });
-    const res = await req(db, 'PATCH', '/api/furim/admin/furim_customers/U1', { changes: { customer_email: 'b@example.com' } });
+    const res = await req(db, 'PATCH', '/api/furim/admin/furim_customers/U1', { changes: { subscription_source: 'legacy' } });
     expect(res.status).toBe(400);
     expect(statements.some((s) => s.sql.startsWith('UPDATE'))).toBe(false);
     const post = makeDb();
-    const created = await req(post.db, 'POST', '/api/furim/admin/furim_customers', { values: { line_user_id: 'U9', subscription_status: 'active' } });
+    const created = await req(post.db, 'POST', '/api/furim/admin/furim_customers', { values: { line_user_id: 'U9', subscription_source: 'legacy' } });
     expect(created.status).toBe(400);
   });
 });

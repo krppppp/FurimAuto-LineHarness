@@ -26,16 +26,12 @@ export type FurimCustomer = {
   subscription_end_at: string | null;   // JST 'YYYY-MM-DD HH:MM:SS'（拡張の期限判定・+24h バッファ込み）
   subscription_price: number | null;
   plan_label: string | null;
-  plan_label_legacy: string | null;
   packages: string | null;
   features: string | null;
   multi_channel_sites: string | null;
   subscription_source: string | null;
-  subscription_status: string | null;
   copy_tickets: number | null;
   mercari_url: string | null;
-  customer_email: string | null;
-  last_invoice_id: string | null;
   canceled_at: string | null;
   // 段階3（migration 071）: 拡張の認証・ログを Worker が受ける
   device_code: string | null;              // 端末判定文字列（Worker が発行。旧拡張の間はシートから取り込む）
@@ -67,16 +63,12 @@ const PATCHABLE = [
   'subscription_end_at',
   'subscription_price',
   'plan_label',
-  'plan_label_legacy',
   'packages',
   'features',
   'multi_channel_sites',
   'subscription_source',
-  'subscription_status',
   'copy_tickets',
   'mercari_url',
-  'customer_email',
-  'last_invoice_id',
   'canceled_at',
   'device_code',
   'shops_url',

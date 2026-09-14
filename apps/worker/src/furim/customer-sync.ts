@@ -79,7 +79,6 @@ export function sheetRowToPatch(row: SheetRow): FurimCustomerPatch {
     plan_label: str(row['プラン名']),
     copy_tickets: int(row['コピー出品チケット']),
     mercari_url: str(row['メルカリURL']),
-    customer_email: str(row['Email']),
     // 段階3（migration 071）: 拡張の認証・ログを Worker が受ける
     device_code: str(row['端末判定文字列']),
     shops_url: str(row['ShopsURL']),
