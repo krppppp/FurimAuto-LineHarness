@@ -381,6 +381,39 @@ describe('fireEvent — call_gas_post capture', () => {
   });
 });
 
+describe('fireEvent — setCustomerData の試用終了日時（Capsec #262）', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it('シートへ送る trialFinishedDateTime は webhook が D1 に書く終了日時（今＋14 日）と同じ瞬間', async () => {
+    const nowMs = Date.parse('2026-09-14T12:34:56.000+09:00');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(nowMs);
+    const db = await import('@line-crm/db');
+    (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      {
+        id: 'auto-friend-add',
+        line_account_id: 'acc-1',
+        conditions: JSON.stringify({}),
+        actions: JSON.stringify([
+          { type: 'call_gas_post', params: { method: 'setCustomerData', args: { followEventDateTime: '{{now_jst}}', trialFinishedDateTime: '{{trial_end_jst}}' } } },
+        ]),
+      },
+    ]);
+    await fireEvent(fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: [] }), 'friend_add', { friendId: 'friend-1', eventData: { isNewUser: true } }, 'channel-token', 'acc-1', { gasDeployId: 'gas-dep-test' });
+    const gas = await import('../furim/gas-client.js');
+    const call = (gas.gasPost as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][1] as Record<string, string>;
+    expect(call).toMatchObject({ method: 'setCustomerData', followEventDateTime: '2026-09-14 12:34:56', trialFinishedDateTime: '2026-09-28 12:34:56' });
+    const { FRIEND_TRIAL_DAYS, formatJstIso, parseJstDateTime } = await import('../furim/customer-store.js');
+    const d1End = formatJstIso(nowMs + FRIEND_TRIAL_DAYS * 24 * 60 * 60_000);
+    expect(d1End).toBe('2026-09-28T12:34:56.000+09:00');
+    expect(parseJstDateTime(call.trialFinishedDateTime)).toBe(parseJstDateTime(d1End));
+    expect(parseJstDateTime(call.followEventDateTime)).toBe(parseJstDateTime(formatJstIso(nowMs)));
+  });
+});
+
 describe('fireEvent — 冪等 (idempotencyKey / stripe再処理)', () => {
   beforeEach(() => { idem.done.clear(); });
   afterEach(() => { vi.clearAllMocks(); idem.done.clear(); });

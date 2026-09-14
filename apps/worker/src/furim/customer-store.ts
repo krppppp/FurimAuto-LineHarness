@@ -126,6 +126,8 @@ export async function extendSubscriptionEnd(db: D1Database, lineUserId: string, 
 // （setKeyCode.js が接頭語の前方一致で「同一プラン」を判定するため、必ず一致させる）
 export const TRIAL_KEYCODE_PREFIX = '2weektrial_';
 
+export const FRIEND_TRIAL_DAYS = 14;
+
 export async function getFurimCustomer(db: D1Database, lineUserId: string): Promise<FurimCustomer | null> {
   return db.prepare('SELECT * FROM furim_customers WHERE line_user_id = ?').bind(lineUserId).first<FurimCustomer>();
 }

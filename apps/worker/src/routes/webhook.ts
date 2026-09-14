@@ -19,7 +19,7 @@ import { handleFurimAction, actionFurimanCoupon, actionExtendTrial } from '../fu
 import type { FurimActionsEnv } from '../furim/actions.js';
 import { handleButtonAction } from '../furim/button-actions.js';
 import { handleKeywordAction } from '../furim/keyword-actions.js';
-import { generateTrialKeyCode, getFurimCustomer, upsertFurimCustomer } from '../furim/customer-store.js';
+import { FRIEND_TRIAL_DAYS, formatJstIso, generateTrialKeyCode, getFurimCustomer, upsertFurimCustomer, type FurimCustomerPatch } from '../furim/customer-store.js';
 
 // X口コミクーポン申請の通知先（くろさん）。申請URLと付与コマンドをpushする
 const X_REVIEW_STAFF_LINE_USER_ID = 'U5d35c3e6b2be0a6ec699b2a1de2aba93';
@@ -275,11 +275,16 @@ async function handleEvent(
     if (isNewUser) {
       try {
         const existingCustomer = await getFurimCustomer(db, userId);
-        if (!existingCustomer?.key_code) {
-          await upsertFurimCustomer(db, userId, { key_code: generateTrialKeyCode() });
+        const patch: FurimCustomerPatch = {};
+        if (!existingCustomer?.key_code) patch.key_code = generateTrialKeyCode();
+        if (!existingCustomer?.subscription_end_at) {
+          const nowMs = Date.now();
+          patch.subscription_start_at = formatJstIso(nowMs);
+          patch.subscription_end_at = formatJstIso(nowMs + FRIEND_TRIAL_DAYS * 24 * 60 * 60_000);
         }
+        if (Object.keys(patch).length) await upsertFurimCustomer(db, userId, patch);
       } catch (err) {
-        console.error('[webhook] trial keycode generation failed:', userId, err);
+        console.error('[webhook] trial keycode/period write failed:', userId, err);
       }
     }
 

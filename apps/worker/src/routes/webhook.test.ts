@@ -1,4 +1,4 @@
-import { describe, expect, test, vi, beforeEach } from 'vitest';
+import { describe, expect, test, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 
 const lineClientMocks = vi.hoisted(() => ({
@@ -85,6 +85,8 @@ import { actionExtendTrial, actionFurimanCoupon, handleFurimAction } from '../fu
 import { handleAIChat } from '../furim/ai-chat.js';
 import { getAiMode } from '../furim/firebase-client.js';
 import { webhook } from './webhook.js';
+import { evaluateKeyCodeSet, KEY_CODE_ERROR } from '../furim/ext-auth.js';
+import type { FurimCustomer } from '../furim/customer-store.js';
 
 function setupApp() {
   const app = new Hono();
@@ -714,5 +716,103 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     expect(handleAIChat).toHaveBeenCalledTimes(1);
     expect(actionFurimanCoupon).not.toHaveBeenCalled();
     expect(actionExtendTrial).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /webhook — follow（新規）で試用期間を D1 に先に書く（Capsec #262）', () => {
+  const NOW_MS = Date.parse('2026-09-14T12:34:56.789+09:00');
+  const DAY_MS = 24 * 60 * 60_000;
+
+  function followDb(existing: Partial<FurimCustomer> | null) {
+    const upserts: Array<{ sql: string; args: unknown[] }> = [];
+    const db = {
+      prepare: vi.fn((sql: string) => {
+        const stmt = {
+          args: [] as unknown[],
+          bind: (...a: unknown[]) => { stmt.args = a; return stmt; },
+          first: vi.fn(async () => (sql.startsWith('SELECT * FROM furim_customers') ? existing : null)),
+          run: vi.fn(async () => {
+            if (sql.startsWith('INSERT INTO furim_customers')) upserts.push({ sql, args: stmt.args });
+            return {};
+          }),
+          all: vi.fn(async () => ({ results: [] })),
+        };
+        return stmt;
+      }),
+    } as unknown as D1Database;
+    return { db, upserts };
+  }
+
+  async function follow(db: D1Database) {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue(null);
+    vi.mocked(jstNow).mockReturnValue('2026-09-14T12:34:56.789+09:00');
+    lineClientMocks.getProfile.mockResolvedValue({ userId: 'U-new', displayName: 'New Friend' });
+    vi.mocked(upsertFriend).mockResolvedValue({
+      id: 'friend-new', line_user_id: 'U-new', display_name: 'New Friend', picture_url: null, status_message: null, is_following: 1,
+      user_id: null, line_account_id: null, metadata: '{}', first_tracked_link_id: null,
+      created_at: '2026-09-14T12:34:56.789+09:00', updated_at: '2026-09-14T12:34:56.789+09:00',
+    });
+    const executionCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn(), props: {} } as unknown as ExecutionContext;
+    const res = await setupApp().request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Line-Signature': 'A'.repeat(43) + '=' },
+        body: JSON.stringify({
+          destination: 'bot',
+          events: [{ type: 'follow', replyToken: 'rt', timestamp: NOW_MS, source: { type: 'user', userId: 'U-new' }, webhookEventId: 'ev-follow', deliveryContext: { isRedelivery: false }, mode: 'active' }],
+        }),
+      },
+      { ...baseEnv, DB: db },
+      executionCtx,
+    );
+    expect(res.status).toBe(200);
+    await (vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>);
+  }
+
+  function upsertedColumns(u: { sql: string; args: unknown[] }): Record<string, unknown> {
+    const cols = u.sql.match(/INSERT INTO furim_customers \(([^)]+)\)/)![1].split(', ');
+    return Object.fromEntries(cols.map((c, i) => [c, u.args[i]]));
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW_MS);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('キーコードと一緒に 登録＝今・終了＝今＋14 日（ISO+09:00・丸めなし）を 1 回の upsert で書く', async () => {
+    const { db, upserts } = followDb(null);
+    await follow(db);
+    expect(upserts).toHaveLength(1);
+    const row = upsertedColumns(upserts[0]);
+    expect(row.line_user_id).toBe('U-new');
+    expect(String(row.key_code)).toMatch(/^2weektrial_[0-9a-z]{8}$/);
+    expect(row.subscription_start_at).toBe('2026-09-14T12:34:56.789+09:00');
+    expect(row.subscription_end_at).toBe('2026-09-28T12:34:56.789+09:00');
+    expect(fireEvent).toHaveBeenCalledWith(db, 'friend_add', expect.objectContaining({ eventData: expect.objectContaining({ isNewUser: true }) }), expect.anything(), null, expect.anything());
+  });
+
+  test('期限が入っている行（有料・再追加）は日時を上書きせず、キーコードが無ければキーコードだけ書く', async () => {
+    const { db, upserts } = followDb({ line_user_id: 'U-new', key_code: null, subscription_start_at: '2026-01-01T00:00:00.000+09:00', subscription_end_at: '2026-12-01T00:00:00.000+09:00' });
+    await follow(db);
+    expect(upserts).toHaveLength(1);
+    const row = upsertedColumns(upserts[0]);
+    expect(Object.keys(row)).toEqual(['line_user_id', 'key_code', 'created_at', 'updated_at']);
+  });
+
+  test('D1 に入った期限で Worker 認証が 14 日を過ぎたら「無料期間終了」になる', async () => {
+    const { db, upserts } = followDb(null);
+    await follow(db);
+    const row = upsertedColumns(upserts[0]);
+    const customer = { line_user_id: 'U-new', key_code: row.key_code, subscription_end_at: row.subscription_end_at, plan_label: null, device_code: 'dev-1', mercari_url: null, copy_tickets: 0 } as unknown as FurimCustomer;
+    const input = { keyCode: String(row.key_code), discriminationCode: 'dev-1', mercariAccountUrl: null };
+    const within = evaluateKeyCodeSet({ customer, flags: {} }, input, { nowMs: NOW_MS + 14 * DAY_MS - 1000, mercariUrlOwnedByOther: false });
+    expect(within.ok).toBe(true);
+    const after = evaluateKeyCodeSet({ customer, flags: {} }, input, { nowMs: NOW_MS + 14 * DAY_MS + 1000, mercariUrlOwnedByOther: false });
+    expect(after).toMatchObject({ ok: false, error: KEY_CODE_ERROR.TRIAL_ENDED });
   });
 });

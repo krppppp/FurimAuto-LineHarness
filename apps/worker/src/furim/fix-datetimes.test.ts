@@ -81,6 +81,11 @@ function makeDb(tables: Tables) {
         .filter((r) => r[col] != null && !String(r[col]).endsWith('+09:00'))
         .map((r) => ({ ...Object.fromEntries(pks.map((k) => [k, r[k]])), v: r[col] }));
     }
+    if (sql.includes('FROM furim_customers c LEFT JOIN friends f')) {
+      return t('furim_customers')
+        .filter((r) => String(r.key_code ?? '').slice(0, args[0] as number) === args[1] && (r.subscription_end_at == null || r.subscription_end_at === ''))
+        .map((r) => ({ line_user_id: r.line_user_id, subscription_start_at: r.subscription_start_at ?? null, subscription_end_at: r.subscription_end_at ?? null, friend_created_at: t('friends').find((f) => f.line_user_id === r.line_user_id)?.created_at ?? null }));
+    }
     throw new Error(`unexpected select: ${sql}`);
   };
   const apply = (sql: string, args: unknown[]): number => {
@@ -93,6 +98,14 @@ function makeDb(tables: Tables) {
       const oldValue = rest[rest.length - 1];
       const hits = t(table).filter((r) => pkCols.every((c, i) => r[c] === rest[i]) && r[col] === oldValue);
       for (const r of hits) r[col] = newValue;
+      lastChanges = hits.length;
+      return hits.length;
+    }
+    const fill = sql.match(/^UPDATE furim_customers SET (\w+) = \? WHERE line_user_id = \? AND \((\w+) IS NULL OR (\w+) = ''\)$/);
+    if (fill) {
+      const col = fill[1];
+      const hits = t('furim_customers').filter((r) => r.line_user_id === args[1] && (r[col] == null || r[col] === ''));
+      for (const r of hits) r[col] = args[0];
       lastChanges = hits.length;
       return hits.length;
     }
@@ -326,6 +339,77 @@ describe('fixDatetimes friend-tags', () => {
     expect(at('f2', 't-mk')).toBe(MIG);
     expect(at('f2', 't-c')).toBe('2026-07-12 20:25:10');
     expect(tables.furim_admin_audit.map((a) => a.row_id)).toEqual(['f1|t-m', 'f1|t-r', 'f1|t-y', 'f1|t-c']);
+  });
+});
+
+describe('fixDatetimes trial-dates（Capsec #262）', () => {
+  const fixture = () =>
+    makeDb({
+      furim_customers: [
+        { line_user_id: uid('1'), key_code: '2weektrial_aaaaaaaa', subscription_start_at: null, subscription_end_at: null },
+        { line_user_id: uid('2'), key_code: '2weektrial_bbbbbbbb', subscription_start_at: null, subscription_end_at: '' },
+        { line_user_id: uid('3'), key_code: '2weektrial_cccccccc', subscription_start_at: '2026-09-01T10:00:00.000+09:00', subscription_end_at: '2026-09-15T10:00:00.000+09:00' },
+        { line_user_id: uid('4'), key_code: 'pb_dddddddd', subscription_start_at: null, subscription_end_at: null },
+      ],
+      friends: [{ id: 'f2', line_user_id: uid('2'), created_at: '2026-09-14T12:12:33.925+09:00' }],
+    });
+  const sheet = () =>
+    sheets({
+      customers: [
+        { LINE_ID: uid('1'), サブスク登録日時: '2026-09-13T14:34:17.000Z', サブスク終了日時: '2026-09-27T14:34:17.000Z' },
+        { LINE_ID: uid('2'), サブスク登録日時: '', サブスク終了日時: '' },
+        { LINE_ID: uid('4'), サブスク登録日時: '2026-01-01T00:00:00.000Z', サブスク終了日時: '2026-02-01T00:00:00.000Z' },
+      ],
+    });
+
+  it('期限が空の試用顧客だけをシートの値で補い、監査に残し、2 回目は 0。シートに無い顧客は補わず missing で返す', async () => {
+    const { db, tables, writes } = fixture();
+    sheet();
+    const snapshot = JSON.stringify(tables);
+    const dry = await run(db, 'trial-dates', true);
+    expect(dry).toMatchObject({ dryRun: true, candidates: 2, updated: 0, auditRows: 0, skippedNoSource: 2 });
+    expect(dry.missing).toEqual([
+      { lineUserId: uid('2'), column: 'subscription_start_at', friendCreatedAt: '2026-09-14T12:12:33.925+09:00' },
+      { lineUserId: uid('2'), column: 'subscription_end_at', friendCreatedAt: '2026-09-14T12:12:33.925+09:00' },
+    ]);
+    expect(writes).toHaveLength(0);
+    expect(JSON.stringify(tables)).toBe(snapshot);
+
+    const first = await run(db, 'trial-dates', false);
+    expect(first).toMatchObject({ candidates: 2, updated: 2, auditRows: 2 });
+    expect(tables.furim_customers[0]).toMatchObject({ subscription_start_at: '2026-09-13T23:34:17.000+09:00', subscription_end_at: '2026-09-27T23:34:17.000+09:00' });
+    expect(tables.furim_customers[1]).toMatchObject({ subscription_start_at: null, subscription_end_at: '' });
+    expect(tables.furim_customers[2].subscription_end_at).toBe('2026-09-15T10:00:00.000+09:00');
+    expect(tables.furim_customers[3].subscription_end_at).toBeNull();
+    expect(tables.furim_admin_audit).toEqual([
+      { id: expect.any(String), staff_id: 'staff-1', staff_name: FIX_STAFF_NAME, table_name: 'furim_customers', row_id: uid('1'), column_name: 'subscription_start_at', old_value: null, new_value: '2026-09-13T23:34:17.000+09:00', created_at: NOW },
+      { id: expect.any(String), staff_id: 'staff-1', staff_name: FIX_STAFF_NAME, table_name: 'furim_customers', row_id: uid('1'), column_name: 'subscription_end_at', old_value: null, new_value: '2026-09-27T23:34:17.000+09:00', created_at: NOW },
+    ]);
+
+    const second = await run(db, 'trial-dates', false);
+    expect(second).toMatchObject({ candidates: 0, updated: 0, auditRows: 0, skippedNoSource: 2 });
+    expect(tables.furim_admin_audit).toHaveLength(2);
+  });
+
+  it('読んだ後に期限が入った列は上書きせず、監査にも残さない', async () => {
+    const { db, tables } = fixture();
+    sheet();
+    const origBatch = db.batch.bind(db);
+    (db as unknown as { batch: typeof db.batch }).batch = async (stmts) => {
+      tables.furim_customers[0].subscription_end_at = '2026-10-01T00:00:00.000+09:00';
+      return origBatch(stmts);
+    };
+    const r = await run(db, 'trial-dates', false);
+    expect(r).toMatchObject({ candidates: 2, updated: 1, auditRows: 1 });
+    expect(tables.furim_customers[0].subscription_end_at).toBe('2026-10-01T00:00:00.000+09:00');
+    expect(tables.furim_admin_audit.map((a) => a.column_name)).toEqual(['subscription_start_at']);
+  });
+
+  it('対象が 0 人ならシートを読まない', async () => {
+    const { db } = makeDb({ furim_customers: [{ line_user_id: uid('3'), key_code: '2weektrial_cccccccc', subscription_end_at: '2026-09-15T10:00:00.000+09:00' }] });
+    const r = await run(db, 'trial-dates', false);
+    expect(r).toMatchObject({ candidates: 0, updated: 0, missing: [] });
+    expect(gasGet).not.toHaveBeenCalled();
   });
 });
 

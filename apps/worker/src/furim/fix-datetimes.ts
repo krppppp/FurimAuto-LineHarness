@@ -1,9 +1,9 @@
 import { toJstString } from '@line-crm/db';
-import { parseJstDateTime } from './customer-store.js';
+import { parseJstDateTime, TRIAL_KEYCODE_PREFIX } from './customer-store.js';
 import { MASTER_SHEET, sheetRowLineUserId } from './customer-sync.js';
 import { fetchSheetRows, str, type SheetRow } from './sheet-backfill.js';
 
-export const FIX_TARGETS = ['customers', 'affiliates', 'friend-sub', 'chats', 'friend-tags', 'format-unify'] as const;
+export const FIX_TARGETS = ['customers', 'affiliates', 'friend-sub', 'chats', 'friend-tags', 'format-unify', 'trial-dates'] as const;
 export type FixTarget = (typeof FIX_TARGETS)[number];
 
 export const FIX_STAFF_NAME = 'system:fix-datetimes';
@@ -228,6 +228,7 @@ export async function loadFixRows(db: D1Database, gasDeployId: string | undefine
     case 'friend-tags':
       return loadFriendTags(db);
     case 'format-unify':
+    case 'trial-dates':
       return [];
   }
 }
@@ -245,12 +246,18 @@ export function buildFixStatements(db: D1Database, c: FixCandidate, staffId: str
   ];
 }
 
-export async function applyFixCandidates(db: D1Database, candidates: FixCandidate[], staffId: string, now: string): Promise<{ updated: number; auditRows: number }> {
+export async function applyFixCandidates(
+  db: D1Database,
+  candidates: FixCandidate[],
+  staffId: string,
+  now: string,
+  build: (db: D1Database, c: FixCandidate, staffId: string, now: string) => D1PreparedStatement[] = buildFixStatements,
+): Promise<{ updated: number; auditRows: number }> {
   let updated = 0;
   let auditRows = 0;
   for (let i = 0; i < candidates.length; i += CANDIDATES_PER_BATCH) {
     const chunk = candidates.slice(i, i + CANDIDATES_PER_BATCH);
-    const results = await db.batch(chunk.flatMap((c) => buildFixStatements(db, c, staffId, now)));
+    const results = await db.batch(chunk.flatMap((c) => build(db, c, staffId, now)));
     results.forEach((r, idx) => {
       const n = r.meta?.changes ?? 0;
       if (idx % 2 === 0) updated += n;
@@ -364,6 +371,71 @@ async function formatUnify(db: D1Database, dryRun: boolean, staffId: string, now
   return result;
 }
 
+export const TRIAL_DATE_COLUMNS = [
+  { column: 'subscription_start_at', sheetColumn: 'サブスク登録日時' },
+  { column: 'subscription_end_at', sheetColumn: 'サブスク終了日時' },
+] as const;
+
+export type TrialDateMissing = { lineUserId: string; column: string; friendCreatedAt: string | null };
+
+export function buildFillEmptyStatements(db: D1Database, c: FixCandidate, staffId: string, now: string): D1PreparedStatement[] {
+  return [
+    db
+      .prepare(`UPDATE furim_customers SET ${c.column} = ? WHERE line_user_id = ? AND (${c.column} IS NULL OR ${c.column} = '')`)
+      .bind(c.newValue, c.pk.line_user_id),
+    db
+      .prepare(
+        'INSERT INTO furim_admin_audit (id, staff_id, staff_name, table_name, row_id, column_name, old_value, new_value, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1',
+      )
+      .bind(crypto.randomUUID(), staffId, FIX_STAFF_NAME, c.table, c.rowId, c.column, c.oldValue || null, c.newValue, now),
+  ];
+}
+
+async function trialDates(db: D1Database, gasDeployId: string | undefined, dryRun: boolean, staffId: string, now: string, cache: SheetCache): Promise<FixResult> {
+  const result: FixResult = { target: 'trial-dates', dryRun, candidates: 0, updated: 0, skippedNoSource: 0, skippedAlreadyFixed: 0, auditRows: 0, samples: [], missing: [] };
+  const rows =
+    (
+      await db
+        .prepare(
+          `SELECT c.line_user_id, c.subscription_start_at, c.subscription_end_at, f.created_at AS friend_created_at
+           FROM furim_customers c LEFT JOIN friends f ON f.line_user_id = c.line_user_id
+           WHERE substr(c.key_code, 1, ?) = ? AND (c.subscription_end_at IS NULL OR c.subscription_end_at = '')`,
+        )
+        .bind(TRIAL_KEYCODE_PREFIX.length, TRIAL_KEYCODE_PREFIX)
+        .all<{ line_user_id: string; subscription_start_at: string | null; subscription_end_at: string | null; friend_created_at: string | null }>()
+    ).results ?? [];
+  if (rows.length === 0) return result;
+  const sheet = await sheetRows(gasDeployId, MASTER_SHEET, 3, cache);
+  const candidates: FixCandidate[] = [];
+  for (const { column, sheetColumn } of TRIAL_DATE_COLUMNS) {
+    const pairs: Array<[string, string | null]> = [];
+    for (const r of sheet) {
+      const id = sheetRowLineUserId(r);
+      if (id) pairs.push([id, str(r[sheetColumn])]);
+    }
+    const sources = uniqueSourceMap(pairs);
+    for (const row of rows) {
+      const oldValue = row[column] ?? '';
+      if (oldValue !== '') continue;
+      const srcMs = parseJstDateTime(sources.get(row.line_user_id) ?? null);
+      if (srcMs == null) {
+        result.skippedNoSource++;
+        result.missing!.push({ lineUserId: row.line_user_id, column, friendCreatedAt: row.friend_created_at });
+        continue;
+      }
+      candidates.push({ table: 'furim_customers', column, rowId: row.line_user_id, pk: { line_user_id: row.line_user_id }, oldValue, newValue: toJstString(new Date(srcMs)) });
+    }
+  }
+  result.candidates = candidates.length;
+  result.samples = candidates.slice(0, SAMPLE_LIMIT * 2).map(({ table, column, rowId, oldValue, newValue }) => ({ table, column, rowId, oldValue, newValue }));
+  if (dryRun || candidates.length === 0) return result;
+  const applied = await applyFixCandidates(db, candidates, staffId, now, buildFillEmptyStatements);
+  result.updated = applied.updated;
+  result.auditRows = applied.auditRows;
+  console.log('[furim/fix-datetimes]', JSON.stringify({ target: 'trial-dates', candidates: result.candidates, updated: result.updated, auditRows: result.auditRows, skippedNoSource: result.skippedNoSource }));
+  return result;
+}
+
 export type FixResult = {
   target: FixTarget;
   dryRun: boolean;
@@ -376,6 +448,7 @@ export type FixResult = {
   judgeBefore?: SevenDayJudge;
   judgeAfter?: SevenDayJudge;
   columns?: FormatUnifyColumnResult[];
+  missing?: TrialDateMissing[];
 };
 
 export async function fixDatetimes(
@@ -387,6 +460,7 @@ export async function fixDatetimes(
   const nowMs = opts.nowMs ?? Date.now();
   const now = opts.now ?? toJstString(new Date(nowMs));
   if (target === 'format-unify') return formatUnify(db, opts.dryRun, opts.staffId, now);
+  if (target === 'trial-dates') return trialDates(db, gasDeployId, opts.dryRun, opts.staffId, now, opts.cache ?? new Map());
   const rows = await loadFixRows(db, gasDeployId, target, opts.cache ?? new Map());
   const classified = classifyFixRows(rows);
   const result: FixResult = {

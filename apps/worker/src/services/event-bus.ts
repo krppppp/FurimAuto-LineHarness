@@ -1,4 +1,5 @@
 import { extractFlexAltText } from '../utils/flex-alt-text.js';
+import { FRIEND_TRIAL_DAYS } from '../furim/customer-store.js';
 
 /**
  * イベントバス — システム内イベントの発火と処理
@@ -393,7 +394,7 @@ async function resolveGasArgs(
     : null;
   const nowJst = new Date(Date.now() + 9 * 60 * 60_000);
   // 無料試用は14日（2026-08-27 くろさん決定で7日→14日化。既存登録者は7日のまま）
-  const trialEndJst = new Date(nowJst.getTime() + 14 * 24 * 60 * 60_000);
+  const trialEndJst = new Date(nowJst.getTime() + FRIEND_TRIAL_DAYS * 24 * 60 * 60_000);
   const fmtJst = (d: Date) => d.toISOString().replace('T', ' ').slice(0, 19);
   // {{key_code}}: furim_customers.key_code（友だち追加時に Worker が生成した試用キーコード。Capsec #243）。
   // 使う automation（setCustomerData）だけのために引く
