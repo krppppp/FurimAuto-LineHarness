@@ -31,7 +31,16 @@ export interface AdminTable {
   insertable?: boolean;
   /** 削除（DELETE）を許すか。省略時は true */
   deletable?: boolean;
+  /** 基準日時（その行の出来事が起きた時刻）。一覧で LINE 表示名の次に出す（#253 decision #372） */
+  timeColumn?: string;
+  /** D1 が付与した内部 ID。一覧では出さず、行ドロワーでは末尾の「内部情報」に入れる */
+  internal?: string[];
+  /** このテーブルだけの日本語ラベル（COLUMN_LABELS より優先） */
+  labels?: Record<string, string>;
 }
+
+export const DISPLAY_NAME_COLUMN = '_display_name';
+export const FRIEND_CREATED_AT_COLUMN = '_friend_created_at';
 
 export function pkColumns(table: AdminTable): string[] {
   return Array.isArray(table.pk) ? table.pk : [table.pk];
@@ -77,6 +86,264 @@ export function isDeletable(table: AdminTable): boolean {
   return table.deletable !== false;
 }
 
+const VIRTUAL_LABELS: Record<string, string> = {
+  [DISPLAY_NAME_COLUMN]: 'LINE表示名',
+  [FRIEND_CREATED_AT_COLUMN]: '友だち登録日時',
+};
+
+export const COLUMN_LABELS: Record<string, string> = {
+  id: '内部ID',
+  line_user_id: 'LINEユーザーID',
+  stripe_customer_id: 'Stripe顧客ID',
+  key_code: 'キーコード',
+  key_code_issued: 'キーコード発行済み',
+  device_activated: '端末判定済み',
+  survey_answer: 'アンケート回答',
+  free30_ticket: 'Free30チケット',
+  youtube_coupon: 'YouTubeクーポン',
+  extend_keyword: '延長キーワード',
+  subscription_id: 'サブスクID',
+  subscription_start_at: 'サブスク開始日時',
+  subscription_end_at: 'サブスク終了日時',
+  subscription_price: 'サブスク金額',
+  plan_label: 'プラン名',
+  plan_label_legacy: '旧プラン名',
+  packages: 'パッケージ',
+  features: '機能',
+  multi_channel_sites: '多チャネル出品先',
+  subscription_source: '契約経路',
+  subscription_status: 'サブスク状態',
+  copy_tickets: 'コピー出品チケット残数',
+  mercari_url: 'メルカリURL',
+  customer_email: 'メールアドレス',
+  last_invoice_id: '最終請求書ID',
+  canceled_at: '解約日時',
+  sheet_synced_at: 'シート同期日時',
+  created_at: '作成日時',
+  updated_at: '更新日時',
+  invoice_id: '請求書ID',
+  stripe_event_id: 'StripeイベントID',
+  plan_name: 'プラン名',
+  billing_reason: '請求理由',
+  discount_amount: '割引額',
+  price_excl_tax: '税抜金額',
+  tax_amount: '消費税額',
+  actual_paid_amount: '実支払額',
+  paid_at: '決済日時',
+  delta: '増減',
+  reason: '理由',
+  idempotency_key: '重複防止キー',
+  payment_intent_id: 'PaymentIntent ID',
+  amount: '金額',
+  currency: '通貨',
+  display_name: '表示名',
+  side_job_judgment: '副業継続判定',
+  affiliate_id: 'アンバサダー内部ID',
+  ambassador_friend_id: 'アンバサダー友だち内部ID',
+  introduced_friend_id: '被紹介者友だち内部ID',
+  ref_code: '紹介コード',
+  source: '経路',
+  ambassador_plan_name: 'アンバサダーのプラン',
+  reward_coupon_name: '報酬クーポン名',
+  reward_coupon_id: '報酬クーポンID',
+  reward_applied_at: '報酬適用日時',
+  introduced_coupon_id: '被紹介者クーポンID',
+  trial_extended_days: '試用延長日数',
+  name: '名前',
+  code: 'コード',
+  commission_rate: '報酬率',
+  is_active: '有効',
+  friend_id: '友だち内部ID',
+  coupon_id: 'クーポンID',
+  service: 'サービス',
+  account_url: 'アカウントURL',
+  mypage_info_updated_date: 'マイページ情報更新日時',
+  count_rating: '評価数',
+  sales_amount: '売上',
+  total_target_count: '対象件数',
+  options: 'オプション',
+  client: 'クライアント',
+  payload: 'ペイロード',
+  method: '処理',
+  error: 'エラー',
+  discrimination_code: '端末判定コード',
+  install_id: 'インストールID',
+  rakuma_url: 'ラクマURL',
+  yahoo_flea_url: 'ヤフフリURL',
+  yahoo_auction_url: 'ヤフオクURL',
+  shops_url: 'ShopsURL',
+  item_id: '商品ID',
+  item_name: '商品名',
+  target: '出品先',
+  status: '状態',
+  target_url: '出品先URL',
+  source_url: 'コピー元URL',
+  started_at: '開始日時',
+  completed_at: '完了日時',
+  my_mercari_url: '自分のメルカリURL',
+  is_free: '無料',
+  remaining_tickets: '残りチケット',
+  processed_at: '処理日時',
+  imported_at: '取り込み日時',
+  answer: '回答',
+  coupon_name: 'クーポン名',
+  route: '適用経路',
+  occurred_at: '発生日時',
+  introduced_display_name: '被紹介者の表示名',
+  introduced_line_user_id: '被紹介者LINEユーザーID',
+  price: '金額',
+  ambassador_display_name: 'アンバサダーの表示名',
+  ambassador_line_user_id: 'アンバサダーLINEユーザーID',
+  cashback_amount: 'キャッシュバック額',
+  feature_key: '機能キー',
+  value: '値',
+  kind: '種別',
+  key: 'キー',
+  stripe_price_id: 'Stripe価格ID',
+  monthly_price: '月額',
+  active: '有効',
+  fetched_at: '取得日時',
+};
+
+/** 列の日本語ラベル。未定義なら英名のまま */
+export function columnLabel(table: AdminTable, name: string): string {
+  return table.labels?.[name] ?? VIRTUAL_LABELS[name] ?? COLUMN_LABELS[name] ?? name;
+}
+
+export function isInternalColumn(table: AdminTable, name: string): boolean {
+  return (table.internal ?? []).includes(name);
+}
+
+/** 一覧の列順: 基準日時 → 残り（内部 ID を除く）。LINE 表示名はこの前に付ける */
+export function listColumnNames(table: AdminTable): string[] {
+  const rest = table.columns.map((c) => c.name).filter((n) => n !== table.timeColumn && !isInternalColumn(table, n));
+  return table.timeColumn ? [table.timeColumn, ...rest] : rest;
+}
+
+/** CSV の列順: LINE 表示名 → 一覧と同じ列 → 内部 ID */
+export function csvColumnNames(table: AdminTable): string[] {
+  const internal = table.columns.map((c) => c.name).filter((n) => isInternalColumn(table, n));
+  return [DISPLAY_NAME_COLUMN, ...listColumnNames(table), ...internal];
+}
+
+/**
+ * 日時の保存形式（D1 の実データで確認・2026-09-14）
+ * jst: 2026-09-13T23:45:43.193+09:00（jstNow）／ jst_naive: 2026-09-13T19:54:32.847（JST・オフセット無し）／
+ * space: 2026-09-13 23:45:43（JST）／ utc: 2026-09-13T14:45:43.000Z ／ slash: 2026/09/13 23:45:43
+ */
+export type DateTimeStorage = 'jst' | 'jst_naive' | 'space' | 'utc' | 'slash';
+
+const DATETIME_DEFAULTS: Record<string, DateTimeStorage> = {
+  subscription_start_at: 'space',
+  subscription_end_at: 'space',
+  mypage_info_updated_date: 'utc',
+};
+
+/** 日時列なら、値が空のときに使う保存形式。日時列でなければ null */
+export function datetimeStorageOf(name: string): DateTimeStorage | null {
+  if (DATETIME_DEFAULTS[name]) return DATETIME_DEFAULTS[name];
+  return name.endsWith('_at') ? 'jst' : null;
+}
+
+type DateParts = { y: number; mo: number; d: number; h: number; mi: number; s: number };
+
+const JST_OFFSET_MS = 9 * 60 * 60_000;
+const STORED_RE = /^(\d{4})-(\d{2})-(\d{2})([T ])(\d{2}):(\d{2})(?::(\d{2})(\.\d{1,6})?)?(Z|[+-]\d{2}:?\d{2})?$/;
+const DISPLAY_RE = /^(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/;
+
+const pad = (n: number, w = 2) => String(n).padStart(w, '0');
+
+function jstMsOf(p: DateParts): number {
+  return Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s) - JST_OFFSET_MS;
+}
+
+function partsOfJst(ms: number): DateParts {
+  const t = new Date(ms + JST_OFFSET_MS);
+  return { y: t.getUTCFullYear(), mo: t.getUTCMonth() + 1, d: t.getUTCDate(), h: t.getUTCHours(), mi: t.getUTCMinutes(), s: t.getUTCSeconds() };
+}
+
+function validParts(p: DateParts): boolean {
+  const q = partsOfJst(jstMsOf(p));
+  return q.y === p.y && q.mo === p.mo && q.d === p.d && q.h === p.h && q.mi === p.mi && q.s === p.s;
+}
+
+function sameParts(a: DateParts, b: DateParts): boolean {
+  return jstMsOf(a) === jstMsOf(b);
+}
+
+function parseStoredDateTime(value: string): { parts: DateParts; storage: DateTimeStorage; ms: boolean } | null {
+  const m = STORED_RE.exec(value);
+  if (m) {
+    const naive: DateParts = { y: +m[1], mo: +m[2], d: +m[3], h: +m[5], mi: +m[6], s: m[7] ? +m[7] : 0 };
+    if (!validParts(naive)) return null;
+    const ms = Boolean(m[8]);
+    const tz = m[9];
+    if (!tz) return { parts: naive, storage: m[4] === ' ' ? 'space' : 'jst_naive', ms };
+    let offsetMin = 0;
+    if (tz !== 'Z') {
+      const sign = tz[0] === '-' ? -1 : 1;
+      const digits = tz.slice(1).replace(':', '');
+      offsetMin = sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2, 4)));
+    }
+    const utcMs = Date.UTC(naive.y, naive.mo - 1, naive.d, naive.h, naive.mi, naive.s) - offsetMin * 60_000;
+    return { parts: partsOfJst(utcMs), storage: offsetMin === 540 ? 'jst' : 'utc', ms };
+  }
+  const parts = parseDisplayDateTime(value);
+  return parts ? { parts, storage: 'slash', ms: false } : null;
+}
+
+function parseDisplayDateTime(value: string): DateParts | null {
+  const d = DISPLAY_RE.exec(value);
+  if (!d) return null;
+  const parts: DateParts = { y: +d[1], mo: +d[2], d: +d[3], h: +d[4], mi: +d[5], s: d[6] ? +d[6] : 0 };
+  return validParts(parts) ? parts : null;
+}
+
+function displayOf(p: DateParts): string {
+  return `${pad(p.y, 4)}/${pad(p.mo)}/${pad(p.d)} ${pad(p.h)}:${pad(p.mi)}:${pad(p.s)}`;
+}
+
+/** 保存値 → 表示「2026/09/13 23:45:43」（JST）。日時として読めない値はそのまま */
+export function toDisplayDateTime(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  const text = typeof value === 'string' ? value : String(value);
+  const parsed = parseStoredDateTime(text.trim());
+  return parsed ? displayOf(parsed.parts) : text;
+}
+
+/**
+ * 表示形式の入力 → その列の現在の保存形式。元の値と同じ時刻なら元の値をそのまま返す（ミリ秒を落とさない）。
+ * 元の値が空か読めないときは fallback の形式。表示形式として読めない入力はそのまま返す
+ */
+export function toStorageDateTime(input: string, original: unknown, fallback: DateTimeStorage): string {
+  const text = input.trim();
+  if (text === '') return '';
+  const orig = original === null || original === undefined ? '' : String(original);
+  const parts = parseDisplayDateTime(text);
+  if (!parts) return orig !== '' && toDisplayDateTime(orig) === text ? orig : input;
+  const before = orig !== '' ? parseStoredDateTime(orig.trim()) : null;
+  if (before && sameParts(before.parts, parts)) return orig;
+  const storage = before ? before.storage : fallback;
+  const ms = before ? before.ms : storage !== 'space' && storage !== 'slash';
+  const date = `${pad(parts.y, 4)}-${pad(parts.mo)}-${pad(parts.d)}`;
+  const time = `${pad(parts.h)}:${pad(parts.mi)}:${pad(parts.s)}`;
+  const frac = ms ? '.000' : '';
+  switch (storage) {
+    case 'jst':
+      return `${date}T${time}${frac}+09:00`;
+    case 'jst_naive':
+      return `${date}T${time}${frac}`;
+    case 'space':
+      return `${date} ${time}`;
+    case 'slash':
+      return displayOf(parts);
+    case 'utc': {
+      const iso = new Date(jstMsOf(parts)).toISOString();
+      return ms ? iso : iso.replace(/\.\d{3}Z$/, 'Z');
+    }
+  }
+}
+
 const t = (name: string, editable = true, searchable = false): AdminColumn => ({ name, type: 'text', editable, searchable });
 const i = (name: string, editable = true): AdminColumn => ({ name, type: 'integer', editable });
 const ro = (name: string, searchable = false): AdminColumn => ({ name, type: 'text', editable: false, searchable });
@@ -90,6 +357,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'line_user_id',
     orderBy: 'updated_at DESC',
     touchUpdatedAt: true,
+    timeColumn: FRIEND_CREATED_AT_COLUMN,
     joinFriends: true,
     allRows: true,
     columns: [
@@ -130,6 +398,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'invoice_id',
     orderBy: 'paid_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'paid_at',
     columns: [
       ro('invoice_id', true),
       ro('stripe_event_id'),
@@ -155,6 +424,8 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'created_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'created_at',
+    internal: ['id'],
     columns: [
       ro('id'),
       t('line_user_id', true, true),
@@ -175,6 +446,9 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'canceled_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'canceled_at',
+    internal: ['id'],
+    labels: { display_name: 'LINE表示名（解約時点）' },
     columns: [
       ro('id'),
       t('line_user_id', true, true),
@@ -195,6 +469,8 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'created_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'created_at',
+    internal: ['id', 'affiliate_id', 'ambassador_friend_id', 'introduced_friend_id'],
     columns: [
       ro('id'),
       t('affiliate_id', true, true),
@@ -218,6 +494,9 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'created_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'created_at',
+    internal: ['id', 'friend_id'],
+    labels: { name: 'アンバサダー名', code: 'アンバサダーコード' },
     columns: [
       ro('id'),
       t('name', true, true),
@@ -235,6 +514,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'name',
     orderBy: 'name ASC',
     touchUpdatedAt: false,
+    labels: { name: 'クーポン名' },
     columns: [
       ro('name', true),
       t('coupon_id', true, true),
@@ -248,6 +528,8 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'created_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'created_at',
+    internal: ['id'],
     columns: [
       ro('id'),
       ro('line_user_id', true),
@@ -271,6 +553,8 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'created_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'created_at',
+    internal: ['id'],
     columns: [
       ro('id'),
       ro('line_user_id', true),
@@ -290,6 +574,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'install_id',
     orderBy: 'updated_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'created_at',
     columns: [
       ro('install_id', true),
       ro('mercari_url', true),
@@ -309,6 +594,8 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'started_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'started_at',
+    internal: ['id'],
     columns: [
       ro('id'),
       ro('install_id', true),
@@ -332,6 +619,9 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'created_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'created_at',
+    internal: ['id'],
+    labels: { target_url: '調査先URL' },
     columns: [
       ro('id'),
       ro('install_id', true),
@@ -351,6 +641,9 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'processed_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'processed_at',
+    internal: ['id'],
+    labels: { display_name: 'LINE表示名（記録時点）', target_url: 'コピー先URL' },
     columns: [
       ro('id'),
       ro('line_user_id', true),
@@ -369,6 +662,9 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'created_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'created_at',
+    internal: ['id'],
+    labels: { display_name: 'LINE表示名（回答時点）' },
     columns: [
       ro('id'),
       ro('line_user_id', true),
@@ -384,6 +680,8 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'created_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'created_at',
+    internal: ['id'],
     columns: [
       ro('id'),
       ro('line_user_id', true),
@@ -401,6 +699,8 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: 'id',
     orderBy: 'occurred_at DESC',
     touchUpdatedAt: false,
+    timeColumn: 'occurred_at',
+    internal: ['id'],
     columns: [
       ro('id'),
       ro('occurred_at'),
@@ -422,6 +722,8 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: ['line_user_id', 'feature_key'],
     orderBy: 'updated_at DESC',
     touchUpdatedAt: true,
+    timeColumn: 'updated_at',
+    labels: { source: '設定元' },
     columns: [
       ro('line_user_id', true),
       ro('feature_key', true),
@@ -437,6 +739,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     pk: ['kind', 'key'],
     orderBy: 'kind ASC',
     touchUpdatedAt: false,
+    timeColumn: 'fetched_at',
     columns: [
       ro('kind', true),
       ro('key', true),

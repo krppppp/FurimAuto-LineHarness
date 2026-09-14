@@ -5,7 +5,17 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Header from '@/components/layout/header'
 import { fetchApi, getCsrfToken } from '@/lib/api'
-import { DISPLAY_NAME_COLUMN, FRIEND_CREATED_AT_COLUMN, ROW_ID_COLUMN, rowId, type AdminTableMeta } from '../types'
+import {
+  DISPLAY_NAME_COLUMN,
+  FRIEND_CREATED_AT_COLUMN,
+  ROW_ID_COLUMN,
+  listColumnsOf,
+  rowId,
+  type AdminColumn,
+  type AdminTableMeta,
+  type DateTimeStorage,
+} from '../types'
+import { toDisplayDateTime, toStorageDateTime } from '../datetime'
 
 type Row = Record<string, unknown>
 
@@ -40,6 +50,7 @@ type RelatedEntry = { table: AdminTableMeta; total: number; rows: Row[]; q: stri
 type RelatedResponse = { success: boolean; error?: string; data: { identity: Identity; related: RelatedEntry[] } }
 
 const LIMIT = 50
+const DATETIME_PLACEHOLDER = '2026/09/13 23:45:43'
 
 // fetchApi は 4xx を例外にして本文を捨てるので、PATCH/POST/DELETE のエラー文（列の型違い・UNIQUE 制約など）を出すために本文を読む
 async function mutate(method: 'PATCH' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<RowResponse> {
@@ -78,18 +89,22 @@ function cell(v: unknown): string {
   return typeof v === 'string' ? v : String(v)
 }
 
+function shown(v: unknown, datetime: DateTimeStorage | null): string {
+  return datetime ? toDisplayDateTime(v) : cell(v)
+}
+
 function tableHref(name: string, params: Record<string, string>): string {
   const sp = new URLSearchParams({ name, ...params })
   return `/data/table?${sp.toString()}`
 }
 
-function friendCreatedAt(row: Row): string {
-  return cell(row[FRIEND_CREATED_AT_COLUMN]).replace('T', ' ').slice(0, 19)
-}
-
 function DisplayName({ row }: { row: Row }) {
   const v = cell(row[DISPLAY_NAME_COLUMN])
   return v ? <span className="font-medium text-gray-900">{v}</span> : <span className="text-gray-300">—</span>
+}
+
+function pkIsInternal(table: AdminTableMeta): boolean {
+  return table.pkColumns.some((n) => table.columns.find((c) => c.name === n)?.internal)
 }
 
 function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
@@ -127,13 +142,12 @@ function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
   if (loading) return <div className="px-5 py-4 text-sm text-gray-400">読み込み中...</div>
   if (error) return <div className="m-5 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>
 
-  const idEntries: Array<[string, string | null]> = identity
+  const idEntries: Array<[string, string, string | null]> = identity
     ? [
-        ['LINE 表示名', identity.display_name],
-        ['line_user_id', identity.line_user_id],
-        ['friend_id', identity.friend_id],
-        ['stripe_customer_id', identity.stripe_customer_id],
-        ['key_code', identity.key_code],
+        ['LINE表示名', 'display_name', identity.display_name],
+        ['LINEユーザーID', 'line_user_id', identity.line_user_id],
+        ['Stripe顧客ID', 'stripe_customer_id', identity.stripe_customer_id],
+        ['キーコード', 'key_code', identity.key_code],
       ]
     : []
   const nonEmpty = related.filter((r) => r.total > 0)
@@ -144,9 +158,9 @@ function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
       <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
         <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">本人</div>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-          {idEntries.map(([k, v]) => (
-            <div key={k} className="contents">
-              <dt className="font-mono text-gray-500">{k}</dt>
+          {idEntries.map(([label, name, v]) => (
+            <div key={name} className="contents">
+              <dt className="text-gray-500" title={name}>{label}</dt>
               <dd className="break-all text-gray-800">{v ? v : <span className="text-gray-300">—</span>}</dd>
             </div>
           ))}
@@ -158,67 +172,72 @@ function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
 
       {nonEmpty.length === 0 && <div className="text-sm text-gray-400">紐づくデータはありません</div>}
 
-      {nonEmpty.map((r) => (
-        <div key={r.table.name}>
-          <div className="flex items-center justify-between mb-1.5">
-            <div className="text-sm font-semibold text-gray-900">
-              {r.table.label}
-              <span className="ml-2 text-xs font-normal text-gray-500">{r.total} 件</span>
-              <span className="ml-2 text-xs font-mono font-normal text-gray-400">{r.table.name}</span>
+      {nonEmpty.map((r) => {
+        const cols = listColumnsOf(r.table)
+        return (
+          <div key={r.table.name}>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="text-sm font-semibold text-gray-900" title={r.table.name}>
+                {r.table.label}
+                <span className="ml-2 text-xs font-normal text-gray-500">{r.total} 件</span>
+              </div>
+              <Link href={tableHref(r.table.name, { q: r.q })} className="text-xs text-green-700 hover:underline">
+                もっと見る →
+              </Link>
             </div>
-            <Link href={tableHref(r.table.name, { q: r.q })} className="text-xs text-green-700 hover:underline">
-              もっと見る →
-            </Link>
-          </div>
-          <div className="overflow-x-auto rounded-lg border border-gray-200">
-            <table className="min-w-full text-xs">
-              <thead>
-                <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="px-2 py-1.5 text-left font-semibold text-gray-500 whitespace-nowrap">LINE 表示名</th>
-                  {r.table.columns.map((c) => (
-                    <th key={c.name} className="px-2 py-1.5 text-left font-semibold text-gray-500 whitespace-nowrap font-mono">
-                      {c.name}
+            <div className="overflow-x-auto rounded-lg border border-gray-200">
+              <table className="min-w-full text-xs">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-200">
+                    <th className="px-2 py-1.5 text-left font-semibold text-gray-500 whitespace-nowrap" title={DISPLAY_NAME_COLUMN}>
+                      LINE表示名
                     </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {r.rows.map((x) => {
-                  const pk = rowId(x, r.table)
-                  return (
-                    <tr key={pk} className="hover:bg-green-50">
-                      <td className="px-2 py-1.5 whitespace-nowrap">
-                        <Link href={tableHref(r.table.name, { open: pk })} className="hover:underline">
-                          <DisplayName row={x} />
-                        </Link>
-                      </td>
-                      {r.table.columns.map((c) => {
-                        const v = cell(x[c.name])
-                        return (
-                          <td key={c.name} className="px-2 py-1.5 whitespace-nowrap max-w-[16rem] truncate text-gray-800" title={v}>
-                            {r.table.pkColumns.includes(c.name) ? (
-                              <Link href={tableHref(r.table.name, { open: pk })} className="font-mono text-green-700 hover:underline">
-                                {v}
-                              </Link>
-                            ) : v === '' ? (
-                              <span className="text-gray-300">—</span>
-                            ) : (
-                              v
-                            )}
-                          </td>
-                        )
-                      })}
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+                    {cols.map((c) => (
+                      <th key={c.name} className="px-2 py-1.5 text-left font-semibold text-gray-500 whitespace-nowrap" title={c.name}>
+                        {c.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {r.rows.map((x) => {
+                    const pk = rowId(x, r.table)
+                    return (
+                      <tr key={pk} className="hover:bg-green-50">
+                        <td className="px-2 py-1.5 whitespace-nowrap">
+                          <Link href={tableHref(r.table.name, { open: pk })} className="hover:underline">
+                            <DisplayName row={x} />
+                          </Link>
+                        </td>
+                        {cols.map((c) => {
+                          const v = shown(x[c.name], c.datetime)
+                          const linked = c.name === r.table.timeColumn || r.table.pkColumns.includes(c.name)
+                          return (
+                            <td key={c.name} className="px-2 py-1.5 whitespace-nowrap max-w-[16rem] truncate text-gray-800" title={v}>
+                              {linked ? (
+                                <Link href={tableHref(r.table.name, { open: pk })} className="text-green-700 hover:underline">
+                                  {v === '' ? '—' : v}
+                                </Link>
+                              ) : v === '' ? (
+                                <span className="text-gray-300">—</span>
+                              ) : (
+                                v
+                              )}
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {r.total > r.rows.length && (
+              <div className="mt-1 text-xs text-gray-400">最新 {r.rows.length} 件を表示。残りは「もっと見る」で</div>
+            )}
           </div>
-          {r.total > r.rows.length && (
-            <div className="mt-1 text-xs text-gray-400">最新 {r.rows.length} 件を表示。残りは「もっと見る」で</div>
-          )}
-        </div>
-      ))}
+        )
+      })}
 
       {empty.length > 0 && (
         <div className="text-xs text-gray-400">
@@ -249,7 +268,7 @@ function RowEditor({
   const id = insert ? '' : rowId(row, table)
   const [tab, setTab] = useState<'edit' | 'related'>('edit')
   const [draft, setDraft] = useState<Record<string, string>>(() =>
-    Object.fromEntries(table.columns.map((c) => [c.name, cell(row[c.name])])),
+    Object.fromEntries(table.columns.map((c) => [c.name, shown(row[c.name], c.datetime)])),
   )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -275,10 +294,15 @@ function RowEditor({
     loadAudit()
   }, [loadAudit])
 
+  // 日時列は表示形式で入力し、送るときにその列の現在の保存形式へ戻す
+  const valueToSend = (c: AdminColumn, text: string): string =>
+    c.datetime ? toStorageDateTime(text, insert ? '' : row[c.name], c.datetime) : text
+  const isChanged = (c: AdminColumn): boolean =>
+    canEdit(c) && (insert ? draft[c.name] !== '' : valueToSend(c, draft[c.name] ?? '') !== cell(row[c.name]))
+
   const changes: Record<string, string> = {}
   for (const c of table.columns) {
-    if (!canEdit(c)) continue
-    if (insert ? draft[c.name] !== '' : draft[c.name] !== cell(row[c.name])) changes[c.name] = draft[c.name]
+    if (isChanged(c)) changes[c.name] = valueToSend(c, draft[c.name] ?? '')
   }
   const changedCount = Object.keys(changes).length
   const editable = insert || table.columns.some((c) => c.editable)
@@ -297,9 +321,10 @@ function RowEditor({
           onSaved(res.data)
           return
         }
-        setNotice(`保存しました（${(res.meta?.changed ?? []).join(', ') || '変更なし'}）`)
+        const changedLabels = (res.meta?.changed ?? []).map((n) => table.columns.find((c) => c.name === n)?.label ?? n)
+        setNotice(`保存しました（${changedLabels.join('、') || '変更なし'}）`)
         onSaved({ ...res.data, [DISPLAY_NAME_COLUMN]: row[DISPLAY_NAME_COLUMN], [FRIEND_CREATED_AT_COLUMN]: row[FRIEND_CREATED_AT_COLUMN] })
-        setDraft(Object.fromEntries(table.columns.map((c) => [c.name, cell(res.data[c.name])])))
+        setDraft(Object.fromEntries(table.columns.map((c) => [c.name, shown(res.data[c.name], c.datetime)])))
         await loadAudit()
       } else {
         setError(res.error ?? (insert ? '追加に失敗しました' : '保存に失敗しました'))
@@ -311,8 +336,16 @@ function RowEditor({
     }
   }
 
+  const displayName = cell(row[DISPLAY_NAME_COLUMN])
+  const internalPk = pkIsInternal(table)
+  const pkLabels = table.pkColumns.map((n) => table.columns.find((c) => c.name === n)?.label ?? n).join('・')
+  const timeText = table.timeColumn ? toDisplayDateTime(row[table.timeColumn]) : ''
+  const rowSummary = internalPk
+    ? [displayName, timeText ? `${table.timeColumnLabel} ${timeText}` : ''].filter(Boolean).join(' ・ ')
+    : `${pkLabels} = ${id}`
+
   const handleDelete = async () => {
-    if (!window.confirm(`${table.label} の行（${table.pk} = ${id}）を削除します。元に戻せません。よろしいですか？`)) return
+    if (!window.confirm(`${table.label} の行（${rowSummary || id}）を削除します。元に戻せません。よろしいですか？`)) return
     setSaving(true)
     setError('')
     try {
@@ -329,7 +362,41 @@ function RowEditor({
     }
   }
 
-  const displayName = cell(row[DISPLAY_NAME_COLUMN])
+  const columnByName = new Map(table.columns.map((c) => [c.name, c]))
+  const mainColumns = table.listColumns.map((n) => columnByName.get(n)).filter((c): c is AdminColumn => Boolean(c))
+  const internalColumns = table.columns.filter((c) => c.internal)
+  const virtualTime = table.timeColumn && !columnByName.has(table.timeColumn) ? table.timeColumn : null
+
+  const renderField = (c: AdminColumn) => {
+    const editableHere = canEdit(c)
+    const changed = isChanged(c)
+    return (
+      <div key={c.name}>
+        <label className="block text-xs font-medium text-gray-700 mb-1" title={c.name}>
+          <span>{c.label}</span>
+          <span className="ml-2 text-gray-400">
+            {insert && table.pkColumns.includes(c.name) ? (autoId ? '自動採番' : '主キー（必須）') : editableHere ? '' : '読み取り専用'}
+          </span>
+        </label>
+        <input
+          type="text"
+          value={draft[c.name] ?? ''}
+          readOnly={!editableHere}
+          placeholder={c.datetime && editableHere ? DATETIME_PLACEHOLDER : undefined}
+          onChange={(e) => setDraft((d) => ({ ...d, [c.name]: e.target.value }))}
+          className={`w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 ${
+            editableHere
+              ? changed
+                ? 'border-yellow-400 bg-yellow-50'
+                : 'border-gray-300'
+              : 'border-gray-200 bg-gray-50 text-gray-500'
+          }`}
+        />
+      </div>
+    )
+  }
+
+  const labelOf = (name: string) => columnByName.get(name)?.label ?? name
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/30" onClick={onClose}>
@@ -343,7 +410,9 @@ function RowEditor({
               <div className="text-sm font-semibold text-gray-900">
                 {insert ? `${table.label} に行を追加` : `${displayName ? `${displayName} ・ ` : ''}${table.label}`}
               </div>
-              <div className="text-xs font-mono text-gray-500 break-all">{insert ? `主キー: ${table.pk}${autoId ? '（自動採番）' : ''}` : `${table.pk} = ${id}`}</div>
+              <div className="text-xs text-gray-500 break-all">
+                {insert ? `主キー: ${pkLabels}${autoId ? '（自動採番）' : ''}` : internalPk ? (timeText ? `${table.timeColumnLabel} ${timeText}` : '') : `${pkLabels} = ${id}`}
+              </div>
             </div>
             <div className="flex items-center gap-2">
               {tab === 'edit' && !insert && table.deletable && onDeleted && (
@@ -402,34 +471,21 @@ function RowEditor({
             <div className="px-5 py-4 space-y-3">
               {error && <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>}
               {notice && <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">{notice}</div>}
-              {table.columns.map((c) => {
-                const editableHere = canEdit(c)
-                const changed = editableHere && (insert ? draft[c.name] !== '' : draft[c.name] !== cell(row[c.name]))
-                return (
-                  <div key={c.name}>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                      <span className="font-mono">{c.name}</span>
-                      <span className="ml-2 text-gray-400">
-                        {c.type}
-                        {insert && table.pkColumns.includes(c.name) ? (autoId ? '・自動採番' : '・主キー（必須）') : editableHere ? '' : '・読み取り専用'}
-                      </span>
-                    </label>
-                    <input
-                      type="text"
-                      value={draft[c.name] ?? ''}
-                      readOnly={!editableHere}
-                      onChange={(e) => setDraft((d) => ({ ...d, [c.name]: e.target.value }))}
-                      className={`w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 ${
-                        editableHere
-                          ? changed
-                            ? 'border-yellow-400 bg-yellow-50'
-                            : 'border-gray-300'
-                          : 'border-gray-200 bg-gray-50 text-gray-500'
-                      }`}
-                    />
-                  </div>
-                )
-              })}
+              {virtualTime && !insert && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1" title={virtualTime}>
+                    <span>{table.timeColumnLabel}</span>
+                    <span className="ml-2 text-gray-400">読み取り専用</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={toDisplayDateTime(row[virtualTime])}
+                    readOnly
+                    className="w-full px-3 py-2 text-sm border rounded-lg border-gray-200 bg-gray-50 text-gray-500"
+                  />
+                </div>
+              )}
+              {mainColumns.map(renderField)}
             </div>
 
             {!insert && (
@@ -439,18 +495,31 @@ function RowEditor({
                 <div className="text-xs text-gray-400">まだ変更はありません</div>
               ) : (
                 <ul className="space-y-1.5 text-xs text-gray-700">
-                  {audit.map((a) => (
-                    <li key={a.id} className="flex flex-wrap gap-x-2">
-                      <span className="text-gray-400">{a.created_at.replace('T', ' ').slice(0, 19)}</span>
-                      <span>{a.staff_name}</span>
-                      <span className="font-mono">{a.column_name}</span>
-                      <span className="text-gray-400 line-through break-all">{a.old_value ?? '(空)'}</span>
-                      <span className="break-all">→ {a.new_value ?? '(空)'}</span>
-                    </li>
-                  ))}
+                  {audit.map((a) => {
+                    const col = columnByName.get(a.column_name)
+                    const val = (v: string | null) => (v === null ? '(空)' : col?.datetime ? toDisplayDateTime(v) : v)
+                    return (
+                      <li key={a.id} className="flex flex-wrap gap-x-2">
+                        <span className="text-gray-400">{toDisplayDateTime(a.created_at)}</span>
+                        <span>{a.staff_name}</span>
+                        <span title={a.column_name}>{labelOf(a.column_name)}</span>
+                        <span className="text-gray-400 line-through break-all">{val(a.old_value)}</span>
+                        <span className="break-all">→ {val(a.new_value)}</span>
+                      </li>
+                    )
+                  })}
                 </ul>
               )}
             </div>
+            )}
+
+            {internalColumns.length > 0 && (
+              <details open={insert} className="border-t border-gray-200 px-5 py-4">
+                <summary className="cursor-pointer text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                  内部情報（{internalColumns.length}）
+                </summary>
+                <div className="mt-3 space-y-3">{internalColumns.map(renderField)}</div>
+              </details>
             )}
           </>
         )}
@@ -553,13 +622,15 @@ function DataTableInner() {
     return <div className="p-8 text-center text-sm text-gray-500">テーブル名が指定されていません</div>
   }
 
+  const cols = table ? listColumnsOf(table) : []
+
   return (
     <div>
       <Header
         title={table ? `${table.label}` : name}
         description={
           table
-            ? `${table.name}・主キー ${table.pk}・行をクリックで開く${table.allRows ? '・全件 1 ページ（友だち登録の新しい順）' : ''}`
+            ? `${table.name}・行をクリックで開く${table.allRows ? '・全件 1 ページ（友だち登録の新しい順）' : ''}`
             : undefined
         }
         action={
@@ -604,7 +675,7 @@ function DataTableInner() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder={
-            table ? `検索: ${table.columns.filter((c) => c.searchable).map((c) => c.name).join(' / ')}` : '検索'
+            table ? `検索: ${table.columns.filter((c) => c.searchable).map((c) => c.label).join(' / ')}` : '検索'
           }
           className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
         />
@@ -656,33 +727,32 @@ function DataTableInner() {
       {loading && !table ? (
         <div className="text-sm text-gray-400">読み込み中...</div>
       ) : table ? (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-x-auto">
-          <table className="min-w-full text-sm">
+        // 見出しを固定するため、縦横ともこの枠の中でスクロールさせる
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-auto max-h-[calc(100vh-12rem)]">
+          <table className="min-w-full text-sm border-separate border-spacing-0">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 whitespace-nowrap sticky left-0 bg-gray-50" title="friends.display_name">
-                  LINE 表示名
+              <tr>
+                <th
+                  className="px-3 py-2 text-left text-xs font-semibold text-gray-500 whitespace-nowrap sticky top-0 left-0 z-30 bg-gray-50 border-b border-r border-gray-200"
+                  title="_display_name（friends.display_name）"
+                >
+                  LINE表示名
                 </th>
-                {table.joinFriends && (
-                  <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 whitespace-nowrap" title="friends.created_at">
-                    友だち登録日時
-                  </th>
-                )}
-                {table.columns.map((c) => (
+                {cols.map((c) => (
                   <th
                     key={c.name}
-                    className="px-3 py-2 text-left text-xs font-semibold text-gray-500 whitespace-nowrap font-mono"
-                    title={c.editable ? '編集可' : '読み取り専用'}
+                    className="px-3 py-2 text-left text-xs font-semibold text-gray-500 whitespace-nowrap sticky top-0 z-20 bg-gray-50 border-b border-gray-200"
+                    title={c.name}
                   >
-                    {c.name}
+                    {c.label}
                   </th>
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={table.columns.length + (table.joinFriends ? 2 : 1)} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={cols.length + 1} className="px-4 py-8 text-center text-gray-400">
                     行がありません
                   </td>
                 </tr>
@@ -693,18 +763,17 @@ function DataTableInner() {
                     onClick={() => setEditing(r)}
                     className="cursor-pointer hover:bg-green-50 transition-colors group"
                   >
-                    <td className="px-3 py-2 whitespace-nowrap max-w-xs truncate sticky left-0 bg-white group-hover:bg-green-50">
+                    <td className="px-3 py-2 whitespace-nowrap max-w-xs truncate sticky left-0 z-10 bg-white group-hover:bg-green-50 border-b border-r border-gray-100">
                       <DisplayName row={r} />
                     </td>
-                    {table.joinFriends && (
-                      <td className="px-3 py-2 whitespace-nowrap text-gray-600">
-                        {friendCreatedAt(r) || <span className="text-gray-300">—</span>}
-                      </td>
-                    )}
-                    {table.columns.map((c) => {
-                      const v = cell(r[c.name])
+                    {cols.map((c) => {
+                      const v = shown(r[c.name], c.datetime)
                       return (
-                        <td key={c.name} className="px-3 py-2 whitespace-nowrap max-w-xs truncate text-gray-800" title={v}>
+                        <td
+                          key={c.name}
+                          className={`px-3 py-2 whitespace-nowrap max-w-xs truncate border-b border-gray-100 ${c.datetime ? 'text-gray-600' : 'text-gray-800'}`}
+                          title={v}
+                        >
                           {v === '' ? <span className="text-gray-300">—</span> : v}
                         </td>
                       )

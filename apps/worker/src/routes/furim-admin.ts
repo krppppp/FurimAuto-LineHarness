@@ -3,7 +3,13 @@ import { jstNow } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
 import {
   ADMIN_TABLES,
+  FRIEND_CREATED_AT_COLUMN,
+  columnLabel,
+  csvColumnNames,
+  datetimeStorageOf,
   getAdminTable,
+  listColumnNames,
+  toDisplayDateTime,
   isDeletable,
   isInsertable,
   parseRowId,
@@ -203,10 +209,16 @@ function serializeTable(table: AdminTable) {
       type: c.type,
       editable: c.editable,
       searchable: Boolean(c.searchable),
+      label: columnLabel(table, c.name),
+      internal: (table.internal ?? []).includes(c.name),
+      datetime: datetimeStorageOf(c.name),
     })),
     keys: table.keys,
     joinFriends: Boolean(table.joinFriends),
     allRows: Boolean(table.allRows),
+    timeColumn: table.timeColumn ?? null,
+    timeColumnLabel: table.timeColumn ? columnLabel(table, table.timeColumn) : null,
+    listColumns: listColumnNames(table),
   };
 }
 
@@ -239,11 +251,11 @@ function toAuditText(v: unknown): string | null {
 }
 
 /** 主キー条件（複合主キー対応）。id が形式不正なら null */
-function pkWhere(table: AdminTable, id: string): { where: string; binds: string[] } | null {
+function pkWhere(table: AdminTable, id: string, prefix = ''): { where: string; binds: string[] } | null {
   const parsed = parseRowId(table, id);
   if (!parsed) return null;
   const cols = pkColumns(table);
-  return { where: cols.map((c) => `${c} = ?`).join(' AND '), binds: cols.map((c) => parsed[c]) };
+  return { where: cols.map((c) => `${prefix}${c} = ?`).join(' AND '), binds: cols.map((c) => parsed[c]) };
 }
 
 function attachRowIds(table: AdminTable, rows: Row[]): void {
@@ -345,11 +357,10 @@ furimAdmin.get('/api/furim/admin/:table/export.csv', async (c) => {
     .all<Row>();
   const data = rows.results ?? [];
   await attachDisplayNames(c.env.DB, [{ table, rows: data }]);
-  const columns = table.columns.map((x) => x.name);
-  const header = ['LINE表示名', ...(table.joinFriends ? ['友だち登録日時'] : []), ...columns];
-  const lines = [header.map(csvCell).join(',')];
+  const columns = csvColumnNames(table);
+  const lines = [columns.map((name) => csvCell(columnLabel(table, name))).join(',')];
   for (const row of data) {
-    const cells = [row._display_name, ...(table.joinFriends ? [row._friend_created_at] : []), ...columns.map((name) => row[name])];
+    const cells = columns.map((name) => (datetimeStorageOf(name) ? toDisplayDateTime(row[name]) : row[name]));
     lines.push(cells.map(csvCell).join(','));
   }
   const stamp = jstNow().slice(0, 19).replace(/[-:T]/g, '').replace(/\.\d+$/, '');
@@ -386,7 +397,7 @@ furimAdmin.get('/api/furim/admin/:table/:id/related', async (c) => {
 
   const identity = await resolveIdentity(c.env.DB, table, row);
 
-  const targets: Array<{ table: AdminTable; where: string; binds: string[]; q: string }> = [];
+  const targets: Array<{ table: AdminTable; where: string; joinedWhere: string; binds: string[]; q: string }> = [];
   for (const t of ADMIN_TABLES) {
     const conds: string[] = [];
     const binds: string[] = [];
@@ -394,25 +405,33 @@ furimAdmin.get('/api/furim/admin/:table/:id/related', async (c) => {
     for (const key of t.keys) {
       const v = identity[key.kind];
       if (!v) continue;
-      conds.push(`${key.column} = ?`);
+      conds.push(key.column);
       binds.push(v);
       if (!q) q = v;
     }
     if (conds.length === 0) continue;
-    let where = `(${conds.join(' OR ')})`;
+    let where = `(${conds.map((col) => `${col} = ?`).join(' OR ')})`;
+    let joinedWhere = `(${conds.map((col) => `t.${col} = ?`).join(' OR ')})`;
     if (t.name === table.name) {
       const self = pkWhere(t, rowId);
-      if (self) {
+      const selfJoined = pkWhere(t, rowId, 't.');
+      if (self && selfJoined) {
         where += ` AND NOT (${self.where})`;
+        joinedWhere += ` AND NOT (${selfJoined.where})`;
         binds.push(...self.binds);
       }
     }
-    targets.push({ table: t, where, binds, q });
+    targets.push({ table: t, where, joinedWhere, binds, q });
   }
 
+  // joinFriends のテーブル（顧客）は基準日時の友だち登録日時を付ける
   const statements = targets.flatMap((tg) => [
     c.env.DB.prepare(`SELECT COUNT(*) AS n FROM ${tg.table.name} WHERE ${tg.where}`).bind(...tg.binds),
-    c.env.DB.prepare(`SELECT * FROM ${tg.table.name} WHERE ${tg.where} ORDER BY ${tg.table.orderBy}, ${pkColumns(tg.table).join(', ')} LIMIT ?`).bind(...tg.binds, RELATED_LIMIT),
+    tg.table.joinFriends
+      ? c.env.DB.prepare(
+          `SELECT t.*, f.created_at AS ${FRIEND_CREATED_AT_COLUMN} FROM ${tg.table.name} t LEFT JOIN friends f ON f.line_user_id = t.${pkColumns(tg.table)[0]} WHERE ${tg.joinedWhere} ORDER BY t.${tg.table.orderBy}, ${pkColumns(tg.table).map((col) => `t.${col}`).join(', ')} LIMIT ?`,
+        ).bind(...tg.binds, RELATED_LIMIT)
+      : c.env.DB.prepare(`SELECT * FROM ${tg.table.name} WHERE ${tg.where} ORDER BY ${tg.table.orderBy}, ${pkColumns(tg.table).join(', ')} LIMIT ?`).bind(...tg.binds, RELATED_LIMIT),
   ]);
   const results = statements.length ? await c.env.DB.batch<Row>(statements) : [];
 
@@ -433,6 +452,12 @@ furimAdmin.get('/api/furim/admin/:table/:id', async (c) => {
   if (!table) return c.json({ success: false, error: 'このテーブルは扱えません' }, 404);
   const row = await fetchRow(c.env.DB, table, c.req.param('id'));
   if (!row) return c.json({ success: false, error: '行が見つかりません' }, 404);
+  if (table.joinFriends) {
+    const f = await c.env.DB.prepare('SELECT created_at FROM friends WHERE line_user_id = ?')
+      .bind(row[pkColumns(table)[0]])
+      .first<{ created_at: string | null }>();
+    row[FRIEND_CREATED_AT_COLUMN] = f?.created_at ?? null;
+  }
   await attachDisplayNames(c.env.DB, [{ table, rows: [row] }]);
   return c.json({ success: true, data: row, meta: { table: serializeTable(table) } });
 });

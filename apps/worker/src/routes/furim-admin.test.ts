@@ -526,7 +526,191 @@ describe('#246 段階4 本体: 複合主キー・追加・削除・CSV', () => {
     expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
     const text = new TextDecoder().decode(bytes);
     const lines = text.trim().split('\r\n');
-    expect(lines[0]).toBe('LINE表示名,name,coupon_id,is_active');
+    expect(lines[0]).toBe('LINE表示名,クーポン名,クーポンID,有効');
     expect(lines[1]).toBe(',"クーポン,A","c""1",1');
+  });
+});
+
+describe('#253 decision #372: 列順・内部 ID・日本語ラベル・日時表示', () => {
+  it('tables の各列に日本語ラベル・内部 ID・日時の保存形式が付き、基準日時と一覧の列順を返す', async () => {
+    const { db } = makeDb();
+    const res = await req(db, 'GET', '/api/furim/admin/tables');
+    type Col = { name: string; label: string; internal: boolean; datetime: string | null };
+    type Tbl = { name: string; timeColumn: string | null; timeColumnLabel: string | null; listColumns: string[]; columns: Col[] };
+    const body = (await res.json()) as { data: Tbl[] };
+    const by = (name: string) => body.data.find((t) => t.name === name)!;
+
+    expect(Object.fromEntries(body.data.map((t) => [t.name, t.timeColumn]))).toEqual({
+      furim_customers: '_friend_created_at',
+      furim_payments: 'paid_at',
+      furim_ticket_ledger: 'created_at',
+      furim_cancellations: 'canceled_at',
+      furim_referrals: 'created_at',
+      affiliates: 'created_at',
+      furim_coupons: null,
+      furim_execution_logs: 'created_at',
+      furim_ext_errors: 'created_at',
+      furim_free_accounts: 'created_at',
+      furim_manual_copy_logs: 'started_at',
+      furim_shop_research_logs: 'created_at',
+      furim_auto_copy_logs: 'processed_at',
+      furim_survey_answers: 'created_at',
+      furim_coupon_applications: 'created_at',
+      furim_referral_cashbacks: 'occurred_at',
+      furim_feature_flags: 'updated_at',
+      furim_master: 'fetched_at',
+    });
+    expect(by('furim_customers').timeColumnLabel).toBe('友だち登録日時');
+    expect(by('furim_payments').timeColumnLabel).toBe('決済日時');
+
+    // 基準日時が先頭、残りは schema 順
+    const payments = by('furim_payments');
+    expect(payments.listColumns[0]).toBe('paid_at');
+    expect(payments.listColumns.slice(1, 4)).toEqual(['invoice_id', 'stripe_event_id', 'line_user_id']);
+    expect(payments.listColumns.filter((n) => n === 'paid_at')).toHaveLength(1);
+    expect(by('furim_customers').listColumns.slice(0, 3)).toEqual(['_friend_created_at', 'line_user_id', 'stripe_customer_id']);
+
+    // 内部 ID は一覧から外れ、外部 ID は残る
+    const referrals = by('furim_referrals');
+    expect(referrals.columns.filter((c) => c.internal).map((c) => c.name)).toEqual(['id', 'affiliate_id', 'ambassador_friend_id', 'introduced_friend_id']);
+    expect(referrals.listColumns).not.toContain('introduced_friend_id');
+    expect(referrals.listColumns[0]).toBe('created_at');
+    expect(by('affiliates').listColumns).not.toContain('friend_id');
+    expect(by('furim_ticket_ledger').listColumns).toEqual(expect.arrayContaining(['line_user_id', 'payment_intent_id', 'invoice_id']));
+    expect(by('furim_ticket_ledger').listColumns).not.toContain('id');
+    expect(by('furim_customers').columns.some((c) => c.internal)).toBe(false);
+    expect(by('furim_feature_flags').columns.some((c) => c.internal)).toBe(false);
+    for (const t of body.data) {
+      expect(t.listColumns.length + t.columns.filter((c) => c.internal).length, t.name).toBe(t.columns.length + (t.timeColumn?.startsWith('_') ? 1 : 0));
+    }
+
+    // ラベルと日時
+    const col = (t: string, n: string) => by(t).columns.find((c) => c.name === n)!;
+    expect(col('furim_customers', 'key_code').label).toBe('キーコード');
+    expect(col('furim_cancellations', 'display_name').label).toBe('LINE表示名（解約時点）');
+    expect(col('furim_customers', 'subscription_end_at').datetime).toBe('space');
+    expect(col('furim_customers', 'updated_at').datetime).toBe('jst');
+    expect(col('furim_execution_logs', 'mypage_info_updated_date').datetime).toBe('utc');
+    expect(col('furim_customers', 'plan_label').datetime).toBeNull();
+  });
+
+  it('ラベル未定義の列は英名のまま', async () => {
+    const { columnLabel, getAdminTable } = await import('../furim/admin-schema.js');
+    expect(columnLabel(getAdminTable('furim_payments')!, 'no_such_column')).toBe('no_such_column');
+  });
+
+  it('CSV の見出しは日本語で一覧と同じ列順（内部 ID は末尾）、日時列は表示形式・日時以外は保存値のまま', async () => {
+    const { db } = makeDb({
+      allRows: [
+        [{ id: 'r1', affiliate_id: 'a1', ambassador_friend_id: 'f2', introduced_friend_id: 'f1', ref_code: 'R', source: 'url', trial_extended_days: 7, reward_applied_at: '2026-09-04 19:12:54', created_at: '2026-09-13T23:45:43.193+09:00' }],
+        [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_referrals/export.csv');
+    const text = new TextDecoder().decode(new Uint8Array(await res.arrayBuffer()));
+    const [head, first] = text.replace(/^\ufeff/, '').trim().split('\r\n');
+    expect(head).toBe('LINE表示名,作成日時,紹介コード,経路,アンバサダーのプラン,報酬クーポン名,報酬クーポンID,報酬適用日時,被紹介者クーポンID,試用延長日数,内部ID,アンバサダー内部ID,アンバサダー友だち内部ID,被紹介者友だち内部ID');
+    expect(first).toBe('たろう,2026/09/13 23:45:43,R,url,,,,2026/09/04 19:12:54,,7,r1,a1,f2,f1');
+  });
+
+  it('顧客 CSV は 2 列目が友だち登録日時（表示形式）', async () => {
+    const { db } = makeDb({
+      allRows: [
+        [{ ...CUSTOMER, subscription_end_at: '2026-12-31 20:44:41', _friend_created_at: '2023-05-25T19:53:19.000+09:00' }],
+        [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_customers/export.csv');
+    const text = new TextDecoder().decode(new Uint8Array(await res.arrayBuffer()));
+    const lines = text.replace(/^\ufeff/, '').trim().split('\r\n');
+    const head = lines[0].split(',');
+    const row = lines[1].split(',');
+    expect(head.slice(0, 3)).toEqual(['LINE表示名', '友だち登録日時', 'LINEユーザーID']);
+    expect(row.slice(0, 3)).toEqual(['たろう', '2023/05/25 19:53:19', 'U1']);
+    expect(row[head.indexOf('サブスク終了日時')]).toBe('2026/12/31 20:44:41');
+    expect(row[head.indexOf('作成日時')]).toBe('2026/09/13 00:00:00');
+    expect(row[head.indexOf('プラン名')]).toBe('PBプラン');
+  });
+
+  it('顧客の 1 行取得に友だち登録日時が付き、関連データの顧客行も friends を JOIN する', async () => {
+    const one = makeDb({ firstRows: [CUSTOMER, { created_at: '2023-05-25T19:53:19.000+09:00' }] });
+    const res = await req(one.db, 'GET', '/api/furim/admin/furim_customers/U1');
+    const body = (await res.json()) as { data: Record<string, unknown> };
+    expect(body.data._friend_created_at).toBe('2023-05-25T19:53:19.000+09:00');
+    expect(one.statements[1].sql).toBe('SELECT created_at FROM friends WHERE line_user_id = ?');
+
+    const rel = makeDb({ firstRows: [{ invoice_id: 'in_1', line_user_id: 'U1', stripe_customer_id: 'cus_1' }] });
+    await req(rel.db, 'GET', '/api/furim/admin/furim_payments/in_1/related');
+    const stmts = rel.batches[0];
+    expect(stmts[0].sql).toBe('SELECT COUNT(*) AS n FROM furim_customers WHERE (line_user_id = ? OR stripe_customer_id = ?)');
+    expect(stmts[1].sql).toBe(
+      'SELECT t.*, f.created_at AS _friend_created_at FROM furim_customers t LEFT JOIN friends f ON f.line_user_id = t.line_user_id WHERE (t.line_user_id = ? OR t.stripe_customer_id = ?) ORDER BY t.updated_at DESC, t.line_user_id LIMIT ?',
+    );
+    expect(stmts[1].args).toEqual(['U1', 'cus_1', 20]);
+  });
+
+  it('同じテーブルの関連データ（顧客→顧客）は JOIN 側でも自分の行を t. 付きで除外する', async () => {
+    const { db, batches } = makeDb({ firstRows: [CUSTOMER, { id: 'f1', line_user_id: 'U1', display_name: 'たろう' }] });
+    await req(db, 'GET', '/api/furim/admin/furim_customers/U1/related');
+    expect(batches[0][1].sql).toContain('WHERE (t.line_user_id = ? OR t.stripe_customer_id = ? OR t.key_code = ?) AND NOT (t.line_user_id = ?)');
+    expect(batches[0][1].args).toEqual(['U1', 'cus_1', 'ABC', 'U1', 20]);
+  });
+});
+
+describe('日時の相互変換（表示 2026/09/13 23:45:43 ⇔ 保存形式）', () => {
+  it('保存値を JST の表示形式にする（ミリ秒・T・オフセットを落とし、UTC は +9 時間）。読めない値はそのまま', async () => {
+    const { toDisplayDateTime } = await import('../furim/admin-schema.js');
+    expect(toDisplayDateTime('2026-09-13T23:45:43.193+09:00')).toBe('2026/09/13 23:45:43');
+    expect(toDisplayDateTime('2026-09-13T23:45:43+09:00')).toBe('2026/09/13 23:45:43');
+    expect(toDisplayDateTime('2026-09-13T19:54:32.847')).toBe('2026/09/13 19:54:32');
+    expect(toDisplayDateTime('2026-12-31 20:44:41')).toBe('2026/12/31 20:44:41');
+    expect(toDisplayDateTime('2026-09-13T14:45:43.000Z')).toBe('2026/09/13 23:45:43');
+    expect(toDisplayDateTime('2026-09-13T20:00:00.000Z')).toBe('2026/09/14 05:00:00');
+    expect(toDisplayDateTime('2026/09/14 08:07:35')).toBe('2026/09/14 08:07:35');
+    expect(toDisplayDateTime('2026年9月13日')).toBe('2026年9月13日');
+    expect(toDisplayDateTime('2026-13-40 99:00:00')).toBe('2026-13-40 99:00:00');
+    expect(toDisplayDateTime(null)).toBe('');
+  });
+
+  it('表示形式のまま保存すると元の値が変わらない（全保存形式で往復）', async () => {
+    const { toDisplayDateTime, toStorageDateTime } = await import('../furim/admin-schema.js');
+    for (const original of [
+      '2026-09-13T23:45:43.193+09:00',
+      '2026-09-13T23:45:43+09:00',
+      '2026-09-13T19:54:32.847',
+      '2026-12-31 20:44:41',
+      '2026-09-13T14:45:43.123Z',
+      '2026/09/14 08:07:35',
+      'よくわからない値',
+    ]) {
+      expect(toStorageDateTime(toDisplayDateTime(original), original, 'jst'), original).toBe(original);
+    }
+    expect(toStorageDateTime('2026/9/13 23:45:43', '2026-09-13T23:45:43.193+09:00', 'jst')).toBe('2026-09-13T23:45:43.193+09:00');
+  });
+
+  it('時刻を変えたら元の値の保存形式で返し、表示に戻すと入力どおり', async () => {
+    const { toDisplayDateTime, toStorageDateTime } = await import('../furim/admin-schema.js');
+    const cases: Array<[string, string, string]> = [
+      ['2026-09-13T23:45:43.193+09:00', '2026/09/14 00:10:00', '2026-09-14T00:10:00.000+09:00'],
+      ['2026-09-13T23:45:43+09:00', '2026/09/14 00:10:00', '2026-09-14T00:10:00+09:00'],
+      ['2026-09-13T19:54:32.847', '2026/09/14 00:10:00', '2026-09-14T00:10:00.000'],
+      ['2026-12-31 20:44:41', '2027/01/07 20:44:41', '2027-01-07 20:44:41'],
+      ['2026-09-13T14:45:43.000Z', '2026/09/14 00:10:00', '2026-09-13T15:10:00.000Z'],
+      ['2026/09/14 08:07:35', '2026/09/14 09:00:00', '2026/09/14 09:00:00'],
+    ];
+    for (const [original, input, stored] of cases) {
+      expect(toStorageDateTime(input, original, 'jst'), original).toBe(stored);
+      expect(toDisplayDateTime(stored), original).toBe(input);
+    }
+  });
+
+  it('元の値が空なら列の既定形式、空入力は空、表示形式でない入力はそのまま', async () => {
+    const { toStorageDateTime } = await import('../furim/admin-schema.js');
+    expect(toStorageDateTime('2026/09/13 23:45:43', null, 'jst')).toBe('2026-09-13T23:45:43.000+09:00');
+    expect(toStorageDateTime('2026/09/13 23:45:43', '', 'space')).toBe('2026-09-13 23:45:43');
+    expect(toStorageDateTime('2026/09/13 23:45:43', null, 'utc')).toBe('2026-09-13T14:45:43.000Z');
+    expect(toStorageDateTime('', '2026-09-13T23:45:43.193+09:00', 'jst')).toBe('');
+    expect(toStorageDateTime('2026-09-13T23:00:00.000+09:00', '2026-09-13T23:45:43.193+09:00', 'jst')).toBe('2026-09-13T23:00:00.000+09:00');
+    expect(toStorageDateTime('2026/02/30 10:00:00', '2026-09-13T23:45:43.193+09:00', 'jst')).toBe('2026/02/30 10:00:00');
   });
 });
