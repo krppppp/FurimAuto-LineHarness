@@ -17,7 +17,6 @@ export type SheetSpec = {
   sheet: string;
   headerRow: number;
   table: string;
-  masterKind?: string;
 };
 
 export const SHEET_BACKFILL_SPECS: SheetSpec[] = [
@@ -33,8 +32,6 @@ export const SHEET_BACKFILL_SPECS: SheetSpec[] = [
   { name: 'coupon-applications', sheet: 'クーポン適用履歴', headerRow: 1, table: 'furim_coupon_applications' },
   { name: 'cancellations', sheet: 'キャンセル一覧', headerRow: 1, table: 'furim_cancellations' },
   { name: 'referral-cashbacks', sheet: '紹介キャッシュバック履歴', headerRow: 2, table: 'furim_referral_cashbacks' },
-  { name: 'plans', sheet: 'プラン一覧', headerRow: 3, table: 'furim_master', masterKind: 'plan' },
-  { name: 'ticket-prices', sheet: 'チケット単価一覧', headerRow: 1, table: 'furim_master', masterKind: 'ticket_price' },
 ];
 
 export function getSheetSpec(name: string): SheetSpec | undefined {
@@ -324,39 +321,9 @@ function mapper(spec: SheetSpec): Mapper {
           key: hash,
         };
       };
-    case 'plans':
-      return async (r, ctx) => {
-        const planName = str(r['プラン名']);
-        if (!planName) return 'missing_key';
-        const features: Record<string, unknown> = {};
-        const payload: Record<string, unknown> = {};
-        for (const [h, v] of Object.entries(r)) {
-          const m = h.match(/\(([A-Za-z]+)\)/);
-          if (m) features[m[1]] = v;
-          else payload[h] = v;
-        }
-        payload.features = features;
-        return masterRow(spec, planName, planName, str(r['PriceID']), int(r['価格']), payload, ctx);
-      };
-    case 'ticket-prices':
-      return async (r, ctx) => {
-        const unit = str(r['単価']);
-        if (!unit) return 'missing_key';
-        return masterRow(spec, unit, unit, str(r['PriceID']), null, r, ctx);
-      };
     default:
       throw new Error(`unknown sheet spec: ${spec.name}`);
   }
-}
-
-function masterRow(spec: SheetSpec, key: string, displayName: string, priceId: string | null, monthlyPrice: number | null, payload: unknown, ctx: ResolveContext): MappedRow {
-  return {
-    table: 'furim_master',
-    columns: ['kind', 'key', 'display_name', 'stripe_price_id', 'monthly_price', 'active', 'payload', 'fetched_at'],
-    values: [spec.masterKind, key, displayName, priceId, monthlyPrice, 1, JSON.stringify(payload), ctx.importedAt],
-    key,
-    conflict: { target: 'kind, key', update: ['display_name', 'stripe_price_id', 'monthly_price', 'active', 'payload', 'fetched_at'] },
-  };
 }
 
 export async function mapSheetRows(spec: SheetSpec, rows: SheetRow[], ctx: ResolveContext): Promise<MapResult> {
@@ -447,9 +414,7 @@ export async function fetchSheetRows(gasDeployId: string, spec: SheetSpec): Prom
 }
 
 export async function countTableRows(db: D1Database, spec: SheetSpec): Promise<number> {
-  const stmt = spec.masterKind
-    ? db.prepare('SELECT COUNT(*) AS n FROM furim_master WHERE kind = ?').bind(spec.masterKind)
-    : db.prepare(`SELECT COUNT(*) AS n FROM ${spec.table}`);
+  const stmt = db.prepare(`SELECT COUNT(*) AS n FROM ${spec.table}`);
   const row = await stmt.first<{ n: number }>();
   return Number(row?.n ?? 0);
 }

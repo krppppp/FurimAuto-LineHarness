@@ -67,6 +67,7 @@ import { lpAnalytics } from './routes/lp-analytics.js';
 import { furim } from './routes/furim.js';
 import { furimCoupons } from './routes/furim-coupons.js';
 import { furimChats } from './routes/furim-chats.js';
+import { furimMasters } from './routes/furim-masters.js';
 import { furimAdmin } from './routes/furim-admin.js';
 import { extApi } from './routes/ext-api.js';
 import { furimBackfill } from './routes/furim-backfill.js';
@@ -254,6 +255,7 @@ app.route('/', lpAnalytics);
 app.route('/', furim);
 app.route('/', furimCoupons);
 app.route('/', furimChats);
+app.route('/', furimMasters);
 app.route('/', furimAdmin);
 app.route('/', extApi);
 app.route('/', furimBackfill);
@@ -1153,16 +1155,6 @@ async function scheduled(
     await processInsightFetch(env.DB, lineClients, defaultLineClient);
   } catch (e) {
     console.error('Insight fetch error:', e);
-  }
-
-  // FurimAuto: 機能/パッケージマスタ（furim_master）を GAS getFeatureMaster から取り込み直す — 6h cron tick（段階4 で GAS を消すまで）
-  if (event.cron === '0 */6 * * *' && env.GAS_DEPLOY_ID) {
-    try {
-      const { refreshFurimMaster } = await import('./furim/feature-flags.js');
-      await refreshFurimMaster(env.DB, env.GAS_DEPLOY_ID);
-    } catch (e) {
-      console.error('[cron] furim master refresh error:', e);
-    }
   }
 
   // Booking expirer — runs only on the 6h cron tick.

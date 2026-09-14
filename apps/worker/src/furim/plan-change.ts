@@ -77,7 +77,7 @@ export async function handlePlanChangeMessage(
     await setStage(db, code, 'loaded');
 
     const { stripeCall, ensureComboCoupon, getSubDiscounts, STRIPE_STACK_VERSION } = await import('../routes/plan-builder.js');
-    const sel = await resolvePlanSelection(env.GAS_DEPLOY_ID, { ...payload, lineUserId });
+    const sel = await resolvePlanSelection(db, { ...payload, lineUserId });
     const newItems = buildItemsFromSelection(sel);
 
     // 現在のitemsを取得して入れ替え（差額は日割りで即時invoice）
@@ -266,7 +266,7 @@ export async function handlePlanChangeMessage(
     let decided: import('./feature-flags.js').PlanSyncResult | null = null;
     try {
       const { applyPlanBuilderSync } = await import('./feature-flags.js');
-      decided = await applyPlanBuilderSync(db, env.FURIM_EXT_CACHE, env.GAS_DEPLOY_ID, {
+      decided = await applyPlanBuilderSync(db, env.FURIM_EXT_CACHE, {
         lineUserId,
         stripeCustomerId: sub.customer,
         ...selection,

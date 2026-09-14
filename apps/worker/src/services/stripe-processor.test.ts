@@ -511,7 +511,7 @@ describe('processStripeEvent — plan-builder の同期は Worker が決めて D
         type: 'invoice.payment_succeeded',
         data: { object: { id: 'in_pbd1', customer: 'cus_pbd1', billing_reason: 'subscription_cycle', subscription: 'sub_pbd1' } },
       });
-      expect(applyPlanBuilderSync).toHaveBeenCalledWith(db, undefined, 'gas-deploy-1', expect.objectContaining({
+      expect(applyPlanBuilderSync).toHaveBeenCalledWith(db, undefined, expect.objectContaining({
         lineUserId: 'U-pb', packages: 'premium', grantPremiumTickets: true, invoiceId: 'in_pbd1', planLabel: 'PBプラン:premium',
       }));
       const gasCall = vi.mocked(gasPost).mock.calls.find((c) => (c[1] as { method?: string }).method === 'syncFeaturesFromSubscription');

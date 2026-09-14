@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { getFriendByLineUserId, jstNow } from '@line-crm/db';
 import type { Context } from 'hono';
-import { gasGet } from '../furim/gas-client.js';
+import { loadFurimMaster } from '../furim/feature-flags.js';
 import type { Env } from '../index.js';
 
-// 機能マスタ・パッケージマスタ（Google Sheets）を単一ソースとする
+// 機能マスタ・パッケージマスタ（D1 furim_master・管理画面のマスタ編集）を単一ソースとする
 // プラン選択UI＋料金シミュレーター＋Checkout発行。
 // LP(lp0)のシミュレーターと同じUX・デザイントーン（#f27d0c基調）で、
 // lp0/ambassadorはiframe(?embed=1)、LINEはLIFF(?liff=1&liffId=...)で共通利用する。
@@ -46,12 +46,6 @@ type Master = { features: Feature[]; packages: Pkg[] };
 const MULTI_CHANNEL_EXTRA_SITE_PRICE = 1980;
 const MULTI_CHANNEL_SITES = ['メルカリ', 'ラクマ', 'Shops', 'ヤフオク', 'ヤフフリ'];
 const TAX_RATE_PERCENT = 10;
-const MASTER_CACHE_SECONDS = 300;
-// 直近の正データ（last-known-good）の保持期間。GASが落ちても料金表を出し続けるための保険。
-const MASTER_STALE_CACHE_SECONDS = 7 * 24 * 60 * 60;
-// getFeatureMasterは読み取り専用（冪等）。GASのコールドスタートは実測35秒に達するため、
-// 既定の15秒では初回充填が確実に失敗する。この呼び出しだけ長めに待つ。
-const MASTER_GAS_TIMEOUT_MS = 45_000;
 
 const SITE_NAMES: Record<string, string> = {
   mercari: 'メルカリ',
@@ -62,79 +56,9 @@ const SITE_NAMES: Record<string, string> = {
 
 const planBuilder = new Hono<Env>();
 
-const MASTER_CACHE_KEY = 'https://line-harness.internal/__cache/plan-builder-master';
-const MASTER_STALE_CACHE_KEY = 'https://line-harness.internal/__cache/plan-builder-master-stale';
-
-async function refreshMaster(gasDeployId: string | undefined): Promise<Master> {
-  if (!gasDeployId) throw new Error('GAS_DEPLOY_ID is not configured');
-  const data = (await gasGet(gasDeployId, { method: 'getFeatureMaster' }, { timeoutMs: MASTER_GAS_TIMEOUT_MS })) as {
-    success: boolean;
-    features: Feature[];
-    packages: Pkg[];
-  };
-  if (!data?.success || !Array.isArray(data.features)) {
-    throw new Error(`getFeatureMaster failed: ${JSON.stringify(data).slice(0, 200)}`);
-  }
-  const master: Master = { features: data.features, packages: data.packages ?? [] };
-
-  const body = JSON.stringify(master);
-  const cache = caches.default;
-  await Promise.all([
-    cache.put(
-      new Request(MASTER_CACHE_KEY),
-      new Response(body, {
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${MASTER_CACHE_SECONDS}` },
-      }),
-    ),
-    cache.put(
-      new Request(MASTER_STALE_CACHE_KEY),
-      new Response(body, {
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${MASTER_STALE_CACHE_SECONDS}` },
-      }),
-    ),
-  ]);
-  return master;
-}
-
-// webhook側（plan-apply）からも使うため、Contextに依存しないenvベース実装。
-// 2026-08-28: GASのコールドスタート（実測35秒）で15秒タイムアウトに刺さり、料金シミュレーターが
-// 「料金情報の取得に失敗しました」を出す事象。5分キャッシュが切れた最初の1人が必ず踏む。
-// 対策は stale-while-revalidate: 期限切れでも直近の正データを即返し、更新は裏で走らせる。
-// GASが完全に落ちている間も last-known-good で料金表は出続ける。
-export async function fetchMasterByEnv(
-  gasDeployId: string | undefined,
-  ctx?: { waitUntil(p: Promise<unknown>): void },
-): Promise<Master> {
-  const cache = caches.default;
-  const hit = await cache.match(new Request(MASTER_CACHE_KEY));
-  if (hit) return hit.json();
-
-  const stale = await cache.match(new Request(MASTER_STALE_CACHE_KEY));
-  if (stale && ctx) {
-    ctx.waitUntil(refreshMaster(gasDeployId).catch((e) => console.error('plan-builder: master refresh failed', e)));
-    return stale.json();
-  }
-
-  try {
-    return await refreshMaster(gasDeployId);
-  } catch (e) {
-    if (stale) {
-      console.error('plan-builder: master fetch failed, serving stale', e);
-      return stale.json();
-    }
-    throw e;
-  }
-}
-
-async function fetchMaster(c: Context<Env>): Promise<Master> {
-  // Honoのc.executionCtxは無い環境（テスト等）で例外を投げるため素通しにしない
-  let ctx: { waitUntil(p: Promise<unknown>): void } | undefined;
-  try {
-    ctx = c.executionCtx;
-  } catch {
-    ctx = undefined;
-  }
-  return fetchMasterByEnv(c.env.GAS_DEPLOY_ID, ctx);
+export async function loadPlanBuilderMaster(db: D1Database | undefined): Promise<Master> {
+  if (!db) throw new Error('DB is not configured');
+  return (await loadFurimMaster(db)) as unknown as Master;
 }
 
 // 複数discountスタック（併用割引+キャンペーンクーポン等）はこのバージョン以降でのみ操作可能。
@@ -250,7 +174,7 @@ async function getCustomerCoupon(
 // 取られるため、拡張子なしの公開パスに置く）
 planBuilder.get('/plan-builder/features', async (c) => {
   try {
-    const master = await fetchMaster(c);
+    const master = await loadPlanBuilderMaster(c.env.DB);
     return c.json({ success: true, ...master });
   } catch (e) {
     return c.json({ success: false, error: String(e) }, 502);
@@ -285,8 +209,8 @@ export type PlanCheckoutEnv = {
 };
 
 // 選択内容を検証して価格情報つきで展開する（checkout / intent 共用）
-export async function resolvePlanSelection(gasDeployId: string | undefined, body: PlanSelectionInput) {
-  const master = await fetchMasterByEnv(gasDeployId);
+export async function resolvePlanSelection(db: D1Database | undefined, body: PlanSelectionInput) {
+  const master = await loadPlanBuilderMaster(db);
   const pkgByKey = Object.fromEntries(master.packages.map((p) => [p.package_key, p]));
   const featByKey = Object.fromEntries(master.features.map((f) => [f.feature_key, f]));
 
@@ -353,7 +277,7 @@ export async function resolvePlanSelection(gasDeployId: string | undefined, body
 export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: PlanSelectionInput): Promise<{ url: string; total: number; summaryLines: string[] }> {
   const secretKey = env.STRIPE_SECRET_KEY;
   if (!secretKey) throw new Error('STRIPE_SECRET_KEY not configured');
-  const sel = await resolvePlanSelection(env.GAS_DEPLOY_ID, body);
+  const sel = await resolvePlanSelection(env.DB, body);
   const { pkgs, feats, mcSites, nFull, nSemi } = sel;
 
   const params: Record<string, string> = {
@@ -576,7 +500,7 @@ planBuilder.post('/plan-builder/intent', async (c) => {
   try {
     const body = (await c.req.json()) as PlanSelectionInput;
     if (!body.lineUserId) return c.json({ success: false, error: 'lineUserId required' }, 400);
-    const sel = await resolvePlanSelection(c.env.GAS_DEPLOY_ID, body);
+    const sel = await resolvePlanSelection(c.env.DB, body);
 
     // 既存アクティブサブスクがあれば「プラン変更」intent（二重課金の防止）
     const existing = await getActiveSubscriptionForLine(c.env, body.lineUserId);
@@ -697,7 +621,7 @@ planBuilder.get('/plan-builder/thanks', (c) =>
 planBuilder.get('/plan-builder', async (c) => {
   let master: Master;
   try {
-    master = await fetchMaster(c);
+    master = await loadPlanBuilderMaster(c.env.DB);
   } catch (e) {
     console.error('plan-builder: master fetch failed', e);
     return c.html(

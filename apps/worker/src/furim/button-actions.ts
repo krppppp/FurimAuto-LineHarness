@@ -349,7 +349,7 @@ export async function handleButtonAction(
   if (text.includes('1週間無料プレゼント') || text.includes('無料開放プレゼント')) {
     // 段階2.5（Capsec #250）: 付与は Worker（trial-promo.ts）が D1 に先に書く。GAS grantOneWeekTrial は削除
     const result: TrialPromoResult = db
-      ? await grantTrialPromo(db, env.FURIM_EXT_CACHE, env.GAS_DEPLOY_ID, lineUserId)
+      ? await grantTrialPromo(db, env.FURIM_EXT_CACHE, lineUserId)
       : { success: false, reason: 'error', message: 'D1 なし' };
     const messages: unknown[] = [];
     if (result && result.success) {

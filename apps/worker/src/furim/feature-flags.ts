@@ -1,15 +1,13 @@
 // plan-builder の契約内容 → 機能フラグ・プラン名・pb_ キーコードを Worker が決めて D1 に先に書く
 // （GAS syncFeaturesFromSubscription の判定部の移植・Capsec #244 段階2 の残・2026-09-14）。
 //
-// - マスタ（機能/パッケージ）は D1 furim_master に持ち、GAS getFeatureMaster から refresh する（段階4 で GAS を消す）
+// - マスタ（機能/パッケージ）は D1 furim_master が正で、管理画面「マスタ編集」で直す（Capsec #264）
 // - 機能フラグは furim_feature_flags に書く（拡張の認証 /api/ext/v1/key-code-set が読む）
 // - キーコードの再発行は packages/features/multiChannelSites の集合比較で判定する（#238: ラベル文字列の
 //   形式差で「プラン変化」と誤判定して全員再入力になる穴を塞ぐ）。D1 に集合が無い顧客（段階2 以前の
 //   契約）は初回は記録だけ行い、trial/旧接頭語のキーコードだけ再発行する
 // - GAS には決めた値（keyCode / keyCodeIssued / planLabel / flags）を渡して書かせる（getKeyCodeSet 廃止まで
 //   旧拡張がシートを読むため）。GAS 側の判定ロジックは使わない
-import { jstNow } from '@line-crm/db';
-import { gasGet, getGasErrorFromResponse } from './gas-client.js';
 import { getFurimCustomer, upsertFurimCustomer, type FurimCustomer, type FurimCustomerPatch } from './customer-store.js';
 import { upsertFeatureFlags } from './customer-sync.js';
 import { invalidateExtCache, type ExtCache } from './ext-auth.js';
@@ -44,51 +42,10 @@ export function isInventoryPromoActive(nowMs = Date.now()): boolean {
   return nowMs < Date.parse('2026-09-16T00:00:00+09:00');
 }
 
-const MASTER_GAS_TIMEOUT_MS = 45_000;
-
 // ── マスタ（furim_master） ──
 
-function toInt(v: unknown): number | null {
-  if (v == null || v === '') return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.trunc(n) : null;
-}
-
-/** GAS getFeatureMaster（active=TRUE の行だけ返る）→ furim_master。応答に無いキーは active=0 に落とす */
-export async function refreshFurimMaster(db: D1Database, gasDeployId: string): Promise<{ features: number; packages: number }> {
-  const res = await gasGet(gasDeployId, { method: 'getFeatureMaster' }, { timeoutMs: MASTER_GAS_TIMEOUT_MS });
-  const failure = getGasErrorFromResponse(res);
-  if (failure) throw new Error(`getFeatureMaster failed: ${failure}`);
-  const data = res as { success?: boolean; features?: MasterFeature[]; packages?: MasterPackage[] };
-  if (data?.success !== true || !Array.isArray(data.features)) throw new Error('getFeatureMaster unexpected response');
-  const features = data.features.filter((f) => f && f.feature_key);
-  const packages = (Array.isArray(data.packages) ? data.packages : []).filter((p) => p && p.package_key);
-  const now = jstNow();
-  const stmts: D1PreparedStatement[] = [];
-  const upsert = (kind: string, key: string, row: Record<string, unknown>) =>
-    db
-      .prepare(
-        `INSERT INTO furim_master (kind, key, display_name, stripe_price_id, monthly_price, active, payload, fetched_at)
-         VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-         ON CONFLICT(kind, key) DO UPDATE SET display_name = excluded.display_name, stripe_price_id = excluded.stripe_price_id,
-           monthly_price = excluded.monthly_price, active = 1, payload = excluded.payload, fetched_at = excluded.fetched_at`,
-      )
-      .bind(kind, key, row.display_name == null ? null : String(row.display_name), row.stripe_price_id == null ? null : String(row.stripe_price_id), toInt(row.monthly_price), JSON.stringify(row), now);
-  for (const f of features) stmts.push(upsert('feature', String(f.feature_key), f));
-  for (const p of packages) stmts.push(upsert('package', String(p.package_key), p));
-  const deactivate = (kind: string, keys: string[]) => {
-    if (!keys.length) return db.prepare('UPDATE furim_master SET active = 0 WHERE kind = ?').bind(kind);
-    return db.prepare(`UPDATE furim_master SET active = 0 WHERE kind = ? AND key NOT IN (${keys.map(() => '?').join(',')})`).bind(kind, ...keys);
-  };
-  stmts.push(deactivate('feature', features.map((f) => String(f.feature_key))));
-  stmts.push(deactivate('package', packages.map((p) => String(p.package_key))));
-  for (let i = 0; i < stmts.length; i += 100) await db.batch(stmts.slice(i, i + 100));
-  console.log('[furim/master] refreshed', JSON.stringify({ features: features.length, packages: packages.length }));
-  return { features: features.length, packages: packages.length };
-}
-
 export async function loadFurimMaster(db: D1Database): Promise<FurimMaster> {
-  const rows = await db.prepare("SELECT kind, key, payload FROM furim_master WHERE active = 1 AND kind IN ('feature', 'package')").all<{ kind: string; key: string; payload: string }>();
+  const rows = await db.prepare("SELECT kind, key, payload FROM furim_master WHERE active = 1 AND kind IN ('feature', 'package') ORDER BY rowid").all<{ kind: string; key: string; payload: string }>();
   const master: FurimMaster = { features: [], packages: [] };
   for (const r of rows.results ?? []) {
     let payload: Record<string, unknown> = {};
@@ -97,14 +54,6 @@ export async function loadFurimMaster(db: D1Database): Promise<FurimMaster> {
     else master.packages.push({ ...payload, package_key: r.key } as MasterPackage);
   }
   return master;
-}
-
-/** D1 のマスタを返す。空なら GAS から取り込んでから返す（gasDeployId が無ければ空のまま） */
-export async function ensureFurimMaster(db: D1Database, gasDeployId?: string): Promise<FurimMaster> {
-  const master = await loadFurimMaster(db);
-  if (master.features.length > 0 || !gasDeployId) return master;
-  await refreshFurimMaster(db, gasDeployId);
-  return loadFurimMaster(db);
 }
 
 // ── 契約内容の展開 ──
@@ -265,9 +214,9 @@ export const PREMIUM_MONTHLY_TICKETS = 200;
  * 契約内容を D1 に適用する（furim_customers・furim_feature_flags・furim_ticket_ledger・KV）。冪等。
  * 返り値をそのまま GAS syncFeaturesFromSubscription に渡す（gasSyncArgs）
  */
-export async function applyPlanBuilderSync(db: D1Database, kv: ExtCache | undefined, gasDeployId: string | undefined, input: PlanSyncInput): Promise<PlanSyncResult> {
-  const master = await ensureFurimMaster(db, gasDeployId);
-  if (!input.clearAll && input.packages && master.packages.length === 0) throw new Error('furim_master にパッケージが無い（refresh-master 未実行）');
+export async function applyPlanBuilderSync(db: D1Database, kv: ExtCache | undefined, input: PlanSyncInput): Promise<PlanSyncResult> {
+  const master = await loadFurimMaster(db);
+  if (!input.clearAll && input.packages && master.packages.length === 0) throw new Error('furim_master にパッケージが無い（管理画面のマスタ編集で登録）');
   const customer = await getFurimCustomer(db, input.lineUserId);
   const existing = await db
     .prepare('SELECT feature_key, value, locked FROM furim_feature_flags WHERE line_user_id = ?')

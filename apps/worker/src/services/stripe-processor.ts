@@ -220,7 +220,7 @@ export async function processStripeEvent(
         const syncLineUserIdForD1 = syncGasArgs.lineUserId || resolvedLineUserId || '';
         if (syncLineUserIdForD1) {
           try {
-            decided = await applyPlanBuilderSync(db, env.FURIM_EXT_CACHE, env.GAS_DEPLOY_ID, {
+            decided = await applyPlanBuilderSync(db, env.FURIM_EXT_CACHE, {
               lineUserId: syncLineUserIdForD1,
               stripeCustomerId,
               packages: pbPackages,
@@ -644,7 +644,7 @@ export async function processStripeEvent(
       let cleared: PlanSyncResult | null = null;
       if (clearLineUserIdForD1) {
         try {
-          cleared = await applyPlanBuilderSync(db, env.FURIM_EXT_CACHE, env.GAS_DEPLOY_ID, {
+          cleared = await applyPlanBuilderSync(db, env.FURIM_EXT_CACHE, {
             lineUserId: clearLineUserIdForD1,
             packages: '',
             features: '',

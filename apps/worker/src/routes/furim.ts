@@ -478,8 +478,8 @@ furim.post('/api/furim/migrate-subscriptions', async (c) => {
     if (!secretKey) return c.json({ success: false, error: 'STRIPE_SECRET_KEY not configured' }, 500);
     const mapping = body.mapping ?? {};
 
-    const { stripeCall, ensureComboCoupon, fetchMasterByEnv } = await import('./plan-builder.js');
-    const master = await fetchMasterByEnv(c.env.GAS_DEPLOY_ID);
+    const { stripeCall, ensureComboCoupon, loadPlanBuilderMaster } = await import('./plan-builder.js');
+    const master = await loadPlanBuilderMaster(c.env.DB);
     const pkgByKey = Object.fromEntries(master.packages.map((p) => [p.package_key, p]));
     const featByKey = Object.fromEntries(master.features.map((f) => [f.feature_key, f]));
 
@@ -623,8 +623,8 @@ furim.post('/api/furim/setup-prices', async (c) => {
     const dryRun = body.dryRun !== false;
     const secretKey = c.env.STRIPE_SECRET_KEY;
     if (!secretKey) return c.json({ success: false, error: 'STRIPE_SECRET_KEY not configured' }, 500);
-    const { stripeCall, fetchMasterByEnv } = await import('./plan-builder.js');
-    const master = await fetchMasterByEnv(c.env.GAS_DEPLOY_ID);
+    const { stripeCall, loadPlanBuilderMaster } = await import('./plan-builder.js');
+    const master = await loadPlanBuilderMaster(c.env.DB);
 
     const SITE_JP: Record<string, string> = {
       mercari: 'メルカリ', mercariShops: 'メルカリShops', rakuma: 'ラクマ', yahooFlea: 'ヤフフリ',
@@ -845,22 +845,6 @@ furim.post('/api/furim/ticket-consumed', async (c) => {
   } catch (err) {
     console.error('[furim/ticket-consumed] error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
-  }
-});
-
-/**
- * POST /api/furim/refresh-master
- * 機能/パッケージマスタを GAS getFeatureMaster から D1 furim_master に取り込み直す（段階2・Capsec #244。6h cron でも回る）
- */
-furim.post('/api/furim/refresh-master', async (c) => {
-  try {
-    if (!c.env.GAS_DEPLOY_ID) return c.json({ success: false, error: 'GAS_DEPLOY_ID not configured' }, 500);
-    const { refreshFurimMaster } = await import('../furim/feature-flags.js');
-    const result = await refreshFurimMaster(c.env.DB, c.env.GAS_DEPLOY_ID);
-    return c.json({ success: true, ...result });
-  } catch (err) {
-    console.error('[furim/refresh-master] error:', err);
-    return c.json({ success: false, error: String(err) }, 500);
   }
 });
 

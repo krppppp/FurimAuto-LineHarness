@@ -33,29 +33,29 @@ const AFTER_END = Date.parse('2026-09-14T10:00:00+09:00');
 describe('grantTrialPromo（GAS grantOneWeekTrial の移植）', () => {
   it('終了済みキャンペーンは expired', async () => {
     const { db } = makeDb({ line_user_id: 'U1', key_code: null, plan_label: null, subscription_end_at: null });
-    expect(await grantTrialPromo(db, undefined, undefined, 'U1', { nowMs: AFTER_END })).toEqual({ success: false, reason: 'expired', promoId: '2026-08' });
+    expect(await grantTrialPromo(db, undefined, 'U1', { nowMs: AFTER_END })).toEqual({ success: false, reason: 'expired', promoId: '2026-08' });
   });
 
   it('顧客行が無ければ notFound', async () => {
     const { db } = makeDb(null);
-    expect((await grantTrialPromo(db, undefined, undefined, 'U1', { nowMs: BEFORE_END })).success).toBe(false);
+    expect((await grantTrialPromo(db, undefined, 'U1', { nowMs: BEFORE_END })).success).toBe(false);
   });
 
   it('継続中の有料会員は paid（解約済みは通す）', async () => {
     const { db } = makeDb({ line_user_id: 'U1', key_code: 'pb_x', plan_label: 'PBプラン:メルカリ', subscription_end_at: '2026-12-01 00:00:00' });
-    expect(await grantTrialPromo(db, undefined, undefined, 'U1', { nowMs: BEFORE_END })).toMatchObject({ success: false, reason: 'paid' });
+    expect(await grantTrialPromo(db, undefined, 'U1', { nowMs: BEFORE_END })).toMatchObject({ success: false, reason: 'paid' });
     const { db: db2 } = makeDb({ line_user_id: 'U1', key_code: null, plan_label: 'キャンセル済み(商材が合わない)', subscription_end_at: '2026-12-01 00:00:00' });
-    expect((await grantTrialPromo(db2, undefined, undefined, 'U1', { nowMs: BEFORE_END })).success).toBe(true);
+    expect((await grantTrialPromo(db2, undefined, 'U1', { nowMs: BEFORE_END })).success).toBe(true);
   });
 
   it('同じキャンペーンの接頭語なら already', async () => {
     const { db } = makeDb({ line_user_id: 'U1', key_code: '1wtrial423_abcdefgh', plan_label: '', subscription_end_at: '2026-08-31 12:00:00' });
-    expect(await grantTrialPromo(db, undefined, undefined, 'U1', { nowMs: BEFORE_END })).toMatchObject({ success: false, reason: 'already', keyCode: '1wtrial423_abcdefgh' });
+    expect(await grantTrialPromo(db, undefined, 'U1', { nowMs: BEFORE_END })).toMatchObject({ success: false, reason: 'already', keyCode: '1wtrial423_abcdefgh' });
   });
 
   it('付与: 期限＝キャンペーン終了日時・キーコード刷新・端末判定クリア・全機能 ON（自動併売は全サイト）', async () => {
     const { db, writes } = makeDb({ line_user_id: 'U1', key_code: '2weektrial_old', plan_label: '', subscription_end_at: '2026-08-10 00:00:00' }, ['mChangePrice', 'AutoMultiChannel', 'yfRelist']);
-    const r = await grantTrialPromo(db, undefined, undefined, 'U1', { nowMs: BEFORE_END });
+    const r = await grantTrialPromo(db, undefined, 'U1', { nowMs: BEFORE_END });
     if (!r.success) throw new Error('expected success');
     expect(r.keyCode).toMatch(/^1wtrial423_[0-9a-z]{8}$/);
     expect(r.expiry).toBe('2026/08/31 12:00');

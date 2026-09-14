@@ -33,6 +33,13 @@ export default function DataIndexPage() {
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>
       )}
+      <Link
+        href="/data/masters"
+        className="mb-4 block p-5 bg-white border border-green-300 rounded-lg shadow-sm hover:border-green-500 hover:shadow transition-colors"
+      >
+        <div className="text-base font-semibold text-gray-900">マスタ編集（機能・パッケージ・プラン一覧・チケット単価）</div>
+        <div className="mt-1 text-xs text-gray-500">項目ごとに入力して直す。スプレッドシートのマスタは凍結（編集しても反映されません）</div>
+      </Link>
       {loading ? (
         <div className="text-sm text-gray-400">読み込み中...</div>
       ) : (

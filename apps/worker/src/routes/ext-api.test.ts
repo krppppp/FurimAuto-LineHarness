@@ -199,6 +199,14 @@ describe('POST /api/ext/v1/key-code-set', () => {
     expect(statements.some((s) => /INSERT INTO furim_ext_errors/.test(s.sql))).toBe(false);
   });
 
+  it('#264 マスタ（furim_master）は読まない: 管理画面でマスタを変えても認証の結果は変わらない', async () => {
+    const { db, statements } = makeDb(customerRouter(customer()));
+    const res = await call(envWith(db), 'key-code-set', { keyCode: 'pb_abc', mercariAccountUrl: 'https://jp.mercari.com/user/profile/1', version: '4.3.2' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { success: boolean }).success).toBe(true);
+    expect(statements.some((s) => /furim_master/.test(s.sql))).toBe(false);
+  });
+
   it('無効キーコードは 200 + success:false（該当レコードなし）で Error 台帳に残す', async () => {
     const { db, statements } = makeDb(customerRouter(null));
     const res = await call(envWith(db), 'key-code-set', { keyCode: 'zzz' });

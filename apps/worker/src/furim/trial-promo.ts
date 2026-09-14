@@ -9,7 +9,7 @@
 // - 全機能開放 = マスタの全機能キー＋既存フラグキーを ON・在庫管理シートを ON・自動併売は全サイト
 import { formatJstDateTime, formatJstIso, getFurimCustomer, parseJstDateTime, upsertFurimCustomer } from './customer-store.js';
 import { upsertFeatureFlags } from './customer-sync.js';
-import { ALWAYS_ENABLED_FEATURE_KEYS, INVENTORY_PATROL_ALL_SITES, ensureFurimMaster } from './feature-flags.js';
+import { ALWAYS_ENABLED_FEATURE_KEYS, INVENTORY_PATROL_ALL_SITES, loadFurimMaster } from './feature-flags.js';
 import { invalidateExtCache, type ExtCache } from './ext-auth.js';
 
 export type TrialPromo = { keyCodePrefix: string; endAt: string; label: string };
@@ -51,7 +51,6 @@ export function trialPromoIdForKeyCode(keyCode: string | null | undefined): stri
 export async function grantTrialPromo(
   db: D1Database,
   kv: ExtCache | undefined,
-  gasDeployId: string | undefined,
   lineUserId: string,
   opts: { promoId?: string; nowMs?: number } = {},
 ): Promise<TrialPromoResult> {
@@ -75,7 +74,7 @@ export async function grantTrialPromo(
   const existing = (customer.key_code ?? '').trim();
   if (existing.startsWith(promo.keyCodePrefix)) return { success: false, reason: 'already', keyCode: existing, promoId };
 
-  const master = await ensureFurimMaster(db, gasDeployId);
+  const master = await loadFurimMaster(db);
   const existingFlags = await db.prepare('SELECT feature_key FROM furim_feature_flags WHERE line_user_id = ?').bind(lineUserId).all<{ feature_key: string }>();
   const keys = new Set<string>([...master.features.map((f) => f.feature_key), ...(existingFlags.results ?? []).map((r) => r.feature_key), ...ALWAYS_ENABLED_FEATURE_KEYS, 'InventorySheet', 'AutoMultiChannel']);
   const flags: Record<string, string> = {};

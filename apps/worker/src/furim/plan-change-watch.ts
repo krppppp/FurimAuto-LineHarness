@@ -77,7 +77,7 @@ export async function watchPlanChangeIntents(
       if (!row.used_at) {
         reason = '未処理（used_at なし）';
       } else if (env.STRIPE_SECRET_KEY) {
-        reason = await verifyOnStripe(row, env);
+        reason = await verifyOnStripe(db, row, env);
       }
 
       if (reason === null) {
@@ -130,7 +130,7 @@ function parsePayload(raw: string): ChangePayload {
 }
 
 // used_at あり: Stripe 側に反映が実在するか。null = 問題なし、文字列 = 未反映の理由
-async function verifyOnStripe(row: IntentRow, env: PlanChangeWatchEnv): Promise<string | null> {
+async function verifyOnStripe(db: D1Database, row: IntentRow, env: PlanChangeWatchEnv): Promise<string | null> {
   const payload = parsePayload(row.payload);
   if (!payload.subscriptionId || !env.STRIPE_SECRET_KEY) return null;
   const { stripeCall, resolvePlanSelection, buildItemsFromSelection } = await import('../routes/plan-builder.js');
@@ -144,7 +144,7 @@ async function verifyOnStripe(row: IntentRow, env: PlanChangeWatchEnv): Promise<
     return sub.schedule ? null : 'Stripe に予約スケジュールが無い';
   }
   // upgrade: 新構成の price が items に揃っているはず
-  const sel = await resolvePlanSelection(env.GAS_DEPLOY_ID, {
+  const sel = await resolvePlanSelection(db, {
     packages: payload.packages,
     features: payload.features,
     multiChannelSites: payload.multiChannelSites,

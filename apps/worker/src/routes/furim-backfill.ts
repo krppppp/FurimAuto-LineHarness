@@ -53,7 +53,7 @@ furimBackfill.get('/api/furim/backfill-sheets', async (c) => {
   try {
     const sheets = [];
     for (const spec of SHEET_BACKFILL_SPECS) {
-      sheets.push({ name: spec.name, sheet: spec.sheet, table: spec.table, masterKind: spec.masterKind ?? null, d1Count: await countTableRows(c.env.DB, spec) });
+      sheets.push({ name: spec.name, sheet: spec.sheet, table: spec.table, d1Count: await countTableRows(c.env.DB, spec) });
     }
     return c.json({ success: true, sheets });
   } catch (err) {

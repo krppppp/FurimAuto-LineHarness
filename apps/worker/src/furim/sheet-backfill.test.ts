@@ -298,23 +298,6 @@ describe('列マッピング', () => {
     expect(Object.fromEntries(cb.rows[0].columns.map((x, i) => [x, cb.rows[0].values[i]]))).toMatchObject({ occurred_at: '2024-05-05T05:35:16.000+09:00', introduced_display_name: '佐々木', introduced_line_user_id: uid('2'), stripe_customer_id: 'cus_2', price: 3980, ambassador_display_name: '貴一朗', ambassador_line_user_id: uid('9'), cashback_amount: 0, imported_at: NOW });
   });
 
-  it('プラン一覧 / チケット単価一覧 → furim_master（kind=plan / ticket_price・機能列は payload.features に）', async () => {
-    const ctx = await ctxWith();
-    const plans = await mapSheetRows(getSheetSpec('plans')!, [
-      { プラン名: 'String', 価格: 'Number', PriceID: 'String', トライアル期間: 'Number', キーコード接頭語: 'String', 'メルカリ値下げ機能\n(mChangePrice)': 'Boolean' },
-      { プラン名: '友達登録1週間トライアルプラン', 価格: 0, PriceID: 'なし', トライアル期間: 7, キーコード接頭語: '1weektrial_', 'メルカリ値下げ機能\n(mChangePrice)': true, '自動併売在庫管理機能\n(AutoMultiChannel)': '' },
-    ], ctx);
-    expect(plans.rows).toHaveLength(1);
-    const p = plans.rows[0];
-    expect(p.conflict).toEqual({ target: 'kind, key', update: ['display_name', 'stripe_price_id', 'monthly_price', 'active', 'payload', 'fetched_at'] });
-    const row = Object.fromEntries(p.columns.map((c, i) => [c, p.values[i]]));
-    expect(row).toMatchObject({ kind: 'plan', key: '友達登録1週間トライアルプラン', display_name: '友達登録1週間トライアルプラン', stripe_price_id: 'なし', monthly_price: 0, active: 1, fetched_at: NOW });
-    expect(JSON.parse(String(row.payload))).toEqual({ プラン名: '友達登録1週間トライアルプラン', 価格: 0, PriceID: 'なし', トライアル期間: 7, キーコード接頭語: '1weektrial_', features: { mChangePrice: true, AutoMultiChannel: '' } });
-
-    const prices = await mapSheetRows(getSheetSpec('ticket-prices')!, [{ 単価: 15, PriceID: 'price_15' }], ctx);
-    expect(Object.fromEntries(prices.rows[0].columns.map((c, i) => [c, prices.rows[0].values[i]]))).toMatchObject({ kind: 'ticket_price', key: '15', stripe_price_id: 'price_15', monthly_price: null });
-  });
-
   it('全シート定義が一意な name を持ち、mapper が実装されている', async () => {
     const ctx = await ctxWith();
     expect(new Set(SHEET_BACKFILL_SPECS.map((s) => s.name)).size).toBe(SHEET_BACKFILL_SPECS.length);

@@ -12,7 +12,6 @@ const {
   computeFeatureFlags,
   buildPlanLabel,
   decidePlanBuilderKeyCode,
-  refreshFurimMaster,
   applyPlanBuilderSync,
   INVENTORY_PATROL_ALL_SITES,
 } = await import('./feature-flags.js');
@@ -166,27 +165,6 @@ describe('decidePlanBuilderKeyCode（集合比較・#238）', () => {
   });
 });
 
-describe('refreshFurimMaster', () => {
-  it('GAS getFeatureMaster の行を furim_master に upsert し、無くなったキーは active=0 にする', async () => {
-    gasGet.mockResolvedValueOnce({ success: true, features: master.features, packages: master.packages });
-    const { db, writes } = makeDb();
-    const r = await refreshFurimMaster(db, 'dep-1');
-    expect(r).toEqual({ features: 5, packages: 2 });
-    const upserts = writes.filter((w) => /INSERT INTO furim_master/.test(w.sql));
-    expect(upserts).toHaveLength(7);
-    expect(upserts[0].args.slice(0, 3)).toEqual(['feature', 'mChangePrice', '値段変更']);
-    const deact = writes.filter((w) => /SET active = 0/.test(w.sql));
-    expect(deact).toHaveLength(2);
-    expect(deact[0].args).toEqual(['feature', 'mChangePrice', 'rChangePrice', 'AutoMultiChannel', 'InventorySheet', 'mCopyRakumaListing']);
-  });
-
-  it('GAS が失敗を返したら投げる', async () => {
-    gasGet.mockResolvedValueOnce({ success: false, error: 'シートなし' });
-    const { db } = makeDb();
-    await expect(refreshFurimMaster(db, 'dep-1')).rejects.toThrow(/getFeatureMaster failed/);
-  });
-});
-
 describe('applyPlanBuilderSync', () => {
   it('trial → PB 初回: pb_ を新規発行し端末判定をクリア、フラグ・集合・プラン名を書き、プレミアムは台帳 +200', async () => {
     const { db, writes } = makeDb({
@@ -194,7 +172,7 @@ describe('applyPlanBuilderSync', () => {
       masterRows,
       flagKeys: ['mRelist'],
     });
-    const r = await applyPlanBuilderSync(db, undefined, undefined, {
+    const r = await applyPlanBuilderSync(db, undefined, {
       lineUserId: 'U1', stripeCustomerId: 'cus_1', packages: 'premium', features: '', multiChannelSites: 'メルカリ/ラクマ', subscriptionId: 'sub_1',
       grantPremiumTickets: true, invoiceId: 'in_1', nowMs: AFTER_PROMO,
     });
@@ -219,7 +197,7 @@ describe('applyPlanBuilderSync', () => {
       customer: { line_user_id: 'U1', key_code: 'pb_keep1234', packages: 'm_full', features: '', multi_channel_sites: '' },
       masterRows,
     });
-    const r = await applyPlanBuilderSync(db, undefined, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '' });
+    const r = await applyPlanBuilderSync(db, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '' });
     expect(r).toMatchObject({ keyCode: 'pb_keep1234', keyCodeIssued: false, ticketsGranted: 0 });
     const upsert = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql));
     expect(upsert?.sql).not.toMatch(/device_code/);
@@ -228,7 +206,7 @@ describe('applyPlanBuilderSync', () => {
 
   it('解約（clearAll）は集合を消してフラグを全 OFF にし、キーコードは触らない', async () => {
     const { db, writes } = makeDb({ customer: { line_user_id: 'U1', key_code: null, packages: 'm_full', features: '', multi_channel_sites: '' }, masterRows });
-    const r = await applyPlanBuilderSync(db, undefined, undefined, { lineUserId: 'U1', packages: '', features: '', multiChannelSites: '', clearAll: true });
+    const r = await applyPlanBuilderSync(db, undefined, { lineUserId: 'U1', packages: '', features: '', multiChannelSites: '', clearAll: true });
     expect(r.planLabel).toBe('');
     expect(r.flags).toMatchObject({ mChangePrice: '0', mCopyRakumaListing: '1', AutoMultiChannel: '' });
     const upsert = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql));
@@ -240,7 +218,7 @@ describe('applyPlanBuilderSync', () => {
     const locked = { mBackup: '1', mChangePrice: '0', AutoMultiChannel: 'ヤフフリ' };
     for (const clearAll of [false, true]) {
       const { db, writes } = makeDb({ customer, masterRows, lockedFlags: locked });
-      const r = await applyPlanBuilderSync(db, undefined, undefined, { lineUserId: 'U1', packages: clearAll ? '' : 'm_full', features: '', multiChannelSites: '', clearAll, nowMs: AFTER_PROMO });
+      const r = await applyPlanBuilderSync(db, undefined, { lineUserId: 'U1', packages: clearAll ? '' : 'm_full', features: '', multiChannelSites: '', clearAll, nowMs: AFTER_PROMO });
       const flagWrites = writes.filter((w) => /INSERT INTO furim_feature_flags/.test(w.sql));
       const writtenKeys = flagWrites.map((w) => w.args[1]);
       for (const k of Object.keys(locked)) expect(writtenKeys, `${clearAll} ${k}`).not.toContain(k);
@@ -254,7 +232,7 @@ describe('applyPlanBuilderSync', () => {
   it('#261 案 A: 固定を外した後（locked=0・手動値 1 が残っている）の再計算は契約どおり 0 に戻す', async () => {
     const customer = { line_user_id: 'U1', key_code: 'pb_keep1234', packages: 'm_full', features: '', multi_channel_sites: '' };
     const { db, writes } = makeDb({ customer, masterRows, flagKeys: ['mBackup'] });
-    const r = await applyPlanBuilderSync(db, undefined, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '', nowMs: AFTER_PROMO });
+    const r = await applyPlanBuilderSync(db, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '', nowMs: AFTER_PROMO });
     const mBackup = writes.find((w) => /INSERT INTO furim_feature_flags/.test(w.sql) && w.args[1] === 'mBackup');
     expect(mBackup?.args[2]).toBe(r.flags.mBackup);
     expect(r.flags.mBackup).toBe('0');
@@ -263,9 +241,9 @@ describe('applyPlanBuilderSync', () => {
 
   it('#261 案 A: 在庫管理シートのプロモ中の付与は、固定していなければ従来どおり', async () => {
     const customer = { line_user_id: 'U1', key_code: 'pb_keep1234', packages: 'm_full', features: '', multi_channel_sites: '' };
-    const plain = await applyPlanBuilderSync(makeDb({ customer, masterRows }).db, undefined, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '', nowMs: DURING_PROMO });
+    const plain = await applyPlanBuilderSync(makeDb({ customer, masterRows }).db, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '', nowMs: DURING_PROMO });
     const { db, writes } = makeDb({ customer, masterRows, lockedFlags: { mBackup: '1' } });
-    const r = await applyPlanBuilderSync(db, undefined, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '', nowMs: DURING_PROMO });
+    const r = await applyPlanBuilderSync(db, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '', nowMs: DURING_PROMO });
     expect(r.flags.InventorySheet).toBe(plain.flags.InventorySheet);
     expect(r.flags.AutoMultiChannel).toBe(plain.flags.AutoMultiChannel);
     const inv = writes.find((w) => /INSERT INTO furim_feature_flags/.test(w.sql) && w.args[1] === 'InventorySheet');
@@ -274,6 +252,6 @@ describe('applyPlanBuilderSync', () => {
 
   it('マスタが空でパッケージ指定があれば投げる（呼び出し側が GAS 判定にフォールバック）', async () => {
     const { db } = makeDb({ customer: null, masterRows: [] });
-    await expect(applyPlanBuilderSync(db, undefined, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '' })).rejects.toThrow(/furim_master/);
+    await expect(applyPlanBuilderSync(db, undefined, { lineUserId: 'U1', packages: 'm_full', features: '', multiChannelSites: '' })).rejects.toThrow(/furim_master/);
   });
 });
