@@ -7,7 +7,7 @@
 // - 期限はキャンペーン終了日時（押した時点からの N 日ではない）
 // - プラン名は書き換えない（解約履歴を消さない・getKeyCodeSet は終了日時で判定）
 // - 全機能開放 = マスタの全機能キー＋既存フラグキーを ON・在庫管理シートを ON・自動併売は全サイト
-import { formatJstDateTime, getFurimCustomer, parseJstDateTime, upsertFurimCustomer } from './customer-store.js';
+import { formatJstDateTime, formatJstIso, getFurimCustomer, parseJstDateTime, upsertFurimCustomer } from './customer-store.js';
 import { upsertFeatureFlags } from './customer-sync.js';
 import { ALWAYS_ENABLED_FEATURE_KEYS, INVENTORY_PATROL_ALL_SITES, ensureFurimMaster } from './feature-flags.js';
 import { invalidateExtCache, type ExtCache } from './ext-auth.js';
@@ -84,7 +84,7 @@ export async function grantTrialPromo(
   const keyCode = promo.keyCodePrefix + randomSuffix();
   const expiryJst = formatJstDateTime(endMs);
   await upsertFurimCustomer(db, lineUserId, {
-    subscription_end_at: expiryJst,
+    subscription_end_at: formatJstIso(endMs),
     key_code: keyCode,
     key_code_issued: 1,
     device_code: null,

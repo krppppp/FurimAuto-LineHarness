@@ -73,6 +73,14 @@ function makeDb(tables: Tables) {
         return [{ friend_id: ft.friend_id, tag_id: ft.tag_id, assigned_at: ft.assigned_at, name, line_user_id: friend.line_user_id }];
       });
     }
+    const fu = sql.match(/^SELECT (.+), (\w+) AS v FROM (\w+) WHERE \w+ IS NOT NULL AND \w+ NOT LIKE '%\+09:00'$/);
+    if (fu) {
+      const [, pkList, col, table] = fu;
+      const pks = pkList.split(', ');
+      return t(table)
+        .filter((r) => r[col] != null && !String(r[col]).endsWith('+09:00'))
+        .map((r) => ({ ...Object.fromEntries(pks.map((k) => [k, r[k]])), v: r[col] }));
+    }
     throw new Error(`unexpected select: ${sql}`);
   };
   const apply = (sql: string, args: unknown[]): number => {
@@ -394,5 +402,83 @@ describe('POST /api/furim/fix-datetimes', () => {
     expect(json.targets).toHaveLength(1);
     expect(json.targets[0]).toMatchObject({ target: 'affiliates', dryRun: true, candidates: 1, samples: [{ rowId: 'a1', newValue: '2024-04-07T20:21:08.000+09:00' }] });
     expect(writes).toHaveLength(0);
+  });
+});
+
+describe('format-unify（Capsec #260）', () => {
+  it('toIsoJstFormat: 時刻をずらさず ISO+09:00 に。Z は許可した列だけ', async () => {
+    const { toIsoJstFormat } = await import('./fix-datetimes.js');
+    const { parseJstDateTime } = await import('./customer-store.js');
+    expect(toIsoJstFormat('2026-09-14 13:40:05')).toEqual({ format: 'space', next: '2026-09-14T13:40:05.000+09:00' });
+    expect(toIsoJstFormat('2026-09-13T19:54:32.847')).toEqual({ format: 'naive', next: '2026-09-13T19:54:32.847+09:00' });
+    expect(toIsoJstFormat('2026-09-13T19:54:32')).toEqual({ format: 'naive', next: '2026-09-13T19:54:32.000+09:00' });
+    expect(toIsoJstFormat('2026-09-14T09:01:39.949Z', true)).toEqual({ format: 'z', next: '2026-09-14T09:01:39.949+09:00' });
+    expect(toIsoJstFormat('2026-09-14T09:01:39.949Z')).toEqual({ format: 'z', next: null });
+    expect(toIsoJstFormat('2026-09-14T13:41:06.994+09:00')).toEqual({ format: 'iso_jst', next: null });
+    expect(toIsoJstFormat('2026/09/14 13:40')).toEqual({ format: 'other', next: null });
+    expect(parseJstDateTime(toIsoJstFormat('2026-09-14 13:40:05').next)).toBe(parseJstDateTime('2026-09-14 13:40:05'));
+    expect(parseJstDateTime(toIsoJstFormat('2026-09-13T19:54:32.847').next)).toBe(parseJstDateTime('2026-09-13T19:54:32.847'));
+  });
+
+  it('dryRun は書かない → 実行で対象列だけ直して監査に退避 → 2 回目は 0 件', async () => {
+    const tables: Tables = {
+      furim_customers: [
+        { line_user_id: uid('1'), subscription_start_at: '2026-09-14 13:40:05', subscription_end_at: '2026-10-15 13:40:05', sheet_synced_at: '2026-09-13T19:54:32.847', created_at: '2026-09-01T00:00:00.000+09:00' },
+        { line_user_id: uid('2'), subscription_start_at: null, subscription_end_at: '2026-10-01T10:00:00.000+09:00', sheet_synced_at: '2026-09-14T12:00:00.000+09:00' },
+      ],
+      friend_tags: [
+        { friend_id: 'f1', tag_id: 't1', assigned_at: '2026-09-14 13:40:57' },
+        { friend_id: 'f1', tag_id: 't2', assigned_at: '2026-09-14T13:41:06.994+09:00' },
+        { friend_id: 'f2', tag_id: 't1', assigned_at: '2026-09-14T13:00:00.000Z' },
+      ],
+      friends: [{ id: 'f1', line_user_id: uid('1'), updated_at: '2026-09-13 21:00:00', created_at: '2026-09-01T00:00:00.000+09:00' }],
+      furim_referrals: [{ id: 'r1', created_at: '2025-01-02 03:04:05', reward_applied_at: null }],
+      plan_builder_intents: [{ id: 'PB-1', created_at: '2026-09-14 13:37:52' }],
+      broadcast_insights: [{ id: 'b1', fetched_at: '2026-09-14T09:01:39.949Z', created_at: '2026-09-14T09:01:39.949' }],
+      tags: [{ id: 't1', name: 'x', created_at: '2026-09-11 23:12:26' }],
+      automations: [{ id: 'a1', created_at: '2026-08-01 00:00:00' }],
+    };
+    const { db, writes } = makeDb(tables);
+    const dry = await fixDatetimes(db, undefined, 'format-unify', { dryRun: true, staffId: 'staff-1', now: NOW, nowMs: NOW_MS });
+    expect(writes).toHaveLength(0);
+    expect(dry.candidates).toBe(8);
+    expect(dry.skippedNoSource).toBe(1);
+    const col = (r: typeof dry, table: string, column: string) => r.columns!.find((c) => c.table === table && c.column === column)!;
+    expect(col(dry, 'furim_customers', 'subscription_start_at')).toMatchObject({ candidates: 1, space: 1 });
+    expect(col(dry, 'furim_customers', 'sheet_synced_at')).toMatchObject({ candidates: 1, naive: 1 });
+    expect(col(dry, 'friend_tags', 'assigned_at')).toMatchObject({ candidates: 1, space: 1, skipped: 1 });
+    expect(col(dry, 'broadcast_insights', 'fetched_at')).toMatchObject({ candidates: 1, z: 1 });
+
+    const run = await fixDatetimes(db, undefined, 'format-unify', { dryRun: false, staffId: 'staff-1', now: NOW, nowMs: NOW_MS });
+    expect(run.updated).toBe(8);
+    expect(run.auditRows).toBe(8);
+    expect(tables.furim_customers[0]).toMatchObject({ subscription_start_at: '2026-09-14T13:40:05.000+09:00', subscription_end_at: '2026-10-15T13:40:05.000+09:00', sheet_synced_at: '2026-09-13T19:54:32.847+09:00' });
+    expect(tables.friend_tags.map((r) => r.assigned_at)).toEqual(['2026-09-14T13:40:57.000+09:00', '2026-09-14T13:41:06.994+09:00', '2026-09-14T13:00:00.000Z']);
+    expect(tables.friends[0].updated_at).toBe('2026-09-13T21:00:00.000+09:00');
+    expect(tables.furim_referrals[0].created_at).toBe('2025-01-02T03:04:05.000+09:00');
+    expect(tables.plan_builder_intents[0].created_at).toBe('2026-09-14T13:37:52.000+09:00');
+    expect(tables.broadcast_insights[0]).toEqual({ id: 'b1', fetched_at: '2026-09-14T09:01:39.949+09:00', created_at: '2026-09-14T09:01:39.949' });
+    expect(tables.tags[0].created_at).toBe('2026-09-11 23:12:26');
+    expect(tables.automations[0].created_at).toBe('2026-08-01 00:00:00');
+    const audit = tables.furim_admin_audit;
+    expect(audit).toHaveLength(8);
+    expect(audit.every((a) => a.staff_name === FIX_STAFF_NAME && a.staff_id === 'staff-1')).toBe(true);
+    expect(audit.find((a) => a.table_name === 'friend_tags')).toMatchObject({ row_id: 'f1|t1', old_value: '2026-09-14 13:40:57', new_value: '2026-09-14T13:40:57.000+09:00' });
+
+    const again = await fixDatetimes(db, undefined, 'format-unify', { dryRun: false, staffId: 'staff-1', now: NOW, nowMs: NOW_MS });
+    expect(again.candidates).toBe(0);
+    expect(again.updated).toBe(0);
+    expect(tables.furim_admin_audit).toHaveLength(8);
+  });
+
+  it('本番 worker では confirmProd なしの実行を 403 で断る', async () => {
+    const { db } = makeDb({});
+    dbMocks.getStaffByApiKey.mockResolvedValue({ id: 'staff-1', name: 'owner', role: 'owner', is_active: 1 });
+    const res = await worker.fetch(
+      new Request('https://w/api/furim/fix-datetimes', { method: 'POST', headers: { Authorization: 'Bearer k', 'Content-Type': 'application/json' }, body: JSON.stringify({ target: 'format-unify', dryRun: false }) }),
+      { DB: db, WORKER_NAME: 'line-harness-prod' } as never,
+      { waitUntil: () => {}, passThroughOnException: () => {} } as never,
+    );
+    expect(res.status).toBe(403);
   });
 });

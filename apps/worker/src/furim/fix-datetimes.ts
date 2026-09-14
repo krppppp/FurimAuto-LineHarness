@@ -3,7 +3,7 @@ import { parseJstDateTime } from './customer-store.js';
 import { MASTER_SHEET, sheetRowLineUserId } from './customer-sync.js';
 import { fetchSheetRows, str, type SheetRow } from './sheet-backfill.js';
 
-export const FIX_TARGETS = ['customers', 'affiliates', 'friend-sub', 'chats', 'friend-tags'] as const;
+export const FIX_TARGETS = ['customers', 'affiliates', 'friend-sub', 'chats', 'friend-tags', 'format-unify'] as const;
 export type FixTarget = (typeof FIX_TARGETS)[number];
 
 export const FIX_STAFF_NAME = 'system:fix-datetimes';
@@ -227,6 +227,8 @@ export async function loadFixRows(db: D1Database, gasDeployId: string | undefine
       return loadChats(db);
     case 'friend-tags':
       return loadFriendTags(db);
+    case 'format-unify':
+      return [];
   }
 }
 
@@ -284,6 +286,84 @@ async function readSubJudge(db: D1Database, nowMs: number): Promise<SevenDayJudg
 
 export type FixSample = { table: string; column: string; rowId: string; oldValue: string; newValue: string };
 
+export type FormatUnifyColumn = { table: string; column: string; pk: string[]; allowZ?: boolean };
+
+export const FORMAT_UNIFY_COLUMNS: FormatUnifyColumn[] = [
+  { table: 'furim_customers', column: 'subscription_start_at', pk: ['line_user_id'] },
+  { table: 'furim_customers', column: 'subscription_end_at', pk: ['line_user_id'] },
+  { table: 'furim_customers', column: 'sheet_synced_at', pk: ['line_user_id'] },
+  { table: 'friend_tags', column: 'assigned_at', pk: ['friend_id', 'tag_id'] },
+  { table: 'friends', column: 'updated_at', pk: ['id'] },
+  { table: 'furim_referrals', column: 'created_at', pk: ['id'] },
+  { table: 'furim_referrals', column: 'reward_applied_at', pk: ['id'] },
+  { table: 'plan_builder_intents', column: 'created_at', pk: ['id'] },
+  { table: 'broadcast_insights', column: 'fetched_at', pk: ['id'], allowZ: true },
+];
+
+export type DatetimeFormat = 'iso_jst' | 'space' | 'naive' | 'z' | 'other';
+
+const ISO_JST_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?\+09:00$/;
+const SPACE_RE = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$/;
+const NAIVE_RE = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(\.\d{1,6})?$/;
+const Z_RE = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(\.\d{1,6})?Z$/;
+
+const ms3 = (frac: string | undefined) => (frac ? (frac + '000').slice(0, 4) : '.000');
+
+export function toIsoJstFormat(value: string, allowZ = false): { format: DatetimeFormat; next: string | null } {
+  const s = String(value);
+  if (ISO_JST_RE.test(s)) return { format: 'iso_jst', next: null };
+  let m = s.match(SPACE_RE);
+  if (m) return { format: 'space', next: `${m[1]}T${m[2]}.000+09:00` };
+  m = s.match(NAIVE_RE);
+  if (m) return { format: 'naive', next: `${m[1]}T${m[2]}${ms3(m[3])}+09:00` };
+  m = s.match(Z_RE);
+  if (m) return { format: 'z', next: allowZ ? `${m[1]}T${m[2]}${ms3(m[3])}+09:00` : null };
+  return { format: 'other', next: null };
+}
+
+export type FormatUnifyColumnResult = { table: string; column: string; candidates: number; space: number; naive: number; z: number; skipped: number; updated: number; auditRows: number };
+
+async function formatUnify(db: D1Database, dryRun: boolean, staffId: string, now: string): Promise<FixResult> {
+  const result: FixResult = { target: 'format-unify', dryRun, candidates: 0, updated: 0, skippedNoSource: 0, skippedAlreadyFixed: 0, auditRows: 0, samples: [], columns: [] };
+  for (const col of FORMAT_UNIFY_COLUMNS) {
+    const rows = (
+      await db
+        .prepare(`SELECT ${col.pk.join(', ')}, ${col.column} AS v FROM ${col.table} WHERE ${col.column} IS NOT NULL AND ${col.column} NOT LIKE '%+09:00'`)
+        .all<Record<string, string>>()
+    ).results ?? [];
+    const summary: FormatUnifyColumnResult = { table: col.table, column: col.column, candidates: 0, space: 0, naive: 0, z: 0, skipped: 0, updated: 0, auditRows: 0 };
+    const candidates: FixCandidate[] = [];
+    for (const row of rows) {
+      const { format, next } = toIsoJstFormat(row.v, col.allowZ);
+      if (format === 'iso_jst') continue;
+      if (!next || parseJstDateTime(next) == null) {
+        summary.skipped++;
+        continue;
+      }
+      summary[format as 'space' | 'naive' | 'z']++;
+      const pk = Object.fromEntries(col.pk.map((k) => [k, row[k]]));
+      const rowId = col.pk.length === 1 ? row[col.pk[0]] : col.pk.map((k) => encodeURIComponent(row[k])).join('|');
+      candidates.push({ table: col.table, column: col.column, rowId, pk, oldValue: row.v, newValue: next });
+    }
+    summary.candidates = candidates.length;
+    if (!dryRun && candidates.length) {
+      const applied = await applyFixCandidates(db, candidates, staffId, now);
+      summary.updated = applied.updated;
+      summary.auditRows = applied.auditRows;
+    }
+    result.candidates += summary.candidates;
+    result.updated += summary.updated;
+    result.auditRows += summary.auditRows;
+    result.skippedNoSource += summary.skipped;
+    for (const c of candidates.slice(0, 2)) {
+      if (result.samples.length < SAMPLE_LIMIT * 4) result.samples.push({ table: c.table, column: c.column, rowId: c.rowId, oldValue: c.oldValue, newValue: c.newValue });
+    }
+    result.columns!.push(summary);
+  }
+  if (!dryRun) console.log('[furim/fix-datetimes]', JSON.stringify({ target: 'format-unify', candidates: result.candidates, updated: result.updated, auditRows: result.auditRows, skipped: result.skippedNoSource }));
+  return result;
+}
+
 export type FixResult = {
   target: FixTarget;
   dryRun: boolean;
@@ -295,6 +375,7 @@ export type FixResult = {
   samples: FixSample[];
   judgeBefore?: SevenDayJudge;
   judgeAfter?: SevenDayJudge;
+  columns?: FormatUnifyColumnResult[];
 };
 
 export async function fixDatetimes(
@@ -305,6 +386,7 @@ export async function fixDatetimes(
 ): Promise<FixResult> {
   const nowMs = opts.nowMs ?? Date.now();
   const now = opts.now ?? toJstString(new Date(nowMs));
+  if (target === 'format-unify') return formatUnify(db, opts.dryRun, opts.staffId, now);
   const rows = await loadFixRows(db, gasDeployId, target, opts.cache ?? new Map());
   const classified = classifyFixRows(rows);
   const result: FixResult = {

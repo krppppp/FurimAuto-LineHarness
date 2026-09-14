@@ -43,7 +43,7 @@ function makeDb(rows: FriendRow[]) {
         },
         async run() {
           if (/kaisetsu_last_sent/.test(sql)) {
-            const [today, id] = bound as [string, string];
+            const [today, , id] = bound as [string, string, string];
             const row = rows.find((r) => r.id === id);
             if (!row) return { meta: { changes: 0 } };
             const meta = JSON.parse(row.metadata || '{}');
@@ -53,7 +53,7 @@ function makeDb(rows: FriendRow[]) {
             return { meta: { changes: 1 } };
           }
           if (/closing_sent/.test(sql)) {
-            const [sentJson, id] = bound as [string, string];
+            const [sentJson, , id] = bound as [string, string, string];
             const row = rows.find((r) => r.id === id);
             if (row) {
               const meta = JSON.parse(row.metadata || '{}');

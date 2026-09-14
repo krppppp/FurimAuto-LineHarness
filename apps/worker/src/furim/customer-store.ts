@@ -88,9 +88,14 @@ const PATCHABLE = [
   'gas_last_seen_at',
 ] as const;
 
-/** 'YYYY-MM-DD HH:MM:SS'（JST）。シートに書く形式・stripe-processor の subscriptionEndDateTime と同じ */
+/** 'YYYY-MM-DD HH:MM:SS'（JST）。シートへ鏡写しする専用。D1 には formatJstIso で書く */
 export function formatJstDateTime(ms: number): string {
   return new Date(ms + 9 * 60 * 60_000).toISOString().replace('T', ' ').slice(0, 19);
+}
+
+/** 'YYYY-MM-DDTHH:MM:SS.sss+09:00'（jstNow と同じ形式）。D1 に日時を書くとき */
+export function formatJstIso(ms: number): string {
+  return new Date(ms + 9 * 60 * 60_000).toISOString().slice(0, -1) + '+09:00';
 }
 
 /** JST の 'YYYY-MM-DD HH:MM:SS' / ISO(Z, +09:00) を epoch ms に。解釈できなければ null */
@@ -112,9 +117,9 @@ export async function extendSubscriptionEnd(db: D1Database, lineUserId: string, 
   const c = await getFurimCustomer(db, lineUserId);
   const base = parseJstDateTime(c?.subscription_end_at);
   if (base == null) return null;
-  const next = formatJstDateTime(base + days * 24 * 60 * 60_000);
-  await upsertFurimCustomer(db, lineUserId, { subscription_end_at: next });
-  return next;
+  const nextMs = base + days * 24 * 60 * 60_000;
+  await upsertFurimCustomer(db, lineUserId, { subscription_end_at: formatJstIso(nextMs) });
+  return formatJstDateTime(nextMs);
 }
 
 // 試用キーコードの接頭語。GAS プラン一覧「友達登録2週間トライアルプラン」の「キーコード接頭語」と同値

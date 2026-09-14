@@ -11,6 +11,7 @@ import {
   logAdConversion,
   type AdPlatformConfig,
   type RefTracking,
+  toJstString,
 } from '@line-crm/db';
 
 export async function sendAdConversions(
@@ -105,7 +106,7 @@ export async function retryMissedAdConversions(db: D1Database): Promise<void> {
        FROM ref_tracking rt
        JOIN friends f ON f.id = rt.friend_id
        WHERE (rt.gclid IS NOT NULL OR rt.fbclid IS NOT NULL OR rt.twclid IS NOT NULL OR rt.ttclid IS NOT NULL)
-         AND f.created_at >= datetime('now', '+9 hours', '-7 days')
+         AND substr(replace(f.created_at, ' ', 'T'), 1, 19) >= ?
          AND NOT EXISTS (
            SELECT 1 FROM ad_conversion_logs l
            WHERE l.friend_id = rt.friend_id
@@ -113,6 +114,7 @@ export async function retryMissedAdConversions(db: D1Database): Promise<void> {
              AND l.status = 'sent'
          )`,
     )
+    .bind(toJstString(new Date(Date.now() - 7 * 24 * 60 * 60_000)).slice(0, 19))
     .all<{ friend_id: string }>();
 
   for (const r of rows.results ?? []) {

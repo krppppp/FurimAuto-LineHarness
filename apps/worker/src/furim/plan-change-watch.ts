@@ -1,5 +1,5 @@
 import type { LineClient } from '@line-crm/line-sdk';
-import { jstNow } from '@line-crm/db';
+import { jstNow, toJstString } from '@line-crm/db';
 import { sendPushToAll, type PushEnv } from '../services/push-notify.js';
 
 // プラン変更（PB-… change intent）の未反映検知（Capsec #240・2026-09-13）。
@@ -42,7 +42,11 @@ export async function watchPlanChangeIntents(
   lineClient: LineClient,
   env: PlanChangeWatchEnv,
 ): Promise<void> {
-  // created_at は JST の "YYYY-MM-DD HH:MM:SS"（plan-builder が書く）。同じ形式で比較する
+  // created_at は jstNow（ISO+09:00）。旧形式の "YYYY-MM-DD HH:MM:SS" が残っていても同じ判定になるよう、
+  // 両辺を JST の "YYYY-MM-DDTHH:MM:SS"（先頭 19 文字）にそろえて比べる（Capsec #260）
+  const nowMs = Date.now();
+  const graceCutoff = toJstString(new Date(nowMs - GRACE_MINUTES * 60_000)).slice(0, 19);
+  const lookbackCutoff = toJstString(new Date(nowMs - LOOKBACK_DAYS * 24 * 60 * 60_000)).slice(0, 19);
   const rows = await db
     .prepare(
       `SELECT i.id, i.line_user_id, i.payload, i.used_at, i.stage, i.error, i.created_at, f.display_name
@@ -50,11 +54,12 @@ export async function watchPlanChangeIntents(
        LEFT JOIN friends f ON f.line_user_id = i.line_user_id
        WHERE i.notified_at IS NULL
          AND json_extract(i.payload, '$.type') = 'change'
-         AND i.created_at < datetime('now', '+9 hours', '-${GRACE_MINUTES} minutes')
-         AND i.created_at > datetime('now', '+9 hours', '-${LOOKBACK_DAYS} days')
+         AND substr(replace(i.created_at, ' ', 'T'), 1, 19) < ?
+         AND substr(replace(i.created_at, ' ', 'T'), 1, 19) > ?
        ORDER BY i.created_at
        LIMIT 20`,
     )
+    .bind(graceCutoff, lookbackCutoff)
     .all<IntentRow>();
 
   for (const row of rows.results ?? []) {

@@ -62,7 +62,7 @@ describe('grantTrialPromo（GAS grantOneWeekTrial の移植）', () => {
     expect(r.expiryJst).toBe('2026-08-31 12:00:00');
     expect(r.flags).toMatchObject({ mChangePrice: '1', yfRelist: '1', InventorySheet: '1', AutoMultiChannel: 'メルカリ/Shops/ラクマ/ヤフオク/ヤフフリ', mCopyRakumaListing: '1' });
     const upsert = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql));
-    expect(upsert?.args).toContain('2026-08-31 12:00:00');
+    expect(upsert?.args).toContain('2026-08-31T12:00:00.000+09:00');
     expect(upsert?.sql).toMatch(/device_code = excluded.device_code/);
     expect(writes.filter((w) => /INSERT INTO furim_feature_flags/.test(w.sql)).length).toBe(Object.keys(r.flags).length);
   });

@@ -2,7 +2,7 @@ import type { LineClient } from '@line-crm/line-sdk';
 import { jstNow } from '@line-crm/db';
 import { mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
 import { getSentGiftBatches, setSentGiftBatches } from './firebase-client.js';
-import { getFurimCustomer, upsertFurimCustomer, resolveStripeCustomerId, deriveGiftStatus, parseJstDateTime, formatJstDateTime } from './customer-store.js';
+import { getFurimCustomer, upsertFurimCustomer, resolveStripeCustomerId, deriveGiftStatus, parseJstDateTime, formatJstDateTime, formatJstIso } from './customer-store.js';
 import type { ExtCache } from './ext-auth.js';
 import {
   carouselTemplate,
@@ -192,7 +192,7 @@ async function switchSegmentTag(db: D1Database, friendId: string, newSeg: number
     if (t) await db.prepare('DELETE FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(friendId, t.id).run();
   }
   const newTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(`セグメント${newSeg}`).first<{ id: string }>();
-  if (newTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friendId, newTag.id).run();
+  if (newTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friendId, newTag.id, jstNow()).run();
 }
 
 export async function handleFurimAction(
@@ -627,7 +627,7 @@ export async function actionFurimanCoupon(
     const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
     if (friend) {
       const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('Furimanです').first<{ id: string }>();
-      if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friend.id, tag.id).run();
+      if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, tag.id, jstNow()).run();
       const currentSeg7 = await getCurrentSegment(db, friend.id);
       if (currentSeg7 !== null && currentSeg7 >= 5 && currentSeg7 < 7) await switchSegmentTag(db, friend.id, 7);
     }
@@ -690,7 +690,7 @@ export async function applyExtendTrialKeyword(
   const newExpiryMs = baseMs + (isWithinOneWeek ? ONE_WEEK_MS : 3 * 24 * 60 * 60_000);
   const label = isWithinOneWeek ? '1w' : '3d';
   const newExpiryJst = formatJstDateTime(newExpiryMs);
-  await upsertFurimCustomer(db, lineUserId, { subscription_end_at: newExpiryJst, extend_keyword: label });
+  await upsertFurimCustomer(db, lineUserId, { subscription_end_at: formatJstIso(newExpiryMs), extend_keyword: label });
   const { invalidateExtCache } = await import('./ext-auth.js');
   await invalidateExtCache(kv, customer.key_code);
   return { result: isWithinOneWeek ? 'extended1w' : 'extended3d', newExpiry: new Date(newExpiryMs).toISOString(), mirror: { 'サブスク終了日時': newExpiryJst, '延長キーワード': label } };
@@ -735,15 +735,15 @@ export async function actionExtendTrial(
         const meta = JSON.parse(existing.metadata || '{}');
         meta.kaisetsu = true;
         meta.trial_end = trialEndStr;
-        await db.prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
-          .bind(JSON.stringify(meta), existing.id).run();
+        await db.prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+          .bind(JSON.stringify(meta), jstNow(), existing.id).run();
         // 本編シナリオは停止しない（2026-08-24 一本化決定「seg8も本編継続」・2026-08-27 徹底）。
         // 旧実装はここで completeFriendActiveScenarios していたが、14日版シーケンスでは
         // Day6昼に「解説見た」を促すため、停止すると後半（全自動化教育）が丸ごと届かなくなる
 
         // 解説見たタグ付与
         const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind('解説見た').first<{ id: string }>();
-        if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(existing.id, tag.id).run();
+        if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(existing.id, tag.id, jstNow()).run();
 
         // セグメント8 へ昇格（解説見た）— seg4+5 達成済みの場合のみ
         const currentSeg8 = await getCurrentSegment(db, existing.id);

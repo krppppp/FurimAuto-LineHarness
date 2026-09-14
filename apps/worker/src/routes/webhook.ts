@@ -573,10 +573,10 @@ async function handleEvent(
         const tagName = 'X口コミ申請';
         let tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
         if (!tag) {
-          await db.prepare('INSERT OR IGNORE INTO tags (id, name) VALUES (?, ?)').bind(crypto.randomUUID(), tagName).run();
+          await db.prepare('INSERT OR IGNORE INTO tags (id, name, created_at) VALUES (?, ?, ?)').bind(crypto.randomUUID(), tagName, jstNow()).run();
           tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
         }
-        if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friend.id, tag.id).run();
+        if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, tag.id, jstNow()).run();
       } catch (e) {
         console.error('[webhook] X口コミ申請タグ付け失敗:', e);
       }

@@ -2,7 +2,7 @@
 // - 【キーワード】登録URL発行 <プラン名>: GAS getLIFFCheckoutUrl（プラン一覧の PriceID＋Stripe顧客ID で LIFF の決済 URL）
 // - 【キーワード】無料お試し1週間<YYYYMMDD>: GAS setKeyCodeExpiry（登録日時=今・終了日時=14 日後・試用キーコード・試用プランの機能フラグ）
 // プラン一覧は furim_master（kind='plan'・payload に PriceID / キーコード接頭語 / features）に取り込み済み（#252）
-import { formatJstDateTime, generateTrialKeyCode, getFurimCustomer, parseJstDateTime, upsertFurimCustomer, TRIAL_KEYCODE_PREFIX } from './customer-store.js';
+import { formatJstDateTime, formatJstIso, generateTrialKeyCode, getFurimCustomer, parseJstDateTime, upsertFurimCustomer, TRIAL_KEYCODE_PREFIX } from './customer-store.js';
 import { upsertFeatureFlags } from './customer-sync.js';
 import { ALWAYS_ENABLED_FEATURE_KEYS, INVENTORY_PATROL_ALL_SITES, isInventoryPromoActive } from './feature-flags.js';
 import { invalidateExtCache, type ExtCache } from './ext-auth.js';
@@ -81,7 +81,7 @@ export async function applyTrialCampaign(
   const keyCode = reissued ? generateTrialKeyCode() : current;
   const mirror: Record<string, unknown> = { 'サブスク登録日時': startAt, 'サブスク終了日時': endAt };
   let flags: Record<string, string> | null = null;
-  const patch: Parameters<typeof upsertFurimCustomer>[2] = { subscription_start_at: startAt, subscription_end_at: endAt };
+  const patch: Parameters<typeof upsertFurimCustomer>[2] = { subscription_start_at: formatJstIso(nowMs), subscription_end_at: formatJstIso(nowMs + TRIAL_DAYS * 24 * 60 * 60_000) };
   if (reissued) {
     patch.key_code = keyCode;
     patch.device_code = null;

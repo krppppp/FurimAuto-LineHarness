@@ -67,7 +67,7 @@ async function switchSegmentTag(db: D1Database, friendId: string, newSeg: number
     if (t) await db.prepare('DELETE FROM friend_tags WHERE friend_id = ? AND tag_id = ?').bind(friendId, t.id).run();
   }
   const newTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(`セグメント${newSeg}`).first<{ id: string }>();
-  if (newTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friendId, newTag.id).run();
+  if (newTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friendId, newTag.id, jstNow()).run();
 }
 
 export async function handleButtonAction(
@@ -177,10 +177,10 @@ export async function handleButtonAction(
         const tagName = `解約理由:${reason}`;
         let tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
         if (!tag) {
-          await db.prepare('INSERT OR IGNORE INTO tags (id, name) VALUES (?, ?)').bind(crypto.randomUUID(), tagName).run();
+          await db.prepare('INSERT OR IGNORE INTO tags (id, name, created_at) VALUES (?, ?, ?)').bind(crypto.randomUUID(), tagName, jstNow()).run();
           tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
         }
-        if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friend.id, tag.id).run();
+        if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, tag.id, jstNow()).run();
       }
     }
     const thanks = 'ご回答ありがとうございます🙇\n今後のサービス改善に活用させていただきます。';

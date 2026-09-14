@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { getFriendByLineUserId } from '@line-crm/db';
+import { getFriendByLineUserId, jstNow } from '@line-crm/db';
 import type { Context } from 'hono';
 import { gasGet } from '../furim/gas-client.js';
 import type { Env } from '../index.js';
@@ -638,7 +638,7 @@ planBuilder.post('/plan-builder/intent', async (c) => {
           multiChannelSites: body.multiChannelSites ?? [],
           total: sel.total,
         }),
-        new Date(Date.now() + 9 * 3600000).toISOString().replace('T', ' ').slice(0, 19),
+        jstNow(),
       ).run();
 
       const message = [
@@ -666,7 +666,7 @@ planBuilder.post('/plan-builder/intent', async (c) => {
       code,
       body.lineUserId,
       JSON.stringify({ packages: body.packages ?? [], features: body.features ?? [], multiChannelSites: body.multiChannelSites ?? [], total: sel.total }),
-      new Date(Date.now() + 9 * 3600000).toISOString().replace('T', ' ').slice(0, 19),
+      jstNow(),
     ).run();
 
     const message = [

@@ -1,3 +1,4 @@
+import { jstNow } from '@line-crm/db';
 import { fireEvent } from './event-bus.js';
 import { listActiveTrialsFromD1 } from '../furim/segments.js';
 
@@ -42,8 +43,8 @@ async function syncClosingTargets(db: D1Database): Promise<void> {
     meta.closing = true;
     meta.trial_end = trial.trialEnd;
     await db
-      .prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
-      .bind(JSON.stringify(meta), friend.id)
+      .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+      .bind(JSON.stringify(meta), jstNow(), friend.id)
       .run();
     updated++;
   }
@@ -68,8 +69,8 @@ async function syncClosingTargets(db: D1Database): Promise<void> {
     if (meta.kaisetsu) continue;
     meta.closing = false;
     await db
-      .prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
-      .bind(JSON.stringify(meta), f.id)
+      .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+      .bind(JSON.stringify(meta), jstNow(), f.id)
       .run();
     cleared++;
   }
@@ -141,8 +142,8 @@ export async function processKaisetsuDeliveries(
       if (remaining <= 0) {
         if (!meta.kaisetsu) {
           meta.closing = false;
-          await db.prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
-            .bind(JSON.stringify(meta), friend.id).run();
+          await db.prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+            .bind(JSON.stringify(meta), jstNow(), friend.id).run();
           console.log(`[kaisetsu] expired ${friend.line_user_id} (closing only)`);
           continue;
         }
@@ -157,12 +158,12 @@ export async function processKaisetsuDeliveries(
 
         const classifyTagName = wasHighSeg ? '見込客' : '未使用ユーザー';
         const classifyTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(classifyTagName).first<{ id: string }>();
-        if (classifyTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friend.id, classifyTag.id).run();
+        if (classifyTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, classifyTag.id, jstNow()).run();
 
         console.log(`[kaisetsu] expired ${friend.line_user_id} → ${classifyTagName}`);
         meta.kaisetsu = false;
-        await db.prepare('UPDATE friends SET metadata = ?, updated_at = datetime("now", "+9 hours") WHERE id = ?')
-          .bind(JSON.stringify(meta), friend.id).run();
+        await db.prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+          .bind(JSON.stringify(meta), jstNow(), friend.id).run();
         continue;
       }
 
@@ -179,10 +180,10 @@ export async function processKaisetsuDeliveries(
       // 条件付き UPDATE の changes で「自分が枠を取れたか」を判定し、取れた側だけが配信する。
       const claim = await db
         .prepare(
-          `UPDATE friends SET metadata = json_set(metadata, '$.kaisetsu_last_sent', ?), updated_at = datetime("now", "+9 hours")
+          `UPDATE friends SET metadata = json_set(metadata, '$.kaisetsu_last_sent', ?), updated_at = ?
            WHERE id = ? AND COALESCE(json_extract(metadata, '$.kaisetsu_last_sent'), '') <> ?`,
         )
-        .bind(today, friend.id, today)
+        .bind(today, jstNow(), friend.id, today)
         .run();
       if ((claim.meta?.changes ?? 0) === 0) continue;
 
@@ -190,9 +191,9 @@ export async function processKaisetsuDeliveries(
       // json_set で $.closing_sent だけ更新し、claim が書いた kaisetsu_last_sent は保持する。
       await db
         .prepare(
-          `UPDATE friends SET metadata = json_set(metadata, '$.closing_sent', json(?)), updated_at = datetime("now", "+9 hours") WHERE id = ?`,
+          `UPDATE friends SET metadata = json_set(metadata, '$.closing_sent', json(?)), updated_at = ? WHERE id = ?`,
         )
-        .bind(JSON.stringify([...closingSent, String(remaining)]), friend.id)
+        .bind(JSON.stringify([...closingSent, String(remaining)]), jstNow(), friend.id)
         .run();
 
       // オートメーションに委譲（closing_daily = 試用終盤クロージング配信）

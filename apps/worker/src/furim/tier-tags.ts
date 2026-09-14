@@ -1,3 +1,5 @@
+import { jstNow } from '@line-crm/db';
+
 // 金額帯タグ（月額3000/5000/8000/10000/15000/19800）を 1 人 1 帯にする（Capsec #241・段階2）。
 // 従来は automation の add_tag_by_name で追加するだけで旧帯が残り、プラン変更した会員に複数の帯が付いていた。
 export const PLAN_TIERS = [3000, 5000, 8000, 10000, 15000, 19800] as const;
@@ -24,8 +26,8 @@ export async function replaceTierTag(db: D1Database, friendId: string, tier: num
   const tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(want).first<{ id: string }>();
   if (!tag) return { removed, added: null };
   await db
-    .prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))')
-    .bind(friendId, tag.id)
+    .prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)')
+    .bind(friendId, tag.id, jstNow())
     .run();
   return { removed, added: want };
 }

@@ -202,7 +202,7 @@ describe('解説見た（applyExtendTrialKeyword / actionExtendTrial）', () => 
     expect(r.mirror).toEqual({ 'サブスク終了日時': '2026-10-01 10:00:00', '延長キーワード': '1w' });
     expect(r.newExpiry).toBe('2026-10-01T01:00:00.000Z');
     const upsert = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql));
-    expect(upsert?.args).toEqual(expect.arrayContaining(['2026-10-01 10:00:00', '1w']));
+    expect(upsert?.args).toEqual(expect.arrayContaining(['2026-10-01T10:00:00.000+09:00', '1w']));
   });
 
   it('登録 1 週間超 → +3 日・3d', async () => {

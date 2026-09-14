@@ -14,7 +14,7 @@ import { LineClient } from '@line-crm/line-sdk';
 import { gasPost, getGasErrorFromResponse } from '../furim/gas-client.js';
 import { enqueueGasRetryJob } from '../furim/gas-retry-queue.js';
 import { keycodeReissuedMessages } from '../furim/messages.js';
-import { absorbGasKeyCode, upsertFurimCustomer, clearFurimCustomerKeyCode, getFurimCustomerByStripeId } from '../furim/customer-store.js';
+import { absorbGasKeyCode, upsertFurimCustomer, clearFurimCustomerKeyCode, getFurimCustomerByStripeId, formatJstDateTime, formatJstIso } from '../furim/customer-store.js';
 import { pullFeatureFlagsFromSheet } from '../furim/customer-sync.js';
 import { applyPlanBuilderSync, gasSyncArgs, type PlanSyncResult } from '../furim/feature-flags.js';
 import { fireEvent } from './event-bus.js';
@@ -137,6 +137,8 @@ export async function processStripeEvent(
     let subscriptionPrice = 0;
     let subscriptionStartDateTime = '';
     let subscriptionEndDateTime = '';
+    let subscriptionStartAt = '';
+    let subscriptionEndAt = '';
     let subMetadata: Record<string, string> = {};
     if (subscriptionId && env.STRIPE_SECRET_KEY) {
       try {
@@ -153,15 +155,21 @@ export async function processStripeEvent(
           // 開始日時は素のJST。以前は旧仕様に合わせて+15分していたが、シートの時刻が
           // Stripeの実際の更新時刻と一致せず、調査のたびに15分の謎として現れていたため外した
           // （2026-09-01。当時の登録日時は真の時刻より15分進んで記録されている）
-          const jstOffset = 9 * 60 * 60000;
           // 終了日時のみ+1日バッファ（2026-07-21変更・従来は+15分）:
           // 更新webhookの処理遅延やcron再処理(最大数十分)の間にキーコード照合が走っても
           // 期限切れ判定にならない猶予。実際の課金サイクルはStripe側が正なのでシートは表示・判定用。
           // このバッファがあるため、決済が正常に行われていれば有効期限が切れることはなく、
           // プラン変更が無ければ同じキーコードを使い続けられる
-          const endJstOffset = (9 * 60 + 24 * 60) * 60000;
-          if (sub.current_period_start) subscriptionStartDateTime = new Date(sub.current_period_start * 1000 + jstOffset).toISOString().replace('T', ' ').slice(0, 19);
-          if (sub.current_period_end) subscriptionEndDateTime = new Date(sub.current_period_end * 1000 + endJstOffset).toISOString().replace('T', ' ').slice(0, 19);
+          // D1 は ISO+09:00、シートへの鏡写し（eventData）はスペース区切り（Capsec #260）
+          const endBufferMs = 24 * 60 * 60000;
+          if (sub.current_period_start) {
+            subscriptionStartAt = formatJstIso(sub.current_period_start * 1000);
+            subscriptionStartDateTime = formatJstDateTime(sub.current_period_start * 1000);
+          }
+          if (sub.current_period_end) {
+            subscriptionEndAt = formatJstIso(sub.current_period_end * 1000 + endBufferMs);
+            subscriptionEndDateTime = formatJstDateTime(sub.current_period_end * 1000 + endBufferMs);
+          }
         }
       } catch (e) { console.error('[stripe/invoice] subscriptions.retrieve failed:', e); }
     }
@@ -393,8 +401,8 @@ export async function processStripeEvent(
       try {
         await upsertFurimCustomer(db, resolvedLineUserId, {
           subscription_id: subscriptionId || undefined,
-          subscription_start_at: subscriptionStartDateTime || undefined,
-          subscription_end_at: subscriptionEndDateTime || undefined,
+          subscription_start_at: subscriptionStartAt || undefined,
+          subscription_end_at: subscriptionEndAt || undefined,
           subscription_price: subscriptionPrice || undefined,
           plan_label: planName || undefined,
           packages: isPlanBuilder ? (subMetadata.packages ?? '') : undefined,

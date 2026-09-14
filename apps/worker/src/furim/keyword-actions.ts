@@ -16,7 +16,7 @@ import {
   findUnappliedReward,
   markRewardApplied,
 } from './referral-store.js';
-import { getFriendByLineUserId, getFriendById, getAffiliateByCode, completeFriendActiveScenarios, getScenarioByName, enrollFriendInScenario } from '@line-crm/db';
+import { getFriendByLineUserId, getFriendById, getAffiliateByCode, completeFriendActiveScenarios, getScenarioByName, enrollFriendInScenario, jstNow } from '@line-crm/db';
 
 // seed-furimauto-all-scenarios.mjs v2 の命名と一致させること（旧統合7本命名だと見つからず切替が空振りする）
 const REFERRAL_SCENARIO_NAME = 'FurimAuto 紹介 ステップ配信（セグメント1: アンケート未回答）';
@@ -347,7 +347,7 @@ export async function processReferral(
 
         // 紹介経由タグ付与（紹介されたお友達）
         const introTag = await targetDb.prepare('SELECT id FROM tags WHERE name = ?').bind('紹介経由').first<{ id: string }>();
-        if (introTag) await targetDb.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(friend.id, introTag.id).run();
+        if (introTag) await targetDb.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, introTag.id, jstNow()).run();
       }
 
       // アンバサダーLvタグ更新（アンバサダー本人）。紹介数は D1 の台帳の件数
@@ -365,7 +365,7 @@ export async function processReferral(
           const newLv = count >= 10 ? 'アンバサダーLv.10' : count >= 5 ? 'アンバサダーLv.5' : count >= 1 ? 'アンバサダーLv.1' : null;
           if (newLv) {
             const newLvTag = await targetDb.prepare('SELECT id FROM tags WHERE name = ?').bind(newLv).first<{ id: string }>();
-            if (newLvTag) await targetDb.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, datetime("now", "+9 hours"))').bind(ambassadorFriend.id, newLvTag.id).run();
+            if (newLvTag) await targetDb.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(ambassadorFriend.id, newLvTag.id, jstNow()).run();
             console.log(`[furim] Ambassador ${ambassadorLineUserId} → ${newLv} (count=${count})`);
           }
         }

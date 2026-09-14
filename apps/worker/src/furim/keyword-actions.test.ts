@@ -183,9 +183,9 @@ describe('processReferral（D1 だけで完結・Capsec #244）', () => {
     const introducedPost = calls.find((c) => c.url.endsWith('/v1/customers/cus_intro') && c.method === 'POST');
     expect(introducedPost?.body).toContain('coupon=IDLf7QBx');
     expect(introducedPost?.body).toContain('metadata%5BambassadorStripeID%5D=cus_amb');
-    // +7 日: 2026-09-27 12:00:00 → 2026-10-04 12:00:00 を D1 とシートへ
+    // +7 日: 2026-09-27 12:00:00 → D1 は ISO+09:00、シートはスペース区切り（Capsec #260）
     const extend = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql) && w.sql.includes('subscription_end_at'));
-    expect(extend?.args).toContain('2026-10-04 12:00:00');
+    expect(extend?.args).toContain('2026-10-04T12:00:00.000+09:00');
     expect(gasPost).toHaveBeenCalledWith('deploy-id', { method: 'setCustomerFields', lineUserId: 'Uintroduced', fields: { 'サブスク終了日時': '2026-10-04 12:00:00' } });
     // 通知: 被紹介者は reply、アンバサダーは push（クーポン付与の文面）
     expect((client.replyMessage.mock.calls[0][1] as { text: string }[])[0].text).toContain('無料試用期間を1週間追加');
