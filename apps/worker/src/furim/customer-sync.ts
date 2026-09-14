@@ -11,6 +11,7 @@ import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, getGasErrorFromResponse } from './gas-client.js';
 import { buildUpsertStatement, formatJstIso, parseJstDateTime, type FurimCustomer, type FurimCustomerPatch } from './customer-store.js';
 import { notifyStaff } from './staff-notify.js';
+import { isJstMinuteWindow } from './cron-window.js';
 import type { PushEnv } from '../services/push-notify.js';
 
 export const MASTER_SHEET = '顧客情報-サブスク情報-キーコード';
@@ -325,8 +326,59 @@ export type ReconcileResult = {
 
 /** 5 分 cron の JST :15 / :45 の tick だけ true（:00 セグメント同期・:30 GAS 認可チェックを避ける） */
 export function isReconcileTick(now = Date.now()): boolean {
-  const m = new Date(now + 9 * 60 * 60_000).getUTCMinutes();
-  return m === 15 || m === 45;
+  return isJstMinuteWindow(now, 15) || isJstMinuteWindow(now, 45);
+}
+
+export const RECONCILE_STALL_MINUTES = 45;
+export const RECONCILE_LAST_COMPLETED_KEY = 'furim:customer-sync:last-completed-at';
+export const RECONCILE_STALL_NOTIFIED_KEY = 'furim:customer-sync:stall-notified-at';
+type StallKv = Pick<KVNamespace, 'get' | 'put' | 'delete'>;
+
+function toJstIso(ms: number): string {
+  return new Date(ms + 9 * 60 * 60_000).toISOString().replace('Z', '+09:00');
+}
+
+export async function recordReconcileCompleted(kv: StallKv, completedAt: number): Promise<void> {
+  await kv.put(RECONCILE_LAST_COMPLETED_KEY, toJstIso(completedAt));
+  if (await kv.get(RECONCILE_STALL_NOTIFIED_KEY)) await kv.delete(RECONCILE_STALL_NOTIFIED_KEY);
+}
+
+export async function checkReconcileStall(
+  kv: StallKv,
+  db: D1Database,
+  lineClient: LineClient | null,
+  env: PushEnv & { GAS_DEPLOY_ID?: string },
+  now: number,
+): Promise<'skipped' | 'baseline' | 'ok' | 'notified' | 'already-notified'> {
+  if (!env.GAS_DEPLOY_ID) return 'skipped';
+  const last = await kv.get(RECONCILE_LAST_COMPLETED_KEY);
+  const lastMs = last ? Date.parse(last) : NaN;
+  if (!Number.isFinite(lastMs)) {
+    await kv.put(RECONCILE_LAST_COMPLETED_KEY, toJstIso(now));
+    return 'baseline';
+  }
+  const minutes = Math.floor((now - lastMs) / 60_000);
+  if (minutes < RECONCILE_STALL_MINUTES) return 'ok';
+  if (await kv.get(RECONCILE_STALL_NOTIFIED_KEY)) return 'already-notified';
+  await notifyStaff(
+    db,
+    lineClient,
+    env,
+    {
+      title: '顧客マスターの差分検知が止まっています',
+      body: `最後の完走 ${last}（${minutes} 分前）`,
+      url: '/friends',
+      lineText: [
+        `顧客マスター⇄D1 の差分検知（JST :15/:45）が ${minutes} 分完走していません`,
+        `最後の完走: ${last}`,
+        'シートからの取り込み（端末判定・メルカリURL・機能フラグ）と差分の通知も止まっています。wrangler tail の [furim/customer-sync] と [cron] furim customer-sync error を確認してください。',
+      ].join('\n'),
+    },
+    'furim/customer-sync',
+  );
+  await kv.put(RECONCILE_STALL_NOTIFIED_KEY, toJstIso(now));
+  console.warn(`[furim/customer-sync] stall alert sent: last=${last} minutes=${minutes}`);
+  return 'notified';
 }
 
 export async function reconcileFurimCustomers(

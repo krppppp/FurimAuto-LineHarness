@@ -104,6 +104,88 @@ describe('isReconcileTick', () => {
     expect(isReconcileTick(at(10, 0))).toBe(false);
     expect(isReconcileTick(at(10, 30))).toBe(false);
   });
+
+  it('発火が秒単位で遅れても :15〜:19 と :45〜:49 は通し、その外は通さない', () => {
+    const at = (h: number, m: number, s = 0, ms = 0) => Date.UTC(2026, 8, 13, h - 9, m, s, ms);
+    expect(isReconcileTick(at(13, 15, 0))).toBe(true);
+    expect(isReconcileTick(at(13, 16, 0, 300))).toBe(true);
+    expect(isReconcileTick(at(13, 19, 59))).toBe(true);
+    expect(isReconcileTick(at(13, 14, 59))).toBe(false);
+    expect(isReconcileTick(at(13, 20, 0))).toBe(false);
+    expect(isReconcileTick(at(13, 45, 0))).toBe(true);
+    expect(isReconcileTick(at(13, 46, 0, 300))).toBe(true);
+    expect(isReconcileTick(at(13, 49, 59))).toBe(true);
+    expect(isReconcileTick(at(13, 44, 59))).toBe(false);
+    expect(isReconcileTick(at(13, 50, 0))).toBe(false);
+  });
+
+  it('5 分 cron は発火の秒ずれがどこでも 30 分に 1 回だけ通る', () => {
+    const base = Date.UTC(2026, 8, 13, 13 - 9, 0);
+    for (let offset = 0; offset < 300_000; offset += 7_000) {
+      const hits = Array.from({ length: 12 }, (_, i) => base + offset + i * 300_000).filter((t) => isReconcileTick(t));
+      expect(hits).toHaveLength(2);
+      expect(hits[1] - hits[0]).toBe(30 * 60_000);
+    }
+  });
+});
+
+const { checkReconcileStall, recordReconcileCompleted, RECONCILE_LAST_COMPLETED_KEY, RECONCILE_STALL_NOTIFIED_KEY } = await import('./customer-sync.js');
+
+function makeKv(initial: Record<string, string> = {}) {
+  const store = new Map(Object.entries(initial));
+  return {
+    store,
+    get: vi.fn(async (k: string) => store.get(k) ?? null),
+    put: vi.fn(async (k: string, v: string) => { store.set(k, v); }),
+    delete: vi.fn(async (k: string) => { store.delete(k); }),
+  } as unknown as KVNamespace & { store: Map<string, string> };
+}
+
+describe('差分検知の停止通知', () => {
+  const jst = (h: number, m: number, s = 0) => Date.UTC(2026, 8, 14, h - 9, m, s);
+
+  it('完走したら完走時刻を書き、通知済みの印を消す', async () => {
+    const kv = makeKv({ [RECONCILE_STALL_NOTIFIED_KEY]: 'x' });
+    await recordReconcileCompleted(kv, jst(13, 15, 49));
+    expect(kv.store.get(RECONCILE_LAST_COMPLETED_KEY)).toBe('2026-09-14T13:15:49.000+09:00');
+    expect(kv.store.has(RECONCILE_STALL_NOTIFIED_KEY)).toBe(false);
+  });
+
+  it('完走時刻が 45 分未満なら通知しない', async () => {
+    const kv = makeKv({ [RECONCILE_LAST_COMPLETED_KEY]: '2026-09-14T13:15:49.000+09:00' });
+    const { db } = makeDb();
+    expect(await checkReconcileStall(kv, db, lineClient as never, env, jst(14, 0, 48))).toBe('ok');
+    expect(lineClient.pushMessage).not.toHaveBeenCalled();
+  });
+
+  it('45 分以上進まなければ LINE＋Web Push で 1 回だけ通知し、続く tick では送らない。完走で印が消えると次の停止でまた通知する', async () => {
+    const kv = makeKv({ [RECONCILE_LAST_COMPLETED_KEY]: '2026-09-14T12:45:59.057+09:00' });
+    const { db } = makeDb();
+    expect(await checkReconcileStall(kv, db, lineClient as never, env, jst(13, 31))).toBe('notified');
+    expect(lineClient.pushMessage).toHaveBeenCalledTimes(1);
+    const text = (lineClient.pushMessage.mock.calls[0][1] as Array<{ text: string }>)[0].text;
+    expect(text).toContain('45 分完走していません');
+    expect(text).toContain('2026-09-14T12:45:59.057+09:00');
+    expect(sendPushToAll).toHaveBeenCalledTimes(1);
+    expect(await checkReconcileStall(kv, db, lineClient as never, env, jst(13, 36))).toBe('already-notified');
+    expect(await checkReconcileStall(kv, db, lineClient as never, env, jst(14, 41))).toBe('already-notified');
+    expect(lineClient.pushMessage).toHaveBeenCalledTimes(1);
+
+    await recordReconcileCompleted(kv, jst(15, 15, 49));
+    expect(await checkReconcileStall(kv, db, lineClient as never, env, jst(15, 20))).toBe('ok');
+    expect(await checkReconcileStall(kv, db, lineClient as never, env, jst(16, 1))).toBe('notified');
+    expect(lineClient.pushMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('完走時刻がまだ無ければ今を起点として書き、通知しない。GAS_DEPLOY_ID が無ければ何もしない', async () => {
+    const kv = makeKv();
+    const { db } = makeDb();
+    expect(await checkReconcileStall(kv, db, lineClient as never, {}, jst(16, 0))).toBe('skipped');
+    expect(kv.store.size).toBe(0);
+    expect(await checkReconcileStall(kv, db, lineClient as never, env, jst(16, 0))).toBe('baseline');
+    expect(kv.store.get(RECONCILE_LAST_COMPLETED_KEY)).toBe('2026-09-14T16:00:00.000+09:00');
+    expect(lineClient.pushMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe('reconcileFurimCustomers', () => {

@@ -105,6 +105,7 @@ import {
   resolveOgForForm,
   resolveOgForAccount,
 } from './lib/og-resolver.js';
+import { isJstMinuteWindow } from './furim/cron-window.js';
 
 export type Env = {
   Bindings: {
@@ -983,7 +984,6 @@ async function scheduled(
   setFirebaseAuthToken(env.FIREBASE_DB_SECRET);
   // FurimAuto: 毎時0分のセグメント判定・シナリオ切替は syncSegments（D1 算出）が担う。
   // 旧 GAS sendStepMessages の POST は段階2.5（Capsec #250）で廃止
-  const jstMinutes = new Date(Date.now() + 9 * 60 * 60_000).getUTCMinutes();
 
   // GASキープウォーム: 5分ごとの軽量ping（シート非接触・doGetで即return）。
   // 低頻度時間帯のコールドスタート緩和（キーコード発行等の体感遅延・無応答対策）
@@ -1015,7 +1015,7 @@ async function scheduled(
 
   // GASシート認可ヘルスチェック: 毎時30分にシート読み取りを実叩きし、
   // 認可失効（7日周期事故の再発）を顧客報告より先に検知してスタッフへWeb Push
-  if (jstMinutes === 30) {
+  if (isJstMinuteWindow(event.scheduledTime, 30)) {
     ctx.waitUntil(
       import('./services/gas-health.js')
         .then(({ checkGasSheetAuth }) => checkGasSheetAuth(env.DB, env))
@@ -1029,7 +1029,7 @@ async function scheduled(
   ctx.waitUntil(
     import('./services/liff-health.js')
       .then(({ checkLiffIdConsistency }) =>
-        checkLiffIdConsistency(env.DB, env, { notify: jstMinutes === 15 }),
+        checkLiffIdConsistency(env.DB, env, { notify: isJstMinuteWindow(event.scheduledTime, 15) }),
       )
       .catch((err) => console.error('[cron] liff-health error:', err)),
   );
@@ -1127,9 +1127,20 @@ async function scheduled(
   // 内部で JST :15/:45 の tick だけ動き、30分以上続くズレをスタッフへ1回だけ通知する
   jobs.push(
     import('./furim/customer-sync.js')
-      .then(({ reconcileFurimCustomers }) => reconcileFurimCustomers(env.DB, defaultLineClient, env))
+      .then(async ({ reconcileFurimCustomers, recordReconcileCompleted }) => {
+        const r = await reconcileFurimCustomers(env.DB, defaultLineClient, env, { now: event.scheduledTime });
+        if (!r.skipped && env.GAS_DEPLOY_ID && env.FURIM_EXT_CACHE) await recordReconcileCompleted(env.FURIM_EXT_CACHE, Date.now());
+      })
       .catch((err) => console.error('[cron] furim customer-sync error:', err)),
   );
+  if (event.cron !== '0 */6 * * *' && env.FURIM_EXT_CACHE) {
+    const kv = env.FURIM_EXT_CACHE;
+    jobs.push(
+      import('./furim/customer-sync.js')
+        .then(({ checkReconcileStall }) => checkReconcileStall(kv, env.DB, defaultLineClient, env, event.scheduledTime))
+        .catch((err) => console.error('[cron] furim customer-sync stall check error:', err)),
+    );
+  }
 
   await Promise.allSettled(jobs);
 
