@@ -590,7 +590,7 @@ describe('#253 decision #372: 列順・内部 ID・日本語ラベル・日時�
     const col = (t: string, n: string) => by(t).columns.find((c) => c.name === n)!;
     expect(col('furim_customers', 'key_code').label).toBe('キーコード');
     expect(col('furim_cancellations', 'display_name').label).toBe('LINE表示名（解約時点）');
-    expect(col('furim_customers', 'subscription_end_at').datetime).toBe('space');
+    expect(col('furim_customers', 'subscription_end_at').datetime).toBe('jst');
     expect(col('furim_customers', 'updated_at').datetime).toBe('jst');
     expect(col('furim_execution_logs', 'mypage_info_updated_date').datetime).toBe('utc');
     expect(col('furim_customers', 'plan_label').datetime).toBeNull();
