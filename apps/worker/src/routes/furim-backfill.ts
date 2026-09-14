@@ -3,6 +3,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
 import { SHEET_BACKFILL_SPECS, backfillSheet, countTableRows, getSheetSpec } from '../furim/sheet-backfill.js';
+import { moveConsumeRowsToAutoCopyLogs } from '../furim/ticket-ledger.js';
 
 const furimBackfill = new Hono<Env>();
 
@@ -42,6 +43,27 @@ furimBackfill.post('/api/furim/backfill-sheets', async (c) => {
     return c.json({ success: true, ...result });
   } catch (err) {
     console.error('[furim/backfill-sheets] error:', err);
+    return c.json({ success: false, error: String(err) }, 500);
+  }
+});
+
+/**
+ * POST /api/furim/move-consume-to-auto-copy-logs
+ * 段階4-D（Capsec #258）: furim_ticket_ledger の consume 行を furim_auto_copy_logs へ移して台帳から消す（冪等・残数は触らない）
+ * Body: { dryRun?: boolean = true, confirmProd?: boolean }
+ */
+furimBackfill.post('/api/furim/move-consume-to-auto-copy-logs', async (c) => {
+  const isDev = c.env.WORKER_NAME === 'line-harness';
+  try {
+    const body = await c.req.json<{ dryRun?: boolean; confirmProd?: boolean }>().catch(() => ({}) as { dryRun?: boolean; confirmProd?: boolean });
+    const dryRun = body.dryRun !== false;
+    if (!dryRun && !isDev && body.confirmProd !== true) {
+      return c.json({ success: false, error: '本番workerでの実行には confirmProd: true が必要です' }, 403);
+    }
+    const result = await moveConsumeRowsToAutoCopyLogs(c.env.DB, { dryRun });
+    return c.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[furim/move-consume] error:', err);
     return c.json({ success: false, error: String(err) }, 500);
   }
 });

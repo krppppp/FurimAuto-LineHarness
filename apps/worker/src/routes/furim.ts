@@ -820,7 +820,7 @@ furim.post('/api/furim/customer-state', async (c) => {
 /**
  * POST /api/furim/ticket-consumed
  * 旧拡張（4.3.1 再申請版より前）が GAS updateCopyCredit でシートのチケット残を減らした直後に GAS が通知する（Capsec #254）。
- * /api/ext/v1/copy-credit と同じ関数・同じ冪等キー（consume:<dedupeKey>）で furim_ticket_ledger に積み、残数を D1 に反映する。
+ * /api/ext/v1/copy-credit と同じ関数・同じ冪等キー（consume:<dedupeKey>）で furim_auto_copy_logs に積み、残数を D1 に反映する。
  * 新拡張の直接経路と同じ dedupeKey なので二重計上しない。
  * Body: { keyCode: string, delta: number, dedupeKey: string, sourceUrl?: string, targetUrl?: string }
  */
@@ -833,11 +833,10 @@ furim.post('/api/furim/ticket-consumed', async (c) => {
     if (!keyCode || !dedupeKey || !Number.isFinite(delta)) return c.json({ success: false, error: 'keyCode, delta, dedupeKey required' }, 400);
     const customer = await c.env.DB.prepare('SELECT line_user_id, key_code FROM furim_customers WHERE key_code = ? ORDER BY updated_at DESC LIMIT 1').bind(keyCode).first<{ line_user_id: string; key_code: string }>();
     if (!customer) return c.json({ success: false, error: '該当レコードなし' }, 404);
-    const { applyTicketDelta } = await import('../furim/ticket-ledger.js');
-    const r = await applyTicketDelta(c.env.DB, c.env.FURIM_EXT_CACHE, customer, {
+    const { applyTicketConsume } = await import('../furim/ticket-ledger.js');
+    const r = await applyTicketConsume(c.env.DB, c.env.FURIM_EXT_CACHE, customer, {
       delta,
-      reason: 'consume',
-      idempotencyKey: `consume:${dedupeKey}`,
+      dedupeKey,
       sourceUrl: body.sourceUrl || null,
       targetUrl: body.targetUrl || null,
     });

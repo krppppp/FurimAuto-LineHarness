@@ -31,7 +31,7 @@ const UNIQUE_COLS: Record<string, string[]> = {
   furim_payments: ['invoice_id'],
   furim_ticket_ledger: ['id', 'idempotency_key'],
   furim_execution_logs: ['id', 'dedupe_key'],
-  furim_auto_copy_logs: ['id'],
+  furim_auto_copy_logs: ['id', 'idempotency_key'],
   furim_ext_errors: ['id'],
   furim_manual_copy_logs: ['id', 'dedupe_key'],
   furim_shop_research_logs: ['id', 'dedupe_key'],
@@ -57,8 +57,18 @@ function makeDb(fixtures: { customers?: Stored[]; friends?: Stored[] } = {}) {
     return t;
   };
   const uniqueKeys = (table: string, row: Stored) =>
-    (UNIQUE_COLS[table] ?? ['id']).map((u) => u.split('|').map((c) => String(row[c])).join('|'));
+    (UNIQUE_COLS[table] ?? ['id'])
+      .map((u) => u.split('|').map((c) => row[c]))
+      .filter((vals) => vals.every((v) => v != null))
+      .map((vals) => vals.map(String).join('|'));
   const apply = (sql: string, args: unknown[]): number => {
+    const fill = sql.match(/^UPDATE furim_auto_copy_logs SET remaining_tickets = \? WHERE id = \? AND remaining_tickets IS NULL$/);
+    if (fill) {
+      const r = tableOf('furim_auto_copy_logs').get(String(args[1]));
+      if (!r || r.remaining_tickets != null) return 0;
+      r.remaining_tickets = args[0];
+      return 1;
+    }
     const m = sql.match(/^INSERT(?: OR IGNORE)? INTO (\w+) \(([^)]+)\) VALUES/);
     if (!m) throw new Error(`unexpected sql: ${sql}`);
     const table = m[1];
@@ -91,6 +101,7 @@ function makeDb(fixtures: { customers?: Stored[]; friends?: Stored[] } = {}) {
     all: async () => {
       if (/FROM furim_customers/.test(sql)) return { results: fixtures.customers ?? [] };
       if (/FROM friends/.test(sql)) return { results: fixtures.friends ?? [] };
+      if (/FROM furim_auto_copy_logs WHERE idempotency_key IS NOT NULL/.test(sql)) return { results: [...tableOf('furim_auto_copy_logs').values()].filter((r) => r.idempotency_key != null) };
       return { results: [] };
     },
   });
@@ -205,6 +216,15 @@ describe('列マッピング', () => {
     const rows = res.rows.map((r) => Object.fromEntries(r.columns.map((c, i) => [c, r.values[i]])));
     expect(rows[0]).toMatchObject({ line_user_id: uid('1'), display_name: 'いわ', source_url: 'https://a', target_url: 'https://b', remaining_tickets: 9, processed_at: '2025-10-17T08:58:50.000+09:00', imported_at: NOW });
     expect(rows[1]).toMatchObject({ line_user_id: null, display_name: 'yoko', source_url: null, remaining_tickets: 8 });
+  });
+
+  it('自動コピー出品履歴の 重複防止キー は consume:<キー> として持つ（無ければ NULL）', async () => {
+    const res = await mapSheetRows(getSheetSpec('auto-copy-logs')!, [
+      { 処理日時: '2026-09-14T00:02:51.000Z', LINE表示名: 'いわ', コピー元URL: 'https://a', コピー出品先URL: 'https://b', '　残チケット数': 9, 重複防止キー: 'mu0f-1' },
+      { 処理日時: '2026-09-14T00:02:52.000Z', LINE表示名: 'いわ', コピー元URL: 'https://a', コピー出品先URL: 'https://c', '　残チケット数': 8, 重複防止キー: '' },
+    ], await ctxWith());
+    const rows = res.rows.map((r) => Object.fromEntries(r.columns.map((c, i) => [c, r.values[i]])));
+    expect(rows.map((r) => r.idempotency_key)).toEqual(['consume:mu0f-1', null]);
   });
 
   it('Error → furim_ext_errors（キーコードで line_user_id・数値のキーコードも文字列に）', async () => {
@@ -361,6 +381,32 @@ describe('backfillSheet（冪等性）', () => {
     const res = await backfillSheet(db, 'dep-1', getSheetSpec('execution-logs')!, { dryRun: false, now: NOW });
     expect(res).toMatchObject({ mapped: 2, inserted: 1, countBefore: 1, countAfter: 2 });
     expect(rowsOf('furim_execution_logs').find((r) => r.dedupe_key === 'msep3kb3-1zgbci9t')).toMatchObject({ id: 'live-1', client: 'ext/4.3.1' });
+  });
+
+  it('自動コピー出品履歴は消費経路で入った同じ消費（同じキー / キー無しは URL＋2 分以内）を入れず、残チケット数だけ埋める。2 回目も増えない', async () => {
+    const { db, rowsOf } = makeDb({ customers, friends });
+    const ins = 'INSERT INTO furim_auto_copy_logs (id, line_user_id, display_name, source_url, target_url, remaining_tickets, processed_at, imported_at, delta, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    await db.prepare(ins).bind('live-1', uid('1'), null, 'https://jp.mercari.com/item/m1', 'https://item.fril.jp/1', null, '2026-09-14T09:02:00.148+09:00', NOW, -1, 'consume:k1').run();
+    await db.prepare(ins).bind('live-2', uid('2'), null, 'https://jp.mercari.com/item/m2', 'https://item.fril.jp/2', 40, '2026-09-14T10:03:27.222+09:00', NOW, -1, 'consume:gas-generated').run();
+    const oldRow = { 処理日時: '2026-09-13T23:00:00.000Z', LINE表示名: 'いわ', コピー元URL: 'https://jp.mercari.com/item/m0', コピー出品先URL: 'https://item.fril.jp/0', '　残チケット数': 9, 重複防止キー: '' };
+    await db.prepare(ins).bind(await rowHash('自動コピー出品履歴', Object.values(oldRow)), null, 'いわ', 'https://jp.mercari.com/item/m0', 'https://item.fril.jp/0', 9, '2026-09-14T08:00:00.000+09:00', NOW, null, null).run();
+    gasGet.mockResolvedValue({ success: true, columns: [], rows: [
+      oldRow,
+      { 処理日時: '2026-09-14T00:02:01.000Z', LINE表示名: 'いわ', コピー元URL: 'https://jp.mercari.com/item/m1', コピー出品先URL: 'https://item.fril.jp/1', '　残チケット数': 297, 重複防止キー: 'k1' },
+      { 処理日時: '2026-09-14T01:03:28.000Z', LINE表示名: 'yoko', コピー元URL: 'https://jp.mercari.com/item/m2', コピー出品先URL: 'https://item.fril.jp/2', '　残チケット数': 41, 重複防止キー: '' },
+      { 処理日時: '2026-09-14T01:10:00.000Z', LINE表示名: 'いわ', コピー元URL: 'https://jp.mercari.com/item/m5', コピー出品先URL: 'https://item.fril.jp/5', '　残チケット数': 296, 重複防止キー: 'k5' },
+    ] });
+    const spec = getSheetSpec('auto-copy-logs')!;
+    const first = await backfillSheet(db, 'dep-1', spec, { dryRun: false, now: NOW });
+    expect(first).toMatchObject({ mapped: 2, inserted: 1, remainingFilled: 1, countBefore: 3, countAfter: 4 });
+    expect(first.skipped.matched_consume).toBe(2);
+    expect(rowsOf('furim_auto_copy_logs').find((r) => r.id === 'live-1')).toMatchObject({ remaining_tickets: 297, idempotency_key: 'consume:k1' });
+    expect(rowsOf('furim_auto_copy_logs').find((r) => r.id === 'live-2')).toMatchObject({ remaining_tickets: 40 });
+    expect(rowsOf('furim_auto_copy_logs').find((r) => r.idempotency_key === 'consume:k5')).toMatchObject({ line_user_id: uid('1'), remaining_tickets: 296 });
+
+    const second = await backfillSheet(db, 'dep-1', spec, { dryRun: false, now: NOW });
+    expect(second).toMatchObject({ inserted: 0, remainingFilled: 0, countBefore: 4, countAfter: 4 });
+    expect(second.skipped.matched_consume).toBe(2);
   });
 
   it('GAS が失敗を返したら投げる（業務エラーは再試行しない）', async () => {

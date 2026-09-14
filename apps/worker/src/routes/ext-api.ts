@@ -151,12 +151,11 @@ mount('copy-credit', async (c, p, client) => {
     return c.json({ success: false, error: KEY_CODE_ERROR.NOT_FOUND, errorMessage: '入力されたキーコードは登録されていません。', keyCode, copyCredit: null });
   }
 
-  // 台帳＋残数は ticket-ledger.ts（旧拡張の GAS updateCopyCredit → /api/furim/ticket-consumed も同じ関数・同じ冪等キー）
-  const { applyTicketDelta } = await import('../furim/ticket-ledger.js');
-  const r = await applyTicketDelta(db, c.env.FURIM_EXT_CACHE, customer, {
+  // 自動コピー出品履歴＋残数は ticket-ledger.ts（旧拡張の GAS updateCopyCredit → /api/furim/ticket-consumed も同じ関数・同じ冪等キー）
+  const { applyTicketConsume } = await import('../furim/ticket-ledger.js');
+  const r = await applyTicketConsume(db, c.env.FURIM_EXT_CACHE, customer, {
     delta,
-    reason: 'consume',
-    idempotencyKey: `consume:${dedupeKey}`,
+    dedupeKey,
     sourceUrl: strOrNull(p.sourceUrl),
     targetUrl: strOrNull(p.targetUrl),
   });

@@ -8,6 +8,7 @@
 // - 型注記行（値が String / Number / Boolean だけの行）と空行はシート側の飾りなので除外し、理由付きで数える
 import { toJstString } from '@line-crm/db';
 import { gasGet, getGasErrorFromResponse } from './gas-client.js';
+import { isSameConsume } from './ticket-ledger.js';
 
 export type SheetRow = Record<string, unknown>;
 
@@ -155,7 +156,7 @@ export type MappedRow = {
   conflict?: { target: string; update: string[] };
 };
 
-export type SkipReason = 'type_row' | 'empty_row' | 'missing_key' | 'duplicate_in_sheet' | 'unresolved_line_user_id';
+export type SkipReason = 'type_row' | 'empty_row' | 'missing_key' | 'duplicate_in_sheet' | 'unresolved_line_user_id' | 'matched_consume';
 
 export type MapResult = {
   rows: MappedRow[];
@@ -214,10 +215,11 @@ function mapper(spec: SheetSpec): Mapper {
         const hash = await rowHash(spec.sheet, values);
         const name = str(r['LINE表示名']);
         const remainingHeader = headerStartingWith(r, '　残チケット数') ?? headerStartingWith(r, '残チケット数') ?? '残チケット数';
+        const dedupeKey = str(r['重複防止キー']);
         return {
           table: spec.table,
-          columns: ['id', 'line_user_id', 'display_name', 'source_url', 'target_url', 'remaining_tickets', 'processed_at', 'imported_at'],
-          values: [hash, (name && ctx.byDisplayName.get(name)) ?? null, name, str(r['コピー元URL']), str(r['コピー出品先URL']), int(r[remainingHeader]), jst(r['処理日時']) ?? ctx.importedAt, ctx.importedAt],
+          columns: ['id', 'line_user_id', 'display_name', 'source_url', 'target_url', 'remaining_tickets', 'processed_at', 'imported_at', 'idempotency_key'],
+          values: [hash, (name && ctx.byDisplayName.get(name)) ?? null, name, str(r['コピー元URL']), str(r['コピー出品先URL']), int(r[remainingHeader]), jst(r['処理日時']) ?? ctx.importedAt, ctx.importedAt, dedupeKey ? `consume:${dedupeKey}` : null],
           key: hash,
         };
       };
@@ -360,7 +362,7 @@ function masterRow(spec: SheetSpec, key: string, displayName: string, priceId: s
 export async function mapSheetRows(spec: SheetSpec, rows: SheetRow[], ctx: ResolveContext): Promise<MapResult> {
   const map = mapper(spec);
   const out: MappedRow[] = [];
-  const skipped: Record<SkipReason, number> = { type_row: 0, empty_row: 0, missing_key: 0, duplicate_in_sheet: 0, unresolved_line_user_id: 0 };
+  const skipped: Record<SkipReason, number> = { type_row: 0, empty_row: 0, missing_key: 0, duplicate_in_sheet: 0, unresolved_line_user_id: 0, matched_consume: 0 };
   const seen = new Set<string>();
   let unresolved = 0;
   for (const row of rows) {
@@ -452,6 +454,47 @@ export async function countTableRows(db: D1Database, spec: SheetSpec): Promise<n
   return Number(row?.n ?? 0);
 }
 
+/**
+ * 自動コピー出品履歴: 消費経路（copy-credit / ticket-consumed）で既に入った行と同じ消費のシート行は入れない（段階4-D・Capsec #258）。
+ * 重複防止キーがあれば consume:<キー> で、無ければ URL＋2 分以内で突き合わせる。通知経由の行を正とし、残チケット数が空ならシートの値で埋める
+ */
+async function dropMatchedConsumes(db: D1Database, mapped: MapResult): Promise<D1PreparedStatement[]> {
+  const keyed = (
+    await db
+      .prepare('SELECT id, line_user_id, source_url, target_url, processed_at, remaining_tickets, idempotency_key FROM furim_auto_copy_logs WHERE idempotency_key IS NOT NULL')
+      .all<{ id: string; line_user_id: string | null; source_url: string | null; target_url: string | null; processed_at: string; remaining_tickets: number | null; idempotency_key: string }>()
+  ).results ?? [];
+  if (keyed.length === 0) return [];
+  const byKey = new Map(keyed.map((k) => [k.idempotency_key, k]));
+  const byTarget = new Map<string, typeof keyed>();
+  for (const k of keyed) {
+    const t = k.target_url ?? '';
+    const list = byTarget.get(t) ?? [];
+    list.push(k);
+    byTarget.set(t, list);
+  }
+  const fills: D1PreparedStatement[] = [];
+  const filled = new Set<string>();
+  const kept: MappedRow[] = [];
+  for (const row of mapped.rows) {
+    const v = Object.fromEntries(row.columns.map((c, i) => [c, row.values[i]])) as Record<string, unknown>;
+    const key = v.idempotency_key as string | null;
+    const self = { line_user_id: v.line_user_id as string | null, source_url: v.source_url as string | null, target_url: v.target_url as string | null, at: String(v.processed_at) };
+    const match = key
+      ? byKey.get(key)
+      : (byTarget.get(self.target_url ?? '') ?? []).find((k) => isSameConsume(self, { ...k, at: k.processed_at }));
+    if (!match || match.id === v.id) { kept.push(row); continue; }
+    mapped.skipped.matched_consume++;
+    if (v.line_user_id == null) mapped.unresolved--;
+    if (match.remaining_tickets == null && v.remaining_tickets != null && !filled.has(match.id)) {
+      fills.push(db.prepare('UPDATE furim_auto_copy_logs SET remaining_tickets = ? WHERE id = ? AND remaining_tickets IS NULL').bind(v.remaining_tickets, match.id));
+      filled.add(match.id);
+    }
+  }
+  mapped.rows = kept;
+  return fills;
+}
+
 export type SheetBackfillResult = {
   dryRun: boolean;
   sheet: string;
@@ -462,6 +505,7 @@ export type SheetBackfillResult = {
   unresolvedLineUserId: number;
   statements: number;
   inserted: number;
+  remainingFilled: number;
   countBefore: number;
   countAfter: number;
   sample: MappedRow[];
@@ -472,7 +516,8 @@ export async function backfillSheet(db: D1Database, gasDeployId: string, spec: S
   const rows = await fetchSheetRows(gasDeployId, spec);
   const ctx = await loadResolveContext(db, importedAt);
   const mapped = await mapSheetRows(spec, rows, ctx);
-  const stmts = buildInsertStatements(db, mapped.rows);
+  const fills = spec.name === 'auto-copy-logs' ? await dropMatchedConsumes(db, mapped) : [];
+  const stmts = [...buildInsertStatements(db, mapped.rows), ...fills];
   const countBefore = await countTableRows(db, spec);
   const base = {
     sheet: spec.sheet,
@@ -485,9 +530,10 @@ export async function backfillSheet(db: D1Database, gasDeployId: string, spec: S
     countBefore,
     sample: mapped.rows.slice(0, 3),
   };
-  if (opts.dryRun) return { dryRun: true, inserted: 0, countAfter: countBefore, ...base };
-  const inserted = await runBatches(db, stmts);
+  if (opts.dryRun) return { dryRun: true, inserted: 0, remainingFilled: 0, countAfter: countBefore, ...base };
+  const inserted = await runBatches(db, stmts.slice(0, stmts.length - fills.length));
+  const remainingFilled = fills.length ? await runBatches(db, fills) : 0;
   const countAfter = await countTableRows(db, spec);
   console.log('[furim/backfill-sheets]', JSON.stringify({ sheet: spec.sheet, table: spec.table, sheetRows: rows.length, mapped: mapped.rows.length, skipped: mapped.skipped, inserted, countBefore, countAfter }));
-  return { dryRun: false, inserted, countAfter, ...base };
+  return { dryRun: false, inserted, remainingFilled, countAfter, ...base };
 }

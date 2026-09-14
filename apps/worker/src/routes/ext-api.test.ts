@@ -324,22 +324,24 @@ describe('POST /api/ext/v1/copy-credit', () => {
     expect(noKey.status).toBe(400);
   });
 
-  it('台帳に consume:<dedupeKey> を積み、残数を減らして返す（1 batch）', async () => {
+  it('自動コピー出品履歴に consume:<dedupeKey> を積み、残数を減らして返す（1 batch・台帳には書かない）', async () => {
     const { db, batches, statements } = makeDb(customerRouter(customer({ copy_tickets: 12 }), (sql) => (/SELECT copy_tickets FROM furim_customers/.test(sql) ? { first: { copy_tickets: 11 } } : undefined)));
     const res = await call(envWith(db), 'copy-credit', { keyCode: 'pb_abc', delta: -1, dedupeKey: 'k1', sourceUrl: 'https://jp.mercari.com/item/m1', targetUrl: 'https://fril.jp/x' });
     expect(await res.json()).toEqual({ success: true, keyCode: 'pb_abc', copyCredit: 11, message: 'コピー出品チケットを更新しました' });
     expect(batches).toHaveLength(1);
-    expect(batches[0][0].sql).toMatch(/INSERT OR IGNORE INTO furim_ticket_ledger/);
+    expect(batches[0][0].sql).toMatch(/INSERT OR IGNORE INTO furim_auto_copy_logs/);
     expect(batches[0][0].args).toContain('consume:k1');
     expect(batches[0][0].args).toContain(-1);
+    expect(batches[0][0].args).toEqual(expect.arrayContaining(['https://jp.mercari.com/item/m1', 'https://fril.jp/x']));
     expect(batches[0][1].sql).toMatch(/MAX\(0, COALESCE\(copy_tickets, 0\) \+ \?\)/);
-    expect(batches[0][1].sql).toMatch(/EXISTS \(SELECT 1 FROM furim_ticket_ledger WHERE id = \?\)/);
+    expect(batches[0][1].sql).toMatch(/EXISTS \(SELECT 1 FROM furim_auto_copy_logs WHERE id = \?\)/);
+    expect(statements.some((s) => /INSERT (OR IGNORE )?INTO furim_ticket_ledger/.test(s.sql))).toBe(false);
     expect(statements.some((s) => /INSERT INTO furim_ext_errors/.test(s.sql))).toBe(false);
   });
 
   it('同じ dedupeKey の再送は残数を変えず現在値を返す', async () => {
     const { db } = makeDb(customerRouter(customer({ copy_tickets: 11 }), (sql) => {
-      if (/INSERT OR IGNORE INTO furim_ticket_ledger/.test(sql)) return { changes: 0 };
+      if (/INSERT OR IGNORE INTO furim_auto_copy_logs/.test(sql)) return { changes: 0 };
       if (/SELECT copy_tickets FROM furim_customers/.test(sql)) return { first: { copy_tickets: 11 } };
       return undefined;
     }));
