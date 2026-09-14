@@ -17,6 +17,8 @@ export type AdminVirtualColumn = {
   name: string
   label: string
   type: 'text' | 'integer' | 'real'
+  featureKey?: string
+  flag?: 'bool' | 'text'
 }
 
 export type AdminKey = {
@@ -55,7 +57,7 @@ export function rowId(row: Record<string, unknown>, table: { pk: string }): stri
   return v === null || v === undefined ? '' : typeof v === 'string' ? v : String(v)
 }
 
-export type ListColumn = { name: string; label: string; datetime: DateTimeStorage | null }
+export type ListColumn = { name: string; label: string; datetime: DateTimeStorage | null; featureKey?: string; flag?: 'bool' | 'text' }
 
 /** 一覧・関連データの列（listColumns の順。_friend_created_at のような付加列も含む） */
 export function listColumnsOf(table: AdminTableMeta): ListColumn[] {
@@ -63,7 +65,7 @@ export function listColumnsOf(table: AdminTableMeta): ListColumn[] {
     const col = table.columns.find((c) => c.name === name)
     if (col) return { name, label: col.label, datetime: col.datetime }
     const virtual = table.virtualColumns?.find((v) => v.name === name)
-    if (virtual) return { name, label: virtual.label, datetime: null }
+    if (virtual) return { name, label: virtual.label, datetime: null, featureKey: virtual.featureKey, flag: virtual.flag }
     return { name, label: name === table.timeColumn ? (table.timeColumnLabel ?? name) : name, datetime: name.endsWith('_at') ? 'jst' : null }
   })
 }

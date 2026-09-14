@@ -4,6 +4,9 @@ import { requireRole } from '../middleware/role-guard.js';
 import {
   ADMIN_TABLES,
   DISPLAY_NAME_COLUMN,
+  FEATURE_FLAG_ORDER,
+  FEATURE_FLAG_PREFIX,
+  FEATURE_SITE_NAMES,
   FRIEND_CREATED_AT_COLUMN,
   columnLabel,
   csvColumnNames,
@@ -21,7 +24,10 @@ import {
   type AdminColumn,
   type AdminKeyKind,
   type AdminTable,
+  type AdminVirtualColumn,
 } from '../furim/admin-schema.js';
+import { upsertFeatureFlags } from '../furim/customer-sync.js';
+import { invalidateExtCache } from '../furim/ext-auth.js';
 import type { Env } from '../index.js';
 
 /**
@@ -211,6 +217,67 @@ export async function attachVirtualColumns(db: D1Database, groups: Array<{ table
     row._applied_coupon_count = Number(rc?.applied ?? 0);
     row._cashback_count = Number(cb?.n ?? 0);
     row._cashback_total = Number(cb?.total ?? 0);
+  }
+}
+
+type MasterFeatureRow = { key: string; display_name: string | null; payload: string | null };
+
+/** 機能マスタ（active）→ 一覧の機能列。並びは FEATURE_FLAG_ORDER（シートの順）、そこに無い機能はマスタの順で後ろ */
+export async function loadFeatureColumns(db: D1Database): Promise<AdminVirtualColumn[]> {
+  const rows = await db
+    .prepare("SELECT key, display_name, payload FROM furim_master WHERE kind = 'feature' AND active = 1 ORDER BY rowid")
+    .bind()
+    .all<MasterFeatureRow>();
+  const columns: AdminVirtualColumn[] = (rows.results ?? []).map((r) => {
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(r.payload || '{}') as Record<string, unknown>;
+    } catch {
+      payload = {};
+    }
+    const valueType = payload.value_type;
+    const flag: 'bool' | 'text' = valueType === 'bool' || (valueType === undefined && r.key !== 'AutoMultiChannel') ? 'bool' : 'text';
+    const site = FEATURE_SITE_NAMES[String(payload.site ?? '')] ?? '';
+    return { name: `${FEATURE_FLAG_PREFIX}${r.key}`, label: `${site}${r.display_name ?? r.key}`, type: 'text', featureKey: r.key, flag };
+  });
+  const rank = (key: string) => {
+    const i = FEATURE_FLAG_ORDER.indexOf(key);
+    return i === -1 ? FEATURE_FLAG_ORDER.length : i;
+  };
+  return columns.sort((a, b) => rank(a.featureKey!) - rank(b.featureKey!));
+}
+
+function withFeatureColumns(table: AdminTable, columns: AdminVirtualColumn[]): AdminTable {
+  return columns.length ? { ...table, virtualColumns: [...(table.virtualColumns ?? []), ...columns] } : table;
+}
+
+const FLAG_KV_SEP = '';
+const FLAG_ROW_SEP = '';
+type FlagGroupRow = { line_user_id: string; f: string | null };
+
+/** 行に _flag_<feature_key> を付ける。flags は line_user_id ごとに GROUP_CONCAT した 1 クエリ（顧客が IN_CHUNK を超えたら全件 1 クエリ） */
+export async function attachFeatureFlags(db: D1Database, columns: AdminVirtualColumn[], rows: Row[]): Promise<void> {
+  if (columns.length === 0 || rows.length === 0) return;
+  const ids = [...new Set(rows.map((r) => keyText(r.line_user_id)).filter((v): v is string => v !== null))];
+  const select = `SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value, char(30)) AS f FROM furim_feature_flags`;
+  const groups =
+    ids.length === 0
+      ? []
+      : ids.length > IN_CHUNK
+        ? ((await db.prepare(`${select} GROUP BY line_user_id`).bind().all<FlagGroupRow>()).results ?? [])
+        : await selectIn<FlagGroupRow>(db, (ph) => `${select} WHERE line_user_id IN (${ph}) GROUP BY line_user_id`, ids);
+  const byUser = new Map<string, Map<string, string>>();
+  for (const g of groups) {
+    const values = new Map<string, string>();
+    for (const part of (g.f ?? '').split(FLAG_ROW_SEP)) {
+      const i = part.indexOf(FLAG_KV_SEP);
+      if (i > 0) values.set(part.slice(0, i), part.slice(i + 1));
+    }
+    byUser.set(g.line_user_id, values);
+  }
+  for (const row of rows) {
+    const values = byUser.get(keyText(row.line_user_id) ?? '');
+    for (const col of columns) row[col.name] = values?.get(col.featureKey!) ?? null;
   }
 }
 
@@ -404,12 +471,14 @@ furimAdmin.get('/api/furim/admin/:table', async (c) => {
   attachRowIds(table, data);
   await attachDisplayNames(c.env.DB, [{ table, rows: data }]);
   await attachVirtualColumns(c.env.DB, [{ table, rows: data }]);
+  const featureColumns = table.featureFlags ? await loadFeatureColumns(c.env.DB) : [];
+  await attachFeatureFlags(c.env.DB, featureColumns, data);
 
   return c.json({
     success: true,
     data,
     meta: {
-      table: serializeTable(table),
+      table: serializeTable(withFeatureColumns(table, featureColumns)),
       total,
       limit,
       cursor: String(offset),
@@ -430,8 +499,11 @@ furimAdmin.get('/api/furim/admin/:table/export.csv', async (c) => {
   const data = rows.results ?? [];
   await attachDisplayNames(c.env.DB, [{ table, rows: data }]);
   await attachVirtualColumns(c.env.DB, [{ table, rows: data }]);
-  const columns = csvColumnNames(table);
-  const lines = [columns.map((name) => csvCell(columnLabel(table, name))).join(',')];
+  const featureColumns = table.featureFlags ? await loadFeatureColumns(c.env.DB) : [];
+  await attachFeatureFlags(c.env.DB, featureColumns, data);
+  const csvTable = withFeatureColumns(table, featureColumns);
+  const columns = csvColumnNames(csvTable);
+  const lines = [columns.map((name) => csvCell(columnLabel(csvTable, name))).join(',')];
   for (const row of data) {
     const cells = columns.map((name) => (datetimeStorageOf(name) ? toDisplayDateTime(row[name]) : row[name]));
     lines.push(cells.map(csvCell).join(','));
@@ -614,6 +686,57 @@ furimAdmin.patch('/api/furim/admin/:table/:id', requireRole('owner', 'admin'), a
   const after = await fetchRow(c.env.DB, table, id);
   console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${table.name}/${id} の ${updates.map((u) => u.col.name).join(',')} を更新`);
   return c.json({ success: true, data: after, meta: { changed: updates.map((u) => u.col.name) } });
+});
+
+// PATCH /api/furim/admin/furim_customers/:id/feature-flags {feature_key, value: 0|1} — 顧客一覧のチェックボックス（Capsec #261）。
+// 保存は customer-sync の upsertFeatureFlags（source はその既定値のまま）。値が変わった時だけ監査ログ（table_name=furim_feature_flags・
+// row_id は機能フラグ表の行 id）を残し、拡張の KV キャッシュ（kc:<key_code>）を消す
+furimAdmin.patch('/api/furim/admin/furim_customers/:id/feature-flags', requireRole('owner', 'admin'), async (c) => {
+  const lineUserId = c.req.param('id')!;
+  let body: { feature_key?: unknown; value?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: 'JSON が不正です' }, 400);
+  }
+  const raw = body?.value;
+  const value = raw === 1 || raw === '1' ? '1' : raw === 0 || raw === '0' ? '0' : null;
+  if (value === null) return c.json({ success: false, error: 'value は 0 か 1 で指定してください' }, 400);
+  const featureKey = typeof body?.feature_key === 'string' ? body.feature_key : '';
+
+  const column = (await loadFeatureColumns(c.env.DB)).find((col) => col.featureKey === featureKey);
+  if (!column) return c.json({ success: false, error: `${featureKey || '(空)'} は機能マスタにありません` }, 400);
+  if (column.flag !== 'bool') return c.json({ success: false, error: `${featureKey} は 0/1 の機能ではありません（機能フラグ表の行から編集してください）` }, 400);
+
+  const customer = await c.env.DB.prepare('SELECT line_user_id, key_code FROM furim_customers WHERE line_user_id = ?')
+    .bind(lineUserId)
+    .first<{ line_user_id: string; key_code: string | null }>();
+  if (!customer) return c.json({ success: false, error: '顧客が見つかりません' }, 404);
+
+  const before = await c.env.DB.prepare('SELECT value FROM furim_feature_flags WHERE line_user_id = ? AND feature_key = ?')
+    .bind(lineUserId, featureKey)
+    .first<{ value: string }>();
+  const data = { line_user_id: lineUserId, feature_key: featureKey, value };
+  if (before && before.value === value) return c.json({ success: true, data, meta: { changed: false } });
+
+  const staff = c.get('staff');
+  const flagsTable = getAdminTable('furim_feature_flags')!;
+  try {
+    await upsertFeatureFlags(c.env.DB, lineUserId, { [featureKey]: value });
+    await c.env.DB.prepare(
+      `INSERT INTO furim_admin_audit (id, staff_id, staff_name, table_name, row_id, column_name, old_value, new_value, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(crypto.randomUUID(), staff.id, staff.name, flagsTable.name, rowIdOf(flagsTable, data), 'value', before?.value ?? null, value, jstNow())
+      .run();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[furim-admin] PATCH feature-flags ${lineUserId}/${featureKey} failed: ${msg}`);
+    return c.json({ success: false, error: `保存に失敗しました: ${msg}` }, 400);
+  }
+  await invalidateExtCache(c.env.FURIM_EXT_CACHE, customer.key_code);
+  console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${lineUserId} の機能フラグ ${featureKey} を ${before?.value ?? '(なし)'} → ${value}`);
+  return c.json({ success: true, data, meta: { changed: true } });
 });
 
 // POST /api/furim/admin/:table {values:{列:値}} — 1 行追加（owner/admin）。主キーが 'id' 1 列なら UUID を採番。

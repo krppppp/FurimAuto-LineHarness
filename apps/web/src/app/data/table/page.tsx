@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useCallback, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Header from '@/components/layout/header'
@@ -11,6 +11,7 @@ import {
   listColumnsOf,
   rowId,
   type AdminColumn,
+  type ListColumn,
   type AdminTableMeta,
   type DateTimeStorage,
 } from '../types'
@@ -364,7 +365,7 @@ function RowEditor({
 
   const columnByName = new Map(table.columns.map((c) => [c.name, c]))
   const internalColumns = table.columns.filter((c) => c.internal)
-  const listColumns = listColumnsOf(table)
+  const listColumns = listColumnsOf(table).filter((lc) => !lc.featureKey)
 
   const renderField = (c: AdminColumn) => {
     const editableHere = canEdit(c)
@@ -550,6 +551,35 @@ function DataTableInner() {
   const [editing, setEditing] = useState<Row | null>(null)
   const [adding, setAdding] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [savingFlags, setSavingFlags] = useState<Set<string>>(() => new Set())
+  const savingFlagsRef = useRef<Set<string>>(new Set())
+
+  // 機能フラグのチェックボックス（Capsec #261）: その場で保存。保存中は同じセルを押せず、失敗したら元の値に戻す
+  const toggleFlag = async (row: Row, col: ListColumn, checked: boolean) => {
+    if (!table || !col.featureKey) return
+    const id = rowId(row, table)
+    const key = `${id}|${col.featureKey}`
+    if (savingFlagsRef.current.has(key)) return
+    savingFlagsRef.current.add(key)
+    setSavingFlags(new Set(savingFlagsRef.current))
+    const before = row[col.name] ?? null
+    const setValue = (v: unknown) => setRows((rs) => rs.map((x) => (rowId(x, table) === id ? { ...x, [col.name]: v } : x)))
+    setValue(checked ? '1' : '0')
+    setError('')
+    try {
+      const res = await mutate('PATCH', `/api/furim/admin/${table.name}/${encodeURIComponent(id)}/feature-flags`, {
+        feature_key: col.featureKey,
+        value: checked ? 1 : 0,
+      })
+      if (!res.success) throw new Error(res.error ?? '保存に失敗しました')
+    } catch (e) {
+      setValue(before)
+      setError(`${cell(row[DISPLAY_NAME_COLUMN]) || id} の「${col.label}」を保存できませんでした: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      savingFlagsRef.current.delete(key)
+      setSavingFlags(new Set(savingFlagsRef.current))
+    }
+  }
 
   const load = useCallback(async (cur: string, search: string) => {
     if (!name) return
@@ -745,7 +775,7 @@ function DataTableInner() {
                   <th
                     key={c.name}
                     className="px-3 py-2 text-left text-xs font-semibold text-gray-500 whitespace-nowrap sticky top-0 z-20 bg-gray-50 border-b border-gray-200"
-                    title={c.name}
+                    title={c.featureKey ?? c.name}
                   >
                     {c.label}
                   </th>
@@ -770,6 +800,25 @@ function DataTableInner() {
                       <DisplayName row={r} />
                     </td>
                     {cols.map((c) => {
+                      if (c.flag === 'bool' && c.featureKey) {
+                        const saving = savingFlags.has(`${rowId(r, table)}|${c.featureKey}`)
+                        return (
+                          <td
+                            key={c.name}
+                            className="px-3 py-2 text-center border-b border-gray-100 cursor-default"
+                            title={`${c.label}（${c.featureKey}）`}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={cell(r[c.name]) === '1'}
+                              disabled={saving}
+                              onChange={(e) => toggleFlag(r, c, e.target.checked)}
+                              className="h-4 w-4 cursor-pointer accent-green-600 disabled:cursor-wait disabled:opacity-50"
+                            />
+                          </td>
+                        )
+                      }
                       const v = shown(r[c.name], c.datetime)
                       return (
                         <td

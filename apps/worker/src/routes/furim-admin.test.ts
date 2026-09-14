@@ -848,3 +848,158 @@ describe('#253 decision #378: アンバサダー・紹介履歴をスプシの�
     expect(first).toBe('たろう,2026/09/13 22:54:22,U1,AAA,3,2,1,2,4000,a1,Ambassador AAA,0,1,f1');
   });
 });
+
+describe('#261 顧客に機能フラグを横持ちで出す', () => {
+  const MASTER = [
+    { key: 'AutoMultiChannel', display_name: '自動併売・巡回オプション', payload: JSON.stringify({ site: 'cross', value_type: 'sitelist' }) },
+    { key: 'rChangePrice', display_name: '値段変更', payload: JSON.stringify({ site: 'rakuma', value_type: 'bool' }) },
+    { key: 'zNewFeature', display_name: '新機能', payload: JSON.stringify({ site: 'mercari', value_type: 'bool' }) },
+    { key: 'mBackup', display_name: 'バックアップ', payload: JSON.stringify({ site: 'mercari', value_type: 'bool' }) },
+    { key: 'mChangePrice', display_name: '値段変更', payload: JSON.stringify({ site: 'mercari', value_type: 'bool' }) },
+  ];
+  const FLAG_COLUMNS = ['_flag_mChangePrice', '_flag_mBackup', '_flag_rChangePrice', '_flag_AutoMultiChannel', '_flag_zNewFeature'];
+  const grouped = (u: string, flags: Record<string, string>) => ({
+    line_user_id: u,
+    f: Object.entries(flags).map(([k, v]) => `${k}${v}`).join(''),
+  });
+
+  const kv = () => ({ get: vi.fn(), put: vi.fn(), delete: vi.fn().mockResolvedValue(undefined) });
+
+  function reqWithKv(db: D1Database, cache: ReturnType<typeof kv>, method: string, path: string, body?: unknown, key = OWNER_KEY) {
+    const headers = new Headers({ Authorization: `Bearer ${key}` });
+    if (body !== undefined) headers.set('Content-Type', 'application/json');
+    return worker.fetch(
+      new Request(`https://worker.example.com${path}`, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined }),
+      { ...envWith(db), FURIM_EXT_CACHE: cache } as unknown as import('../index.js').Env['Bindings'],
+      { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext,
+    );
+  }
+
+  it('一覧は機能列をシートの順（FEATURE_FLAG_ORDER・無いものはマスタ順で後ろ）で付け、見出しはサイト名＋マスタの日本語名', async () => {
+    const { db, statements } = makeDb({
+      firstRows: [{ n: 2 }],
+      allRows: [
+        [{ ...CUSTOMER, line_user_id: 'U1' }, { ...CUSTOMER, line_user_id: 'U2', key_code: 'DEF' }],
+        [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
+        MASTER,
+        [grouped('U1', { mChangePrice: '1', mBackup: '0', AutoMultiChannel: 'メルカリ/ラクマ' })],
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_customers');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: Array<Record<string, unknown>>;
+      meta: { table: { listColumns: string[]; virtualColumns: Array<{ name: string; label: string; featureKey: string; flag: string }> } };
+    };
+    expect(body.meta.table.listColumns.slice(-5)).toEqual(FLAG_COLUMNS);
+    const vc = Object.fromEntries(body.meta.table.virtualColumns.map((v) => [v.name, v]));
+    expect(vc._flag_mChangePrice).toMatchObject({ label: 'メルカリ値段変更', featureKey: 'mChangePrice', flag: 'bool' });
+    expect(vc._flag_rChangePrice.label).toBe('ラクマ値段変更');
+    expect(vc._flag_AutoMultiChannel).toMatchObject({ label: '自動併売・巡回オプション', flag: 'text' });
+    expect(FLAG_COLUMNS.map((n) => body.data[0][n])).toEqual(['1', '0', null, 'メルカリ/ラクマ', null]);
+    expect(FLAG_COLUMNS.map((n) => body.data[1][n])).toEqual([null, null, null, null, null]);
+    expect(body.data[0].key_code).toBe('ABC');
+    const flagStmts = statements.filter((s) => s.sql.includes('FROM furim_feature_flags'));
+    expect(flagStmts).toHaveLength(1);
+    expect(flagStmts[0].sql).toBe(
+      'SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value, char(30)) AS f FROM furim_feature_flags WHERE line_user_id IN (?,?) GROUP BY line_user_id',
+    );
+  });
+
+  it('全件表示でも機能フラグは 1 クエリ（顧客数に比例しない）', async () => {
+    const customers = Array.from({ length: 250 }, (_, i) => ({ ...CUSTOMER, line_user_id: `U${i}` }));
+    const { db, statements } = makeDb({
+      firstRows: [{ n: 250 }],
+      allRows: [customers, [], [], [], MASTER, [grouped('U7', { mChangePrice: '1' })]],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_customers');
+    const body = (await res.json()) as { data: Array<Record<string, unknown>> };
+    expect(body.data).toHaveLength(250);
+    expect(body.data[7]._flag_mChangePrice).toBe('1');
+    const flagStmts = statements.filter((s) => s.sql.includes('FROM furim_feature_flags'));
+    expect(flagStmts).toHaveLength(1);
+    expect(flagStmts[0].sql).toBe('SELECT line_user_id, GROUP_CONCAT(feature_key || char(31) || value, char(30)) AS f FROM furim_feature_flags GROUP BY line_user_id');
+    expect(flagStmts[0].args).toEqual([]);
+    expect(statements.filter((s) => s.sql.includes('FROM furim_master'))).toHaveLength(1);
+  });
+
+  it('他のテーブルには機能列を付けず、マスタも flags も読まない', async () => {
+    const { db, statements } = makeDb({ firstRows: [{ n: 0 }] });
+    await req(db, 'GET', '/api/furim/admin/furim_payments');
+    expect(statements.some((s) => s.sql.includes('furim_master') || s.sql.includes('furim_feature_flags'))).toBe(false);
+  });
+
+  it('CSV に機能列が日本語の見出しで 0/1 のまま出る', async () => {
+    const { db } = makeDb({
+      allRows: [
+        [{ ...CUSTOMER, _friend_created_at: '2023-05-25T19:53:19.000+09:00' }],
+        [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
+        MASTER,
+        [grouped('U1', { mChangePrice: '1', mBackup: '0', rChangePrice: '1', AutoMultiChannel: 'メルカリ' })],
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_customers/export.csv');
+    const text = new TextDecoder().decode(new Uint8Array(await res.arrayBuffer()));
+    const [head, first] = text.replace(/^﻿/, '').trim().split('\r\n').map((l) => l.split(','));
+    expect(head.slice(-5)).toEqual(['メルカリ値段変更', 'メルカリバックアップ', 'ラクマ値段変更', '自動併売・巡回オプション', 'メルカリ新機能']);
+    expect(first.slice(-5)).toEqual(['1', '0', '1', 'メルカリ', '']);
+    expect(first.slice(0, 2)).toEqual(['たろう', '2023/05/25 19:53:19']);
+  });
+
+  it('チェックボックス保存: 値が変わったら既存の UPSERT（source は既定値）・監査ログ 1 行・KV 無効化', async () => {
+    const cache = kv();
+    const { db, statements, batches } = makeDb({ firstRows: [CUSTOMER, { value: '0' }], allRows: [MASTER] });
+    const res = await reqWithKv(db, cache, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags', { feature_key: 'mBackup', value: 1 });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { feature_key: string; value: string }; meta: { changed: boolean } };
+    expect(body.meta.changed).toBe(true);
+    expect(body.data).toMatchObject({ feature_key: 'mBackup', value: '1' });
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(1);
+    expect(batches[0][0].sql).toContain('INSERT INTO furim_feature_flags');
+    expect(batches[0][0].args).toEqual(['U1', 'mBackup', '1', 'worker', '2026-09-14T00:30:00.000+09:00']);
+    const audits = statements.filter((s) => s.sql.includes('INSERT INTO furim_admin_audit'));
+    expect(audits).toHaveLength(1);
+    expect(audits[0].args.slice(1)).toEqual(['env-owner', 'Owner', 'furim_feature_flags', 'U1|mBackup', 'value', '0', '1', '2026-09-14T00:30:00.000+09:00']);
+    expect(cache.delete).toHaveBeenCalledWith('kc:ABC');
+  });
+
+  it('同じ値を送っても書かず、監査ログも KV 無効化もしない', async () => {
+    const cache = kv();
+    const { db, statements, batches } = makeDb({ firstRows: [CUSTOMER, { value: '1' }], allRows: [MASTER] });
+    const res = await reqWithKv(db, cache, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags', { feature_key: 'mBackup', value: '1' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { meta: { changed: boolean } }).meta.changed).toBe(false);
+    expect(batches).toHaveLength(0);
+    expect(statements.some((s) => s.sql.includes('furim_admin_audit'))).toBe(false);
+    expect(cache.delete).not.toHaveBeenCalled();
+  });
+
+  it('0/1 以外は 400・文字列値の機能とマスタに無い機能は 400・顧客が無ければ 404（何も書かない）', async () => {
+    for (const value of [2, 'true', true, null, '']) {
+      const { db, batches, statements } = makeDb();
+      const res = await req(db, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags', { feature_key: 'mBackup', value });
+      expect(res.status, String(value)).toBe(400);
+      expect(batches).toHaveLength(0);
+      expect(statements).toHaveLength(0);
+    }
+    for (const featureKey of ['AutoMultiChannel', 'nope']) {
+      const { db, batches } = makeDb({ firstRows: [CUSTOMER], allRows: [MASTER] });
+      const res = await req(db, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags', { feature_key: featureKey, value: 1 });
+      expect(res.status, featureKey).toBe(400);
+      expect(batches).toHaveLength(0);
+    }
+    const missing = makeDb({ firstRows: [null], allRows: [MASTER] });
+    const res = await req(missing.db, 'PATCH', '/api/furim/admin/furim_customers/U9/feature-flags', { feature_key: 'mBackup', value: 1 });
+    expect(res.status).toBe(404);
+    expect(missing.batches).toHaveLength(0);
+  });
+
+  it('staff ロールは 403', async () => {
+    const { db, batches, statements } = makeDb({ firstRows: [CUSTOMER, { value: '0' }], allRows: [MASTER] });
+    const res = await req(db, 'PATCH', '/api/furim/admin/furim_customers/U1/feature-flags', { feature_key: 'mBackup', value: 1 }, STAFF_KEY);
+    expect(res.status).toBe(403);
+    expect(batches).toHaveLength(0);
+    expect(statements).toHaveLength(0);
+  });
+});

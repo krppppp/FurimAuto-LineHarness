@@ -13,6 +13,8 @@ export interface AdminVirtualColumn {
   name: string;
   label: string;
   type: AdminColumnType;
+  featureKey?: string;
+  flag?: 'bool' | 'text';
 }
 
 export interface AdminKey {
@@ -45,10 +47,29 @@ export interface AdminTable {
   labels?: Record<string, string>;
   virtualColumns?: AdminVirtualColumn[];
   listOrder?: string[];
+  /** 一覧・CSV に furim_feature_flags を 1 機能 1 列（_flag_<feature_key>）で横持ちにして付ける（Capsec #261・顧客のみ） */
+  featureFlags?: boolean;
 }
 
 export const DISPLAY_NAME_COLUMN = '_display_name';
 export const FRIEND_CREATED_AT_COLUMN = '_friend_created_at';
+export const FEATURE_FLAG_PREFIX = '_flag_';
+
+/** シート「顧客情報-サブスク情報-キーコード」（ヘッダー 3 行目）の機能列の並び（2026-09-14 本番シートを getData で読んだ順）。ここに無い機能はマスタの順で後ろに付ける */
+export const FEATURE_FLAG_ORDER = [
+  'mChangePrice', 'mSetBottomPrice', 'mComment', 'mDeleteComment', 'mBackup', 'mRelist', 'mAuction', 'mDeleteProduct', 'mAttributeCheckbox',
+  'mLoadAdditionalInfo', 'mTimeReservation', 'mAutoComment', 'mAutoTransaction', 'mProfileOptions', 'mSoldCSV',
+  'mCopyMShopsListing', 'mCopyRakumaListing', 'mCopyYahooAuctionListing', 'mCopyYahooFleamarketListing',
+  'msChangePrice', 'msSetBottomPrice', 'msDeleteProduct', 'msAttributeCheckbox', 'msListingModification', 'msTimeReservation', 'msRelist',
+  'rChangePrice', 'rSetBottomPrice', 'rComment', 'rDeleteComment', 'rRelist', 'rDeleteProduct', 'rAttributeCheckbox', 'rListingModification',
+  'rTimeReservation', 'rAutoComment', 'rAutoTransaction', 'rSoldCSV',
+  'yfChangePrice', 'yfSetBottomPrice', 'yfRelist', 'yfDeleteProduct', 'yfChangeShipping', 'yfAttributeCheckbox', 'yfListingModification',
+  'yfTimeReservation', 'yfAutoTransaction', 'yfProfileOptions', 'yfSoldCSV',
+  'InventorySheet', 'AutoMultiChannel',
+];
+
+/** 機能マスタの site → 見出しの接頭語（マスタの日本語名はサイト名を含まず「値段変更」が 4 サイトで重なるため） */
+export const FEATURE_SITE_NAMES: Record<string, string> = { mercari: 'メルカリ', mercariShops: 'メルカリShops', rakuma: 'ラクマ', yahooFlea: 'ヤフフリ' };
 
 export function pkColumns(table: AdminTable): string[] {
   return Array.isArray(table.pk) ? table.pk : [table.pk];
@@ -376,6 +397,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     timeColumn: FRIEND_CREATED_AT_COLUMN,
     joinFriends: true,
     allRows: true,
+    featureFlags: true,
     columns: [
       ro('line_user_id', true),
       t('stripe_customer_id', true, true),
