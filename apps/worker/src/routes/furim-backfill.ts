@@ -4,8 +4,47 @@ import { Hono } from 'hono';
 import type { Env } from '../index.js';
 import { SHEET_BACKFILL_SPECS, backfillSheet, countTableRows, getSheetSpec } from '../furim/sheet-backfill.js';
 import { moveConsumeRowsToAutoCopyLogs } from '../furim/ticket-ledger.js';
+import { FIX_TARGETS, fixDatetimes, isFixTarget, type SheetCache } from '../furim/fix-datetimes.js';
 
 const furimBackfill = new Hono<Env>();
+
+furimBackfill.get('/api/furim/fix-datetimes', async (c) => {
+  try {
+    const only = c.req.query('target');
+    if (only !== undefined && !isFixTarget(only)) {
+      return c.json({ success: false, error: 'target が不正です', targets: FIX_TARGETS }, 400);
+    }
+    const cache: SheetCache = new Map();
+    const targets = [];
+    for (const target of only ? [only] : FIX_TARGETS) {
+      const r = await fixDatetimes(c.env.DB, c.env.GAS_DEPLOY_ID, target, { dryRun: true, staffId: c.get('staff').id, cache });
+      targets.push(r);
+    }
+    return c.json({ success: true, targets });
+  } catch (err) {
+    console.error('[furim/fix-datetimes] error:', err);
+    return c.json({ success: false, error: String(err) }, 500);
+  }
+});
+
+furimBackfill.post('/api/furim/fix-datetimes', async (c) => {
+  const isDev = c.env.WORKER_NAME === 'line-harness';
+  try {
+    const body = await c.req.json<{ target?: string; dryRun?: boolean; confirmProd?: boolean }>().catch(() => ({}) as { target?: string; dryRun?: boolean; confirmProd?: boolean });
+    if (!isFixTarget(body.target)) {
+      return c.json({ success: false, error: 'target を指定してください', targets: FIX_TARGETS }, 400);
+    }
+    const dryRun = body.dryRun !== false;
+    if (!dryRun && !isDev && body.confirmProd !== true) {
+      return c.json({ success: false, error: '本番workerでの実行には confirmProd: true が必要です' }, 403);
+    }
+    const result = await fixDatetimes(c.env.DB, c.env.GAS_DEPLOY_ID, body.target, { dryRun, staffId: c.get('staff').id });
+    return c.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[furim/fix-datetimes] error:', err);
+    return c.json({ success: false, error: String(err) }, 500);
+  }
+});
 
 /** GET /api/furim/backfill-sheets — 取り込み対象シートと対応テーブル・D1 の現在件数 */
 furimBackfill.get('/api/furim/backfill-sheets', async (c) => {
