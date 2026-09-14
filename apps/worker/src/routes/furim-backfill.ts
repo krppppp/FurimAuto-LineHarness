@@ -5,6 +5,7 @@ import type { Env } from '../index.js';
 import { SHEET_BACKFILL_SPECS, backfillSheet, countTableRows, getSheetSpec } from '../furim/sheet-backfill.js';
 import { moveConsumeRowsToAutoCopyLogs } from '../furim/ticket-ledger.js';
 import { FIX_TARGETS, fixDatetimes, isFixTarget, type SheetCache } from '../furim/fix-datetimes.js';
+import { fillPaymentsFromStripe, makeStripeInvoiceFetcher } from '../furim/fill-payments-from-stripe.js';
 
 const furimBackfill = new Hono<Env>();
 
@@ -103,6 +104,30 @@ furimBackfill.post('/api/furim/move-consume-to-auto-copy-logs', async (c) => {
     return c.json({ success: true, ...result });
   } catch (err) {
     console.error('[furim/move-consume] error:', err);
+    return c.json({ success: false, error: String(err) }, 500);
+  }
+});
+
+furimBackfill.post('/api/furim/fill-payments-from-stripe', async (c) => {
+  const isDev = c.env.WORKER_NAME === 'line-harness';
+  try {
+    const body = await c.req
+      .json<{ dryRun?: boolean; confirmProd?: boolean; cursor?: string; limit?: number }>()
+      .catch(() => ({}) as { dryRun?: boolean; confirmProd?: boolean; cursor?: string; limit?: number });
+    const dryRun = body.dryRun !== false;
+    if (!dryRun && !isDev && body.confirmProd !== true) {
+      return c.json({ success: false, error: '本番workerでの実行には confirmProd: true が必要です' }, 403);
+    }
+    if (!c.env.STRIPE_SECRET_KEY) return c.json({ success: false, error: 'STRIPE_SECRET_KEY not configured' }, 500);
+    const result = await fillPaymentsFromStripe(c.env.DB, makeStripeInvoiceFetcher(c.env.STRIPE_SECRET_KEY), {
+      dryRun,
+      staffId: c.get('staff').id,
+      cursor: body.cursor,
+      limit: body.limit,
+    });
+    return c.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[furim/fill-payments-from-stripe] error:', err);
     return c.json({ success: false, error: String(err) }, 500);
   }
 });
