@@ -7,7 +7,6 @@ import Header from '@/components/layout/header'
 import { fetchApi, getCsrfToken } from '@/lib/api'
 import {
   DISPLAY_NAME_COLUMN,
-  FRIEND_CREATED_AT_COLUMN,
   ROW_ID_COLUMN,
   listColumnsOf,
   rowId,
@@ -190,7 +189,7 @@ function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
                     <th className="px-2 py-1.5 text-left font-semibold text-gray-500 whitespace-nowrap" title={DISPLAY_NAME_COLUMN}>
-                      LINE表示名
+                      {r.table.displayNameLabel ?? 'LINE表示名'}
                     </th>
                     {cols.map((c) => (
                       <th key={c.name} className="px-2 py-1.5 text-left font-semibold text-gray-500 whitespace-nowrap" title={c.name}>
@@ -323,7 +322,8 @@ function RowEditor({
         }
         const changedLabels = (res.meta?.changed ?? []).map((n) => table.columns.find((c) => c.name === n)?.label ?? n)
         setNotice(`保存しました（${changedLabels.join('、') || '変更なし'}）`)
-        onSaved({ ...res.data, [DISPLAY_NAME_COLUMN]: row[DISPLAY_NAME_COLUMN], [FRIEND_CREATED_AT_COLUMN]: row[FRIEND_CREATED_AT_COLUMN] })
+        const attached = Object.fromEntries(Object.entries(row).filter(([k]) => k.startsWith('_') && k !== ROW_ID_COLUMN))
+        onSaved({ ...res.data, ...attached })
         setDraft(Object.fromEntries(table.columns.map((c) => [c.name, shown(res.data[c.name], c.datetime)])))
         await loadAudit()
       } else {
@@ -363,9 +363,8 @@ function RowEditor({
   }
 
   const columnByName = new Map(table.columns.map((c) => [c.name, c]))
-  const mainColumns = table.listColumns.map((n) => columnByName.get(n)).filter((c): c is AdminColumn => Boolean(c))
   const internalColumns = table.columns.filter((c) => c.internal)
-  const virtualTime = table.timeColumn && !columnByName.has(table.timeColumn) ? table.timeColumn : null
+  const listColumns = listColumnsOf(table)
 
   const renderField = (c: AdminColumn) => {
     const editableHere = canEdit(c)
@@ -471,21 +470,25 @@ function RowEditor({
             <div className="px-5 py-4 space-y-3">
               {error && <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>}
               {notice && <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">{notice}</div>}
-              {virtualTime && !insert && (
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1" title={virtualTime}>
-                    <span>{table.timeColumnLabel}</span>
-                    <span className="ml-2 text-gray-400">読み取り専用</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={toDisplayDateTime(row[virtualTime])}
-                    readOnly
-                    className="w-full px-3 py-2 text-sm border rounded-lg border-gray-200 bg-gray-50 text-gray-500"
-                  />
-                </div>
-              )}
-              {mainColumns.map(renderField)}
+              {listColumns.map((lc) => {
+                const col = columnByName.get(lc.name)
+                if (col) return renderField(col)
+                if (insert) return null
+                return (
+                  <div key={lc.name}>
+                    <label className="block text-xs font-medium text-gray-700 mb-1" title={lc.name}>
+                      <span>{lc.label}</span>
+                      <span className="ml-2 text-gray-400">読み取り専用</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={shown(row[lc.name], lc.datetime)}
+                      readOnly
+                      className="w-full px-3 py-2 text-sm border rounded-lg border-gray-200 bg-gray-50 text-gray-500"
+                    />
+                  </div>
+                )
+              })}
             </div>
 
             {!insert && (
@@ -736,7 +739,7 @@ function DataTableInner() {
                   className="px-3 py-2 text-left text-xs font-semibold text-gray-500 whitespace-nowrap sticky top-0 left-0 z-30 bg-gray-50 border-b border-r border-gray-200"
                   title="_display_name（friends.display_name）"
                 >
-                  LINE表示名
+                  {table.displayNameLabel ?? 'LINE表示名'}
                 </th>
                 {cols.map((c) => (
                   <th

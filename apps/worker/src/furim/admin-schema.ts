@@ -9,6 +9,12 @@ export interface AdminColumn {
 
 export type AdminKeyKind = 'line_user_id' | 'friend_id' | 'stripe_customer_id' | 'key_code';
 
+export interface AdminVirtualColumn {
+  name: string;
+  label: string;
+  type: AdminColumnType;
+}
+
 export interface AdminKey {
   column: string;
   kind: AdminKeyKind;
@@ -37,6 +43,8 @@ export interface AdminTable {
   internal?: string[];
   /** このテーブルだけの日本語ラベル（COLUMN_LABELS より優先） */
   labels?: Record<string, string>;
+  virtualColumns?: AdminVirtualColumn[];
+  listOrder?: string[];
 }
 
 export const DISPLAY_NAME_COLUMN = '_display_name';
@@ -207,7 +215,11 @@ export const COLUMN_LABELS: Record<string, string> = {
 
 /** 列の日本語ラベル。未定義なら英名のまま */
 export function columnLabel(table: AdminTable, name: string): string {
-  return table.labels?.[name] ?? VIRTUAL_LABELS[name] ?? COLUMN_LABELS[name] ?? name;
+  return table.labels?.[name] ?? virtualColumnOf(table, name)?.label ?? VIRTUAL_LABELS[name] ?? COLUMN_LABELS[name] ?? name;
+}
+
+export function virtualColumnOf(table: AdminTable, name: string): AdminVirtualColumn | undefined {
+  return table.virtualColumns?.find((v) => v.name === name);
 }
 
 export function isInternalColumn(table: AdminTable, name: string): boolean {
@@ -216,7 +228,11 @@ export function isInternalColumn(table: AdminTable, name: string): boolean {
 
 /** 一覧の列順: 基準日時 → 残り（内部 ID を除く）。LINE 表示名はこの前に付ける */
 export function listColumnNames(table: AdminTable): string[] {
-  const rest = table.columns.map((c) => c.name).filter((n) => n !== table.timeColumn && !isInternalColumn(table, n));
+  const names = [...table.columns.map((c) => c.name), ...(table.virtualColumns ?? []).map((v) => v.name)].filter(
+    (n) => n !== table.timeColumn && !isInternalColumn(table, n),
+  );
+  const order = (table.listOrder ?? []).filter((n) => names.includes(n));
+  const rest = [...order, ...names.filter((n) => !order.includes(n))];
   return table.timeColumn ? [table.timeColumn, ...rest] : rest;
 }
 
@@ -471,6 +487,19 @@ export const ADMIN_TABLES: AdminTable[] = [
     touchUpdatedAt: false,
     timeColumn: 'created_at',
     internal: ['id', 'affiliate_id', 'ambassador_friend_id', 'introduced_friend_id'],
+    labels: {
+      _display_name: '被紹介者LINE表示名',
+      created_at: '紹介日時',
+      ambassador_plan_name: 'プラン名（アンバサダー）',
+      reward_coupon_name: 'クーポン名（アンバサダー報酬）',
+      reward_applied_at: 'クーポン適用日時',
+    },
+    virtualColumns: [
+      { name: '_ambassador_display_name', label: 'アンバサダーLINE表示名', type: 'text' },
+      { name: '_ambassador_line_user_id', label: 'アンバサダーLINE_ID', type: 'text' },
+      { name: '_introduced_line_user_id', label: '被紹介者LINE_ID', type: 'text' },
+    ],
+    listOrder: ['_ambassador_display_name', '_ambassador_line_user_id', 'ambassador_plan_name', 'reward_coupon_name', 'reward_applied_at', '_introduced_line_user_id'],
     columns: [
       ro('id'),
       t('affiliate_id', true, true),
@@ -495,8 +524,17 @@ export const ADMIN_TABLES: AdminTable[] = [
     orderBy: 'created_at DESC',
     touchUpdatedAt: false,
     timeColumn: 'created_at',
-    internal: ['id', 'friend_id'],
-    labels: { name: 'アンバサダー名', code: 'アンバサダーコード' },
+    internal: ['id', 'friend_id', 'name', 'commission_rate', 'is_active'],
+    labels: { name: 'アンバサダー名', code: 'アンバサダーコード', created_at: '登録日時' },
+    virtualColumns: [
+      { name: '_line_user_id', label: 'LINE_ID', type: 'text' },
+      { name: '_referral_count', label: '紹介数', type: 'integer' },
+      { name: '_reward_coupon_count', label: 'クーポン付与数', type: 'integer' },
+      { name: '_applied_coupon_count', label: '適用済み数', type: 'integer' },
+      { name: '_cashback_count', label: 'キャッシュバック件数', type: 'integer' },
+      { name: '_cashback_total', label: 'キャッシュバック合計', type: 'integer' },
+    ],
+    listOrder: ['_line_user_id', 'code'],
     columns: [
       ro('id'),
       t('name', true, true),

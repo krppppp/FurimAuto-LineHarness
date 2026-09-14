@@ -3,6 +3,7 @@ import { jstNow } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
 import {
   ADMIN_TABLES,
+  DISPLAY_NAME_COLUMN,
   FRIEND_CREATED_AT_COLUMN,
   columnLabel,
   csvColumnNames,
@@ -10,6 +11,7 @@ import {
   getAdminTable,
   listColumnNames,
   toDisplayDateTime,
+  virtualColumnOf,
   isDeletable,
   isInsertable,
   parseRowId,
@@ -145,6 +147,73 @@ export async function attachDisplayNames(db: D1Database, groups: Array<{ table: 
   }
 }
 
+type AggregateRow = { k: string; n: number; rewarded: number | null; applied: number | null; total: number | null };
+
+export async function attachVirtualColumns(db: D1Database, groups: Array<{ table: AdminTable; rows: Row[] }>): Promise<void> {
+  const affiliates = groups.filter((g) => g.table.name === 'affiliates').flatMap((g) => g.rows);
+  const referrals = groups.filter((g) => g.table.name === 'furim_referrals').flatMap((g) => g.rows);
+  if (affiliates.length === 0 && referrals.length === 0) return;
+
+  const friendIds = [
+    ...new Set(
+      [
+        ...affiliates.map((r) => keyText(r.friend_id)),
+        ...referrals.flatMap((r) => [keyText(r.ambassador_friend_id), keyText(r.introduced_friend_id)]),
+      ].filter((v): v is string => v !== null),
+    ),
+  ];
+  const friends = new Map<string, FriendKeyRow>();
+  if (friendIds.length) {
+    const rows = await selectIn<FriendKeyRow>(db, (ph) => `SELECT id, line_user_id, display_name FROM friends WHERE id IN (${ph})`, friendIds);
+    for (const r of rows) friends.set(r.id, r);
+  }
+  const friendOf = (v: unknown) => {
+    const id = keyText(v);
+    return id ? friends.get(id) : undefined;
+  };
+
+  for (const row of referrals) {
+    const amb = friendOf(row.ambassador_friend_id);
+    row._ambassador_display_name = amb?.display_name ?? null;
+    row._ambassador_line_user_id = amb?.line_user_id ?? null;
+    row._introduced_line_user_id = friendOf(row.introduced_friend_id)?.line_user_id ?? null;
+  }
+
+  if (affiliates.length === 0) return;
+  for (const row of affiliates) row._line_user_id = friendOf(row.friend_id)?.line_user_id ?? null;
+  const affiliateIds = [...new Set(affiliates.map((r) => keyText(r.id)).filter((v): v is string => v !== null))];
+  const lineIds = [...new Set(affiliates.map((r) => keyText(r._line_user_id)).filter((v): v is string => v !== null))];
+  const [referralCounts, cashbacks] = await Promise.all([
+    affiliateIds.length
+      ? selectIn<AggregateRow>(
+          db,
+          (ph) =>
+            `SELECT affiliate_id AS k, COUNT(*) AS n, SUM(reward_coupon_name IS NOT NULL) AS rewarded, SUM(reward_applied_at IS NOT NULL) AS applied FROM furim_referrals WHERE affiliate_id IN (${ph}) GROUP BY affiliate_id`,
+          affiliateIds,
+        )
+      : Promise.resolve([] as AggregateRow[]),
+    lineIds.length
+      ? selectIn<AggregateRow>(
+          db,
+          (ph) =>
+            `SELECT ambassador_line_user_id AS k, COUNT(*) AS n, COALESCE(SUM(cashback_amount), 0) AS total FROM furim_referral_cashbacks WHERE ambassador_line_user_id IN (${ph}) GROUP BY ambassador_line_user_id`,
+          lineIds,
+        )
+      : Promise.resolve([] as AggregateRow[]),
+  ]);
+  const byAffiliate = new Map(referralCounts.map((r) => [r.k, r]));
+  const byLine = new Map(cashbacks.map((r) => [r.k, r]));
+  for (const row of affiliates) {
+    const rc = byAffiliate.get(keyText(row.id) ?? '');
+    const cb = byLine.get(keyText(row._line_user_id) ?? '');
+    row._referral_count = Number(rc?.n ?? 0);
+    row._reward_coupon_count = Number(rc?.rewarded ?? 0);
+    row._applied_coupon_count = Number(rc?.applied ?? 0);
+    row._cashback_count = Number(cb?.n ?? 0);
+    row._cashback_total = Number(cb?.total ?? 0);
+  }
+}
+
 type Identity = {
   line_user_id: string | null;
   friend_id: string | null;
@@ -214,6 +283,8 @@ function serializeTable(table: AdminTable) {
       datetime: datetimeStorageOf(c.name),
     })),
     keys: table.keys,
+    virtualColumns: table.virtualColumns ?? [],
+    displayNameLabel: columnLabel(table, DISPLAY_NAME_COLUMN),
     joinFriends: Boolean(table.joinFriends),
     allRows: Boolean(table.allRows),
     timeColumn: table.timeColumn ?? null,
@@ -332,6 +403,7 @@ furimAdmin.get('/api/furim/admin/:table', async (c) => {
   const data = hasMore ? results.slice(0, limit) : results;
   attachRowIds(table, data);
   await attachDisplayNames(c.env.DB, [{ table, rows: data }]);
+  await attachVirtualColumns(c.env.DB, [{ table, rows: data }]);
 
   return c.json({
     success: true,
@@ -357,6 +429,7 @@ furimAdmin.get('/api/furim/admin/:table/export.csv', async (c) => {
     .all<Row>();
   const data = rows.results ?? [];
   await attachDisplayNames(c.env.DB, [{ table, rows: data }]);
+  await attachVirtualColumns(c.env.DB, [{ table, rows: data }]);
   const columns = csvColumnNames(table);
   const lines = [columns.map((name) => csvCell(columnLabel(table, name))).join(',')];
   for (const row of data) {
@@ -442,6 +515,7 @@ furimAdmin.get('/api/furim/admin/:table/:id/related', async (c) => {
     return { table: serializeTable(tg.table), total: Number(countRow?.n ?? 0), rows, q: tg.q };
   });
   await attachDisplayNames(c.env.DB, related.map((r, i) => ({ table: targets[i].table, rows: r.rows })));
+  await attachVirtualColumns(c.env.DB, related.map((r, i) => ({ table: targets[i].table, rows: r.rows })));
 
   return c.json({ success: true, data: { identity, related } });
 });
@@ -459,6 +533,7 @@ furimAdmin.get('/api/furim/admin/:table/:id', async (c) => {
     row[FRIEND_CREATED_AT_COLUMN] = f?.created_at ?? null;
   }
   await attachDisplayNames(c.env.DB, [{ table, rows: [row] }]);
+  await attachVirtualColumns(c.env.DB, [{ table, rows: [row] }]);
   return c.json({ success: true, data: row, meta: { table: serializeTable(table) } });
 });
 
@@ -485,6 +560,7 @@ furimAdmin.patch('/api/furim/admin/:table/:id', requireRole('owner', 'admin'), a
   const updates: { col: AdminColumn; value: string | number | null }[] = [];
   for (const [name, raw] of Object.entries(changes as Record<string, unknown>)) {
     const col = table.columns.find((x) => x.name === name);
+    if (!col && virtualColumnOf(table, name)) return c.json({ success: false, error: `${name} は集計・表示用の列で編集できません` }, 400);
     if (!col) return c.json({ success: false, error: `${name} は存在しない列です` }, 400);
     if (!col.editable) return c.json({ success: false, error: `${name} は編集できません` }, 400);
     const coerced = coerceValue(col, raw);
@@ -562,6 +638,7 @@ furimAdmin.post('/api/furim/admin/:table', requireRole('owner', 'admin'), async 
   const record: Record<string, string | number | null> = {};
   for (const [name, raw] of Object.entries(values as Record<string, unknown>)) {
     const col = table.columns.find((x) => x.name === name);
+    if (!col && virtualColumnOf(table, name)) return c.json({ success: false, error: `${name} は集計・表示用の列で編集できません` }, 400);
     if (!col) return c.json({ success: false, error: `${name} は存在しない列です` }, 400);
     const coerced = coerceValue(col, raw);
     if (!coerced.ok) return c.json({ success: false, error: coerced.error }, 400);
@@ -596,7 +673,10 @@ furimAdmin.post('/api/furim/admin/:table', requireRole('owner', 'admin'), async 
     return c.json({ success: false, error: `追加に失敗しました: ${msg}` }, 400);
   }
   const after = await fetchRow(c.env.DB, table, id);
-  if (after) await attachDisplayNames(c.env.DB, [{ table, rows: [after] }]);
+  if (after) {
+    await attachDisplayNames(c.env.DB, [{ table, rows: [after] }]);
+    await attachVirtualColumns(c.env.DB, [{ table, rows: [after] }]);
+  }
   console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${table.name}/${id} を追加`);
   return c.json({ success: true, data: after ?? { ...record, _id: id }, meta: { id } }, 201);
 });

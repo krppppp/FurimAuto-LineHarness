@@ -536,7 +536,7 @@ describe('#253 decision #372: 列順・内部 ID・日本語ラベル・日時�
     const { db } = makeDb();
     const res = await req(db, 'GET', '/api/furim/admin/tables');
     type Col = { name: string; label: string; internal: boolean; datetime: string | null };
-    type Tbl = { name: string; timeColumn: string | null; timeColumnLabel: string | null; listColumns: string[]; columns: Col[] };
+    type Tbl = { name: string; timeColumn: string | null; timeColumnLabel: string | null; listColumns: string[]; columns: Col[]; virtualColumns: Array<{ name: string }> };
     const body = (await res.json()) as { data: Tbl[] };
     const by = (name: string) => body.data.find((t) => t.name === name)!;
 
@@ -581,7 +581,9 @@ describe('#253 decision #372: 列順・内部 ID・日本語ラベル・日時�
     expect(by('furim_customers').columns.some((c) => c.internal)).toBe(false);
     expect(by('furim_feature_flags').columns.some((c) => c.internal)).toBe(false);
     for (const t of body.data) {
-      expect(t.listColumns.length + t.columns.filter((c) => c.internal).length, t.name).toBe(t.columns.length + (t.timeColumn?.startsWith('_') ? 1 : 0));
+      expect(t.listColumns.length + t.columns.filter((c) => c.internal).length, t.name).toBe(
+        t.columns.length + t.virtualColumns.length + (t.timeColumn?.startsWith('_') ? 1 : 0),
+      );
     }
 
     // ラベルと日時
@@ -604,13 +606,19 @@ describe('#253 decision #372: 列順・内部 ID・日本語ラベル・日時�
       allRows: [
         [{ id: 'r1', affiliate_id: 'a1', ambassador_friend_id: 'f2', introduced_friend_id: 'f1', ref_code: 'R', source: 'url', trial_extended_days: 7, reward_applied_at: '2026-09-04 19:12:54', created_at: '2026-09-13T23:45:43.193+09:00' }],
         [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
+        [
+          { id: 'f1', line_user_id: 'U1', display_name: 'たろう' },
+          { id: 'f2', line_user_id: 'U2', display_name: 'はなこ' },
+        ],
       ],
     });
     const res = await req(db, 'GET', '/api/furim/admin/furim_referrals/export.csv');
     const text = new TextDecoder().decode(new Uint8Array(await res.arrayBuffer()));
     const [head, first] = text.replace(/^\ufeff/, '').trim().split('\r\n');
-    expect(head).toBe('LINE表示名,作成日時,紹介コード,経路,アンバサダーのプラン,報酬クーポン名,報酬クーポンID,報酬適用日時,被紹介者クーポンID,試用延長日数,内部ID,アンバサダー内部ID,アンバサダー友だち内部ID,被紹介者友だち内部ID');
-    expect(first).toBe('たろう,2026/09/13 23:45:43,R,url,,,,2026/09/04 19:12:54,,7,r1,a1,f2,f1');
+    expect(head).toBe(
+      '被紹介者LINE表示名,紹介日時,アンバサダーLINE表示名,アンバサダーLINE_ID,プラン名（アンバサダー）,クーポン名（アンバサダー報酬）,クーポン適用日時,被紹介者LINE_ID,紹介コード,経路,報酬クーポンID,被紹介者クーポンID,試用延長日数,内部ID,アンバサダー内部ID,アンバサダー友だち内部ID,被紹介者友だち内部ID',
+    );
+    expect(first).toBe('たろう,2026/09/13 23:45:43,はなこ,U2,,,2026/09/04 19:12:54,U1,R,url,,,7,r1,a1,f2,f1');
   });
 
   it('顧客 CSV は 2 列目が友だち登録日時（表示形式）', async () => {
@@ -712,5 +720,131 @@ describe('日時の相互変換（表示 2026/09/13 23:45:43 ⇔ 保存形式）
     expect(toStorageDateTime('', '2026-09-13T23:45:43.193+09:00', 'jst')).toBe('');
     expect(toStorageDateTime('2026-09-13T23:00:00.000+09:00', '2026-09-13T23:45:43.193+09:00', 'jst')).toBe('2026-09-13T23:00:00.000+09:00');
     expect(toStorageDateTime('2026/02/30 10:00:00', '2026-09-13T23:45:43.193+09:00', 'jst')).toBe('2026/02/30 10:00:00');
+  });
+});
+
+describe('#253 decision #378: アンバサダー・紹介履歴をスプシの列に合わせる（表示のみ）', () => {
+  const AFFILIATES = [
+    { id: 'a1', name: 'Ambassador AAA', code: 'AAA', commission_rate: 0, is_active: 1, friend_id: 'f1', created_at: '2026-09-13T22:54:22.413' },
+    { id: 'a2', name: 'Ambassador BBB', code: 'BBB', commission_rate: 0, is_active: 1, friend_id: 'f2', created_at: '2026-09-13T22:54:22.413' },
+  ];
+  const FRIENDS = [
+    { id: 'f1', line_user_id: 'U1', display_name: 'たろう' },
+    { id: 'f2', line_user_id: 'U2', display_name: 'はなこ' },
+  ];
+
+  it('アンバサダーの一覧は LINE_ID・コード・集計列の順で、上流由来の name / commission_rate / is_active は内部情報に回す', async () => {
+    const { db } = makeDb();
+    const res = await req(db, 'GET', '/api/furim/admin/tables');
+    type Tbl = { name: string; listColumns: string[]; displayNameLabel: string; columns: Array<{ name: string; internal: boolean }>; virtualColumns: Array<{ name: string; label: string }> };
+    const body = (await res.json()) as { data: Tbl[] };
+    const aff = body.data.find((t) => t.name === 'affiliates')!;
+    expect(aff.listColumns).toEqual([
+      'created_at', '_line_user_id', 'code', '_referral_count', '_reward_coupon_count', '_applied_coupon_count', '_cashback_count', '_cashback_total',
+    ]);
+    expect(aff.columns.filter((c) => c.internal).map((c) => c.name)).toEqual(['id', 'name', 'commission_rate', 'is_active', 'friend_id']);
+    expect(aff.virtualColumns.map((v) => v.label)).toEqual(['LINE_ID', '紹介数', 'クーポン付与数', '適用済み数', 'キャッシュバック件数', 'キャッシュバック合計']);
+    expect(aff.displayNameLabel).toBe('LINE表示名');
+
+    const ref = body.data.find((t) => t.name === 'furim_referrals')!;
+    expect(ref.listColumns).toEqual([
+      'created_at', '_ambassador_display_name', '_ambassador_line_user_id', 'ambassador_plan_name', 'reward_coupon_name', 'reward_applied_at', '_introduced_line_user_id',
+      'ref_code', 'source', 'reward_coupon_id', 'introduced_coupon_id', 'trial_extended_days',
+    ]);
+    expect(ref.displayNameLabel).toBe('被紹介者LINE表示名');
+    expect(body.data.find((t) => t.name === 'furim_customers')!.virtualColumns).toEqual([]);
+  });
+
+  it('アンバサダーの一覧に紹介数・クーポン付与数・適用済み数・キャッシュバック件数/合計を GROUP BY 2 回で付ける', async () => {
+    const { db, statements } = makeDb({
+      firstRows: [{ n: 2 }],
+      allRows: [
+        AFFILIATES,
+        FRIENDS,
+        FRIENDS,
+        [{ k: 'a1', n: 3, rewarded: 2, applied: 1, total: null }],
+        [{ k: 'U1', n: 2, rewarded: null, applied: null, total: 4000 }],
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/affiliates');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<Record<string, unknown>> };
+    expect(body.data[0]).toMatchObject({
+      name: 'Ambassador AAA',
+      code: 'AAA',
+      _display_name: 'たろう',
+      _line_user_id: 'U1',
+      _referral_count: 3,
+      _reward_coupon_count: 2,
+      _applied_coupon_count: 1,
+      _cashback_count: 2,
+      _cashback_total: 4000,
+    });
+    expect(body.data[1]).toMatchObject({ _line_user_id: 'U2', _referral_count: 0, _reward_coupon_count: 0, _applied_coupon_count: 0, _cashback_count: 0, _cashback_total: 0 });
+
+    const grouped = statements.filter((s) => s.sql.includes('GROUP BY'));
+    expect(grouped).toHaveLength(2);
+    expect(grouped[0].sql).toBe(
+      'SELECT affiliate_id AS k, COUNT(*) AS n, SUM(reward_coupon_name IS NOT NULL) AS rewarded, SUM(reward_applied_at IS NOT NULL) AS applied FROM furim_referrals WHERE affiliate_id IN (?,?) GROUP BY affiliate_id',
+    );
+    expect(grouped[0].args).toEqual(['a1', 'a2']);
+    expect(grouped[1].sql).toBe(
+      'SELECT ambassador_line_user_id AS k, COUNT(*) AS n, COALESCE(SUM(cashback_amount), 0) AS total FROM furim_referral_cashbacks WHERE ambassador_line_user_id IN (?,?) GROUP BY ambassador_line_user_id',
+    );
+    expect(grouped[1].args).toEqual(['U1', 'U2']);
+    expect(statements.filter((s) => /UPDATE|INSERT|DELETE/.test(s.sql))).toHaveLength(0);
+  });
+
+  it('紹介履歴はアンバサダーと被紹介者の表示名・LINE_ID を friends から 1 回の IN クエリで引く', async () => {
+    const { db, statements } = makeDb({
+      firstRows: [{ n: 2 }],
+      allRows: [
+        [
+          { id: 'r1', affiliate_id: 'a1', ambassador_friend_id: 'f1', introduced_friend_id: 'f2', reward_coupon_name: 'アンバサダー3000円引きクーポン', created_at: '2024-04-13 15:16:04' },
+          { id: 'r2', affiliate_id: 'a1', ambassador_friend_id: 'f1', introduced_friend_id: 'f9', created_at: '2024-04-20 20:00:00' },
+        ],
+        FRIENDS,
+        FRIENDS,
+      ],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/furim_referrals');
+    const body = (await res.json()) as { data: Array<Record<string, unknown>> };
+    expect(body.data[0]).toMatchObject({
+      _display_name: 'はなこ',
+      _ambassador_display_name: 'たろう',
+      _ambassador_line_user_id: 'U1',
+      _introduced_line_user_id: 'U2',
+    });
+    expect(body.data[1]).toMatchObject({ _ambassador_display_name: 'たろう', _ambassador_line_user_id: 'U1', _introduced_line_user_id: null });
+    const friends = statements.filter((s) => s.sql.includes('FROM friends WHERE id IN'));
+    expect(friends).toHaveLength(2);
+    expect(friends[1].args).toEqual(['f1', 'f2', 'f9']);
+    expect(statements.some((s) => s.sql.includes('GROUP BY'))).toBe(false);
+  });
+
+  it('付加列は PATCH / POST で編集できず、UPDATE / INSERT しない', async () => {
+    const patch = makeDb({ firstRows: [AFFILIATES[0]] });
+    const res = await req(patch.db, 'PATCH', '/api/furim/admin/affiliates/a1', { changes: { _referral_count: 0 } });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain('集計・表示用の列');
+    expect(patch.batches).toHaveLength(0);
+
+    const post = makeDb();
+    const res2 = await req(post.db, 'POST', '/api/furim/admin/furim_referrals', { values: { _ambassador_line_user_id: 'U1' } });
+    expect(res2.status).toBe(400);
+    expect(post.batches).toHaveLength(0);
+  });
+
+  it('アンバサダーの CSV に付加列が出る（内部情報は末尾）', async () => {
+    const { db } = makeDb({
+      allRows: [[AFFILIATES[0]], [FRIENDS[0]], [FRIENDS[0]], [{ k: 'a1', n: 3, rewarded: 2, applied: 1 }], [{ k: 'U1', n: 2, total: 4000 }]],
+    });
+    const res = await req(db, 'GET', '/api/furim/admin/affiliates/export.csv');
+    const text = new TextDecoder().decode(new Uint8Array(await res.arrayBuffer()));
+    const [head, first] = text.replace(/^\ufeff/, '').trim().split('\r\n');
+    expect(head).toBe(
+      'LINE表示名,登録日時,LINE_ID,アンバサダーコード,紹介数,クーポン付与数,適用済み数,キャッシュバック件数,キャッシュバック合計,内部ID,アンバサダー名,報酬率,有効,友だち内部ID',
+    );
+    expect(first).toBe('たろう,2026/09/13 22:54:22,U1,AAA,3,2,1,2,4000,a1,Ambassador AAA,0,1,f1');
   });
 });

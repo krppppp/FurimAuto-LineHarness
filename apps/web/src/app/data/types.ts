@@ -13,6 +13,12 @@ export type AdminColumn = {
   datetime: DateTimeStorage | null
 }
 
+export type AdminVirtualColumn = {
+  name: string
+  label: string
+  type: 'text' | 'integer' | 'real'
+}
+
 export type AdminKey = {
   column: string
   kind: 'line_user_id' | 'friend_id' | 'stripe_customer_id' | 'key_code'
@@ -28,6 +34,8 @@ export type AdminTableMeta = {
   deletable: boolean
   columns: AdminColumn[]
   keys: AdminKey[]
+  virtualColumns: AdminVirtualColumn[]
+  displayNameLabel: string
   joinFriends: boolean
   allRows: boolean
   /** 基準日時の列（顧客は _friend_created_at） */
@@ -54,6 +62,8 @@ export function listColumnsOf(table: AdminTableMeta): ListColumn[] {
   return table.listColumns.map((name) => {
     const col = table.columns.find((c) => c.name === name)
     if (col) return { name, label: col.label, datetime: col.datetime }
+    const virtual = table.virtualColumns?.find((v) => v.name === name)
+    if (virtual) return { name, label: virtual.label, datetime: null }
     return { name, label: name === table.timeColumn ? (table.timeColumnLabel ?? name) : name, datetime: name.endsWith('_at') ? 'jst' : null }
   })
 }
