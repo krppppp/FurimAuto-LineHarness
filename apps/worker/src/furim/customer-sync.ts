@@ -9,7 +9,7 @@
 import { jstNow } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, getGasErrorFromResponse } from './gas-client.js';
-import { buildUpsertStatement, formatJstDateTime, parseJstDateTime, type FurimCustomer, type FurimCustomerPatch } from './customer-store.js';
+import { buildUpsertStatement, formatJstIso, parseJstDateTime, type FurimCustomer, type FurimCustomerPatch } from './customer-store.js';
 import { notifyStaff } from './staff-notify.js';
 import type { PushEnv } from '../services/push-notify.js';
 
@@ -50,7 +50,7 @@ function jstText(v: unknown): string | null {
   const s = str(v);
   if (!s) return null;
   const t = parseJstDateTime(s);
-  return t == null ? s : formatJstDateTime(t);
+  return t == null ? s : formatJstIso(t);
 }
 
 function int(v: unknown): number | null {

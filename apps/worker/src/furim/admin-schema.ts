@@ -271,8 +271,6 @@ export function csvColumnNames(table: AdminTable): string[] {
 export type DateTimeStorage = 'jst' | 'jst_naive' | 'space' | 'utc' | 'slash';
 
 const DATETIME_DEFAULTS: Record<string, DateTimeStorage> = {
-  subscription_start_at: 'space',
-  subscription_end_at: 'space',
   mypage_info_updated_date: 'utc',
 };
 

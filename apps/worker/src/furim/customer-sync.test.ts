@@ -80,7 +80,7 @@ describe('sheetRowToPatch', () => {
     expect(sheetRowToPatch(sheetRow({ '初回発行': 'TRUE', '端末判定文字列': '0.abc', 'Free30チケット': true, 'Youtubeクーポン': ' ', 'サブスク終了日時': '2026-09-20T03:00:00.000Z', 'コピー出品チケット': 30 }))).toMatchObject({
       stripe_customer_id: 'cus_1', key_code: 'pb_abc', key_code_issued: 1, device_activated: 1,
       survey_answer: '紹介', free30_ticket: 1, youtube_coupon: null, extend_keyword: null,
-      subscription_end_at: '2026-09-20 12:00:00', copy_tickets: 30, mercari_url: null,
+      subscription_end_at: '2026-09-20T12:00:00.000+09:00', copy_tickets: 30, mercari_url: null,
     });
   });
 });
