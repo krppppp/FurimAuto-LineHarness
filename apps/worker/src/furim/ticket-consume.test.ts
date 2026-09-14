@@ -50,9 +50,9 @@ function makeDb(init: { customers?: Row[]; ledger?: Row[]; autoCopy?: Row[] } = 
       return { changes: 1 };
     }
     if (/^INSERT OR IGNORE INTO furim_ticket_ledger/.test(s)) {
-      const [id, uid, delta, reason, key, pi, inv, src, tgt, created] = a;
+      const [id, uid, delta, reason, key, pi, created] = a;
       if (ledger.some((l) => l.id === id || l.idempotency_key === key)) return { changes: 0 };
-      ledger.push({ id, line_user_id: uid, delta, reason, idempotency_key: key, payment_intent_id: pi, invoice_id: inv, source_url: src, target_url: tgt, created_at: created });
+      ledger.push({ id, line_user_id: uid, delta, reason, idempotency_key: key, payment_intent_id: pi, created_at: created });
       return { changes: 1 };
     }
     const upd = s.match(/^UPDATE furim_customers SET copy_tickets = MAX\(0, COALESCE\(copy_tickets, 0\) \+ \?\), updated_at = \? WHERE line_user_id = \? AND EXISTS \(SELECT 1 FROM (furim_auto_copy_logs|furim_ticket_ledger) WHERE id = \?\)/);
@@ -65,7 +65,7 @@ function makeDb(init: { customers?: Row[]; ledger?: Row[]; autoCopy?: Row[] } = 
       c.updated_at = now;
       return { changes: 1 };
     }
-    if (/^SELECT id, line_user_id, delta, idempotency_key, source_url, target_url, created_at FROM furim_ticket_ledger WHERE reason = 'consume'/.test(s)) {
+    if (/^SELECT id, line_user_id, delta, idempotency_key, NULL AS source_url, NULL AS target_url, created_at FROM furim_ticket_ledger WHERE reason = 'consume'/.test(s)) {
       return { changes: 0, all: ledger.filter((l) => l.reason === 'consume').sort((x, y) => String(x.created_at).localeCompare(String(y.created_at))) };
     }
     if (/^SELECT COUNT\(\*\) AS n FROM furim_auto_copy_logs$/.test(s)) return { changes: 0, first: { n: autoCopy.length } };

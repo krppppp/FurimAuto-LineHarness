@@ -572,12 +572,12 @@ describe('#253 decision #372: 列順・内部 ID・日本語ラベル・日時�
 
     // 内部 ID は一覧から外れ、外部 ID は残る
     const referrals = by('furim_referrals');
-    expect(referrals.columns.filter((c) => c.internal).map((c) => c.name)).toEqual(['id', 'affiliate_id', 'ambassador_friend_id', 'introduced_friend_id', 'reward_coupon_id', 'introduced_coupon_id']);
+    expect(referrals.columns.filter((c) => c.internal).map((c) => c.name)).toEqual(['id', 'affiliate_id', 'ambassador_friend_id', 'introduced_friend_id', 'ref_code', 'reward_coupon_id', 'introduced_coupon_id']);
     expect(referrals.listColumns).not.toContain('introduced_friend_id');
     expect(referrals.listColumns[0]).toBe('created_at');
     expect(by('affiliates').listColumns).not.toContain('friend_id');
     expect(by('furim_ticket_ledger').listColumns).not.toContain('id');
-    expect(by('furim_customers').columns.some((c) => c.internal)).toBe(false);
+    expect(by('furim_customers').columns.filter((c) => c.internal).map((c) => c.name)).toEqual(['inventory_sheet_created_at']);
     for (const t of body.data) {
       expect(t.listColumns.length + t.columns.filter((c) => c.internal).length + t.virtualColumns.filter((v) => (v as { internal?: boolean }).internal).length, t.name).toBe(
         t.columns.length + t.virtualColumns.length + (t.timeColumn?.startsWith('_') ? 1 : 0),
@@ -747,7 +747,7 @@ describe('#253 decision #378: アンバサダー・紹介履歴をスプシの�
     const ref = body.data.find((t) => t.name === 'furim_referrals')!;
     expect(ref.listColumns).toEqual([
       'created_at', '_ambassador_display_name', 'ambassador_plan_name', 'reward_coupon_name', 'reward_applied_at',
-      'ref_code', 'source', 'trial_extended_days',
+      'source', 'trial_extended_days',
     ]);
     expect(ref.displayNameLabel).toBe('被紹介者LINE表示名');
     expect(body.data.find((t) => t.name === 'furim_customers')!.virtualColumns.map((v) => v.name)).toEqual(['_last_paid_amount', '_payment_count', '_payment_total']);
@@ -850,9 +850,9 @@ describe('#253 decision #378: アンバサダー・紹介履歴をスプシの�
 describe('#263 顧客マスター以外の ID 類は一覧から外しドロワーの内部情報へ・CSV は全列', () => {
   const ID_COLUMNS: Record<string, string[]> = {
     furim_payments: ['invoice_id', 'stripe_event_id', 'line_user_id', 'stripe_customer_id', 'subscription_id'],
-    furim_ticket_ledger: ['id', 'line_user_id', 'idempotency_key', 'payment_intent_id', 'invoice_id'],
+    furim_ticket_ledger: ['id', 'line_user_id', 'idempotency_key', 'payment_intent_id'],
     furim_cancellations: ['id', 'line_user_id', 'stripe_event_id', 'subscription_id'],
-    furim_referrals: ['id', 'affiliate_id', 'ambassador_friend_id', 'introduced_friend_id', 'reward_coupon_id', 'introduced_coupon_id', '_ambassador_line_user_id', '_introduced_line_user_id'],
+    furim_referrals: ['id', 'affiliate_id', 'ambassador_friend_id', 'introduced_friend_id', 'ref_code', 'reward_coupon_id', 'introduced_coupon_id', '_ambassador_line_user_id', '_introduced_line_user_id'],
     affiliates: ['id', 'friend_id', 'name', 'commission_rate', 'is_active', '_line_user_id'],
     furim_coupons: ['coupon_id'],
     furim_execution_logs: ['id', 'line_user_id', 'key_code'],
@@ -884,9 +884,10 @@ describe('#263 顧客マスター以外の ID 類は一覧から外しドロワ�
     const data = await tables();
     for (const t of data) {
       if (t.name === 'furim_customers') {
-        expect(t.columns.some((c) => c.internal)).toBe(false);
+        expect(t.columns.filter((c) => c.internal).map((c) => c.name)).toEqual(['inventory_sheet_created_at']);
         expect(t.virtualColumns.some((v) => v.internal)).toBe(false);
         expect(t.listColumns).toEqual(expect.arrayContaining(['line_user_id', 'stripe_customer_id', 'subscription_id', 'key_code']));
+        expect(t.listColumns).not.toContain('inventory_sheet_created_at');
         continue;
       }
       const ids = ID_COLUMNS[t.name];
@@ -907,15 +908,15 @@ describe('#263 顧客マスター以外の ID 類は一覧から外しドロワ�
   it('CSV は ID 類も含めた全列を出す（チケット取引）', async () => {
     const { db } = makeDb({
       allRows: [
-        [{ id: 'l1', line_user_id: 'U1', delta: 10, reason: 'purchase', idempotency_key: 'pi_1:10', payment_intent_id: 'pi_1', invoice_id: 'in_1', amount: 1000, currency: 'jpy', created_at: '2026-09-13T23:45:43.193+09:00' }],
+        [{ id: 'l1', line_user_id: 'U1', delta: 10, reason: 'purchase', idempotency_key: 'pi_1:10', payment_intent_id: 'pi_1', amount: 1000, currency: 'jpy', created_at: '2026-09-13T23:45:43.193+09:00' }],
         [{ id: 'f1', line_user_id: 'U1', display_name: 'たろう' }],
       ],
     });
     const res = await req(db, 'GET', '/api/furim/admin/furim_ticket_ledger/export.csv');
     const text = new TextDecoder().decode(new Uint8Array(await res.arrayBuffer()));
     const [head, first] = text.replace(/^\ufeff/, '').trim().split('\r\n');
-    expect(head).toBe('LINE表示名,付与日時,LINEユーザーID,付与枚数,付与の種類,重複防止キー,PaymentIntent ID,請求書ID,金額,通貨,内部ID');
-    expect(first).toBe('たろう,2026/09/13 23:45:43,U1,10,purchase,pi_1:10,pi_1,in_1,1000,jpy,l1');
+    expect(head).toBe('LINE表示名,付与日時,LINEユーザーID,付与枚数,付与の種類,重複防止キー,PaymentIntent ID,金額,通貨,内部ID');
+    expect(first).toBe('たろう,2026/09/13 23:45:43,U1,10,purchase,pi_1:10,pi_1,1000,jpy,l1');
   });
 
   it('ID 類を一覧から外しても表示名は ID で解決し、関連データも ID で紐づける', async () => {
@@ -1166,7 +1167,6 @@ describe('#262 顧客マスターの列をシートの並びに合わせる・�
     'free30_ticket',
     'copy_tickets',
     'inventory_sheet_url',
-    'canceled_at',
     'sheet_synced_at',
     'created_at',
     'updated_at',

@@ -551,3 +551,37 @@ describe('processStripeEvent — plan-builder の同期は Worker が決めて D
     }
   });
 });
+
+describe('processStripeEvent — customer.subscription.deleted（Capsec #263 (4) furim_customers.canceled_at を消した後）', () => {
+  test('顧客マスターには canceled_at を書かず、解約日時は furim_cancellations に残る', async () => {
+    const calls: Array<{ sql: string; args: unknown[] }> = [];
+    const db = {
+      prepare: vi.fn().mockImplementation((sql: string) => {
+        const entry = { sql, args: [] as unknown[] };
+        calls.push(entry);
+        const stmt = {
+          bind: (...args: unknown[]) => { entry.args = args; return stmt; },
+          run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+          all: vi.fn().mockResolvedValue({ results: [] }),
+          first: vi.fn().mockImplementation(async () => (/FROM furim_customers WHERE stripe_customer_id/.test(sql) ? { line_user_id: 'U-cancel', plan_label: 'PBプラン:X', mercari_url: 'https://jp.mercari.com/user/profile/1' } : null)),
+        };
+        return stmt;
+      }),
+      batch: vi.fn().mockResolvedValue([]),
+    } as unknown as D1Database;
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+
+    await processStripeEvent(db, { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, {
+      id: 'evt_del_1',
+      type: 'customer.subscription.deleted',
+      data: { object: { id: 'sub_del_1', customer: 'cus_del_1', metadata: {} } },
+    });
+
+    const upserts = calls.filter((c) => /INSERT INTO furim_customers/.test(c.sql));
+    expect(upserts.length).toBeGreaterThan(0);
+    for (const u of upserts) expect(u.sql).not.toMatch(/canceled_at/);
+    const cancel = calls.find((c) => /INSERT OR IGNORE INTO furim_cancellations/.test(c.sql));
+    expect(cancel?.sql).toMatch(/canceled_at/);
+    expect(cancel?.args).toEqual([expect.any(String), 'U-cancel', 'evt_del_1', 'sub_del_1', 'PBプラン:X', 'https://jp.mercari.com/user/profile/1', '2026-07-21T12:00:00.000+09:00']);
+  });
+});

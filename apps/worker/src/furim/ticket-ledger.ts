@@ -11,9 +11,6 @@ export type TicketDeltaInput = {
   delta: number;
   reason: string;            // 'consume' | 'purchase' | 'premium_monthly' | 'free30' | 'extend_keyword' | 'manual' ...
   idempotencyKey: string;
-  sourceUrl?: string | null;
-  targetUrl?: string | null;
-  invoiceId?: string | null;
   paymentIntentId?: string | null;
 };
 
@@ -32,10 +29,10 @@ export async function applyTicketDelta(
   const results = await db.batch([
     db
       .prepare(
-        `INSERT OR IGNORE INTO furim_ticket_ledger (id, line_user_id, delta, reason, idempotency_key, payment_intent_id, invoice_id, source_url, target_url, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO furim_ticket_ledger (id, line_user_id, delta, reason, idempotency_key, payment_intent_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(id, customer.line_user_id, delta, input.reason, input.idempotencyKey, input.paymentIntentId ?? null, input.invoiceId ?? null, input.sourceUrl ?? null, input.targetUrl ?? null, now),
+      .bind(id, customer.line_user_id, delta, input.reason, input.idempotencyKey, input.paymentIntentId ?? null, now),
     db
       .prepare(
         `UPDATE furim_customers SET copy_tickets = MAX(0, COALESCE(copy_tickets, 0) + ?), updated_at = ?
@@ -143,7 +140,7 @@ export async function moveConsumeRowsToAutoCopyLogs(db: D1Database, opts: { dryR
   const now = opts.now ?? jstNow();
   const ledger = (
     await db
-      .prepare("SELECT id, line_user_id, delta, idempotency_key, source_url, target_url, created_at FROM furim_ticket_ledger WHERE reason = 'consume' ORDER BY created_at, id")
+      .prepare("SELECT id, line_user_id, delta, idempotency_key, NULL AS source_url, NULL AS target_url, created_at FROM furim_ticket_ledger WHERE reason = 'consume' ORDER BY created_at, id")
       .all<LedgerConsumeRow>()
   ).results ?? [];
   const ledgerConsumeBefore = ledger.length;

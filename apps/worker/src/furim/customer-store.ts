@@ -32,7 +32,6 @@ export type FurimCustomer = {
   subscription_source: string | null;
   copy_tickets: number | null;
   mercari_url: string | null;
-  canceled_at: string | null;
   // 段階3（migration 071）: 拡張の認証・ログを Worker が受ける
   device_code: string | null;              // 端末判定文字列（Worker が発行。旧拡張の間はシートから取り込む）
   shops_url: string | null;
@@ -69,7 +68,6 @@ const PATCHABLE = [
   'subscription_source',
   'copy_tickets',
   'mercari_url',
-  'canceled_at',
   'device_code',
   'shops_url',
   'rakuma_url',

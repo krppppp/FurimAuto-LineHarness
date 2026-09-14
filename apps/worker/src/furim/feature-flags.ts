@@ -315,7 +315,6 @@ export async function applyPlanBuilderSync(db: D1Database, kv: ExtCache | undefi
       delta: PREMIUM_MONTHLY_TICKETS,
       reason: 'premium_monthly',
       idempotencyKey: `premium_monthly:${input.invoiceId}`,
-      invoiceId: input.invoiceId,
     });
     ticketsGranted = r.applied ? PREMIUM_MONTHLY_TICKETS : 0;
   }

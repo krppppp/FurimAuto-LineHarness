@@ -210,6 +210,8 @@ describe('applyPlanBuilderSync', () => {
     expect(writes.filter((w) => /INSERT INTO furim_feature_flags/.test(w.sql)).length).toBe(Object.keys(r.flags).length);
     const ledger = writes.find((w) => /INSERT OR IGNORE INTO furim_ticket_ledger/.test(w.sql));
     expect(ledger?.args).toContain('premium_monthly:in_1');
+    expect(ledger?.sql).not.toMatch(/invoice_id/);
+    expect(ledger?.args).not.toContain('in_1');
   });
 
   it('同一内容の更新課金はキーコード不変・端末判定も触らない', async () => {
