@@ -37,9 +37,9 @@ export type FurimMaster = { features: MasterFeature[]; packages: MasterPackage[]
 export const ALWAYS_ENABLED_FEATURE_KEYS = ['mCopyMShopsListing', 'mCopyRakumaListing', 'mCopyYahooAuctionListing', 'mCopyYahooFleamarketListing'] as const;
 // AutoMultiChannel の巡回サイト文字列（拡張 js/inventory.js の NAME_TO_KEY 準拠・"/" 区切り）
 export const INVENTORY_PATROL_ALL_SITES = 'メルカリ/Shops/ラクマ/ヤフオク/ヤフフリ';
-// 在庫管理シート無料プロモ（月額会員向け・2026-09-15 まで）。GAS sheetHelper.isInventoryPromoActive と同値
+// 在庫管理シート無料プロモ（月額会員向け・2026-09-15 12:00 まで）。GAS sheetHelper.isInventoryPromoActive と同値
 export function isInventoryPromoActive(nowMs = Date.now()): boolean {
-  return nowMs < Date.parse('2026-09-16T00:00:00+09:00');
+  return nowMs < Date.parse('2026-09-15T12:00:00+09:00');
 }
 
 // ── マスタ（furim_master） ──
