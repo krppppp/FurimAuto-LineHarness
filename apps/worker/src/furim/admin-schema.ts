@@ -912,6 +912,34 @@ export const ADMIN_TABLES: AdminTable[] = [
     ],
     keys: [],
   },
+  // 手で片づけた操作の記録（Capsec #289 追加）。確認済み（見た記録）とは別に、
+  // 「何を何件、なぜ完了扱いにしたか」を残す。閲覧のみ
+  {
+    name: 'furim_ops_log',
+    label: '手作業の記録',
+    pk: ['id'],
+    insertable: false,
+    deletable: false,
+    orderBy: 'acted_at DESC',
+    touchUpdatedAt: false,
+    timeColumn: 'acted_at',
+    idColumns: ['id'],
+    labels: {
+      acted_at: '実行日時', actor: '実行した人', action: '操作', target: '対象',
+      target_count: '件数', goal: '根拠', note: '理由',
+    },
+    columns: [
+      ro('id', true),
+      ro('acted_at'),
+      ro('actor', true),
+      ro('action', true),
+      ro('target', true),
+      roi('target_count'),
+      ro('goal', true),
+      ro('note', true),
+    ],
+    keys: [],
+  },
 ];
 
 export function getAdminTable(name: string): AdminTable | undefined {

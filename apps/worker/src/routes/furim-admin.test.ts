@@ -560,6 +560,7 @@ describe('#253 decision #372: 列順・内部 ID・日本語ラベル・日時�
       furim_feature_flags: 'updated_at',
       furim_master: 'fetched_at',
       furim_ad_spend: 'date',
+      furim_ops_log: 'acted_at',
     });
     expect(by('furim_customers').timeColumnLabel).toBe('友だち登録日時');
     expect(by('furim_payments').timeColumnLabel).toBe('決済日時');
@@ -868,6 +869,7 @@ describe('#263 顧客マスター以外の ID 類は一覧から外しドロワ�
     furim_feature_flags: ['line_user_id'],
     furim_master: ['stripe_price_id'],
     furim_ad_spend: ['campaign_id'],
+    furim_ops_log: ['id'],
   };
 
   type Tbl = {

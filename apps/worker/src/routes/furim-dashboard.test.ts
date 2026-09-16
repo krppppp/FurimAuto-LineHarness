@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyAcks, furimDashboard, parseGranularity, parsePeriod, rangeStart } from './furim-dashboard.js';
+import { applyAcks, furimDashboard, parseGranularity, parsePeriod, rangeStart, type AnomalyItem } from './furim-dashboard.js';
 
 type Canned = { match: RegExp; all?: unknown[]; first?: unknown; throws?: string };
 
@@ -108,32 +108,32 @@ describe('GET /api/furim/dashboard', () => {
 });
 
 describe('異常の確認済み（Capsec #289）', () => {
-  const item = () => ({ kind: 'gas_retry_pending', label: '同期の保留ジョブ', count: 2, since: '2026-08-20T04:10:00.000+09:00', href: '/x', severity: 'red' as const, acked: null, isNew: false });
+  const item = (): AnomalyItem => ({ kind: 'gas_retry_pending', label: '同期の保留ジョブ', count: 2, since: '2026-08-20T04:10:00.000+09:00', href: '/x', severity: 'red' as const, acked: null, isNew: false });
 
   it('確認済みがあれば acked が付く', async () => {
     const { db } = makeDb([{ match: /FROM furim_anomaly_acks/, all: [{ kind: 'gas_retry_pending', ack_key: '', acked_at: '2026-09-16T10:00:00.000+09:00', acked_by: 'くろ', count_at_ack: 2, first_seen_at_ack: '2026-08-20T04:10:00', note: null }] }]);
-    const items = [item()];
+    const items: AnomalyItem[] = [item()];
     await applyAcks(db, items, '2026-09-16T22:00:00.000+09:00');
     expect(items[0].acked?.by).toBe('くろ');
   });
 
   it('件数が増えていたら確認済みを外してまた出す', async () => {
     const { db } = makeDb([{ match: /FROM furim_anomaly_acks/, all: [{ kind: 'gas_retry_pending', ack_key: '', acked_at: '2026-09-16T10:00:00.000+09:00', acked_by: 'くろ', count_at_ack: 1, first_seen_at_ack: '2026-08-20T04:10:00', note: null }] }]);
-    const items = [item()];
+    const items: AnomalyItem[] = [item()];
     await applyAcks(db, items, '2026-09-16T22:00:00.000+09:00');
     expect(items[0].acked).toBeNull();
   });
 
   it('解消してから再発した（初回検知が確認時より新しい）ら確認済みを外す', async () => {
     const { db } = makeDb([{ match: /FROM furim_anomaly_acks/, all: [{ kind: 'gas_retry_pending', ack_key: '', acked_at: '2026-09-16T10:00:00.000+09:00', acked_by: 'くろ', count_at_ack: 5, first_seen_at_ack: '2026-08-20T04:10:00', note: null }] }]);
-    const items = [{ ...item(), since: '2026-09-16T20:00:00.000+09:00' }];
+    const items: AnomalyItem[] = [{ ...item(), since: '2026-09-16T20:00:00.000+09:00' }];
     await applyAcks(db, items, '2026-09-16T22:00:00.000+09:00');
     expect(items[0].acked).toBeNull();
   });
 
   it('直近 24 時間に初めて出たものは isNew になる', async () => {
     const { db } = makeDb([{ match: /FROM furim_anomaly_acks/, all: [] }]);
-    const items = [item(), { ...item(), kind: 'x', since: '2026-09-16T20:00:00.000+09:00' }];
+    const items: AnomalyItem[] = [item(), { ...item(), kind: 'x', since: '2026-09-16T20:00:00.000+09:00' }];
     await applyAcks(db, items, '2026-09-16T22:00:00.000+09:00');
     expect(items[0].isNew).toBe(false);
     expect(items[1].isNew).toBe(true);
