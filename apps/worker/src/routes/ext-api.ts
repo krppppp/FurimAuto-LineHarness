@@ -421,4 +421,34 @@ mount('shop-research-log', async (c, p, client) => {
   return c.json({ success: true, created: true, usedCount });
 });
 
+// ── 2-9. collect-skip ← 巡回キューの取りこぼし（Capsec #294） ──
+// 在庫巡回のキューは chrome.storage.local の 1 キーで、タブ側の shift と background の
+// タイムアウト側の slice が、どちらも「自分が読んだ配列 −1」を書き戻していた。持ち主を
+// 確かめないため、進んだ先の 1 件が一度も処理されずに消える（ログ上は完了に見える）。
+// 拡張側で持ち主を確かめる修正を入れるが、飛ばしたときは必ずここに 1 件送ってもらう。
+// console.log だけだと「何件飛んだか」を後から数えられない。
+mount('collect-skip', async (c, p, client) => {
+  const keyCode = str(p.keyCode);
+  const queue = str(p.queue) === 'delete' ? 'delete' : 'collect'; // 収集キュー / 削除キュー
+  const reason = str(p.reason).slice(0, 40) || 'unknown'; // timeout / owner_mismatch など
+  const service = str(p.service).slice(0, 40); // 販路（メルカリ・ラクマ…）
+  const target = str(p.target).slice(0, 300); // 対象の URL か商品名
+  const detail = str(p.detail).slice(0, 200);
+  const db = c.env.DB;
+
+  const lineUserId = await findLineUserIdByKeyCode(db, keyCode);
+  // 巡回は D1 に実行記録が無いので、拡張エラーの表に残す（巡回もダッシュボードもここを読む）
+  await recordExtError(db, {
+    method: 'collectSkip',
+    error: [queue, reason, service || '(販路不明)', detail].filter(Boolean).join(' / ').slice(0, 300),
+    lineUserId,
+    keyCode,
+    mercariUrl: target || null,
+    discriminationCode: null,
+    client,
+  });
+  console.warn(`[ext-api] collect-skip queue=${queue} reason=${reason} service=${service} keyCode=${keyCode} client=${client}`);
+  return c.json({ success: true, recorded: true });
+});
+
 export { extApi };

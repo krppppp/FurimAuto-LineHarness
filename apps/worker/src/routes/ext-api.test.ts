@@ -617,3 +617,40 @@ describe('CORS（Chrome 拡張の origin）', () => {
     expect(ext.headers.get('Access-Control-Allow-Origin')).toBeNull();
   });
 });
+
+describe('collect-skip（巡回キューの取りこぼし・Capsec #294）', () => {
+  it('飛ばした理由と販路を拡張エラーの表に残す', async () => {
+    const { db, statements } = makeDb((sql) =>
+      /SELECT line_user_id FROM furim_customers WHERE key_code/.test(sql) ? { first: { line_user_id: 'U1' } } : undefined,
+    );
+    const res = await call(envWith(db), 'collect-skip', {
+      keyCode: 'pb_x',
+      queue: 'collect',
+      reason: 'timeout',
+      service: 'ラクマ',
+      target: 'https://fril.jp/item/1',
+      detail: '60秒で打ち切り',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, recorded: true });
+    const err = statements.find((x) => /INSERT INTO furim_ext_errors/.test(x.sql));
+    expect(err).toBeDefined();
+    expect(err!.args.some((b) => String(b) === 'collectSkip')).toBe(true);
+    expect(err!.args.some((b) => String(b).includes('timeout') && String(b).includes('ラクマ'))).toBe(true);
+    expect(err!.args.some((b) => String(b) === 'https://fril.jp/item/1')).toBe(true);
+  });
+
+  it('削除キューの取りこぼしも同じ口で受ける', async () => {
+    const { db, statements } = makeDb(() => undefined);
+    const res = await call(envWith(db), 'collect-skip', { queue: 'delete', reason: 'owner_mismatch', service: 'メルカリ' });
+    expect(res.status).toBe(200);
+    const err = statements.find((x) => /INSERT INTO furim_ext_errors/.test(x.sql));
+    expect(err!.args.some((b) => String(b).includes('delete') && String(b).includes('owner_mismatch'))).toBe(true);
+  });
+
+  it('クライアントヘッダが無ければ 401', async () => {
+    const { db } = makeDb(() => undefined);
+    const res = await call(envWith(db), 'collect-skip', { queue: 'collect', reason: 'timeout' }, { header: null });
+    expect(res.status).toBe(401);
+  });
+});

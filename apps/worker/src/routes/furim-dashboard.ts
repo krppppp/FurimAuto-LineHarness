@@ -334,6 +334,15 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
       'yellow',
     );
 
+    // 巡回キューの取りこぼし（Capsec #294）。直近 24 時間に絞って「今日のできごと」側に出す。
+    // 拡張が collect-skip を送ってきた分だけ数える（送られない限り 0 件のまま）
+    await add(
+      'collect_skip', '巡回キューの取りこぼし（直近 24 時間）', '/data/table?name=furim_ext_errors',
+      `SELECT COUNT(*) AS n, MIN(created_at) AS since FROM furim_ext_errors
+       WHERE method = 'collectSkip' AND ${secOf('created_at')} >= ?`,
+      [new Date(Date.parse(now.slice(0, 19) + '+09:00') - 86400_000).toISOString().slice(0, 19)],
+    );
+
     // 日次ヘルス巡回が止まっていないか（Capsec #292）。テーブルが未作成でも区画ごと落とさない
     try {
       const hb = await db.prepare("SELECT last_run_at FROM furim_health_heartbeat WHERE id = 'patrol'").first<{ last_run_at: string }>();
