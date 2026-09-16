@@ -81,6 +81,10 @@ export type AnomalyItem = {
   acked: { at: string; by: string; note: string | null } | null;
   /** 直近 24 時間に初めて出たもの */
   isNew: boolean;
+  /** 項目の下に並べる明細（未返信の上位 5 件など）。各行から該当画面へ飛べる */
+  details?: Array<{ label: string; sub: string; href: string }>;
+  /** 補足（「締めと判定して除外 N 件」など。黙って消さないために出す） */
+  note?: string;
 };
 
 const ACK_FRESH_HOURS = 24;
@@ -333,6 +337,36 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
       [new Date(Date.parse(now.slice(0, 19) + '+09:00') - 86400_000).toISOString().slice(0, 19)],
       'yellow',
     );
+
+    // 未返信が 3 時間を超えたもの（Capsec #295）。判定はチャット画面の「未対応のみ」と同じ関数を使い、
+    // 件数を必ず一致させる。会話の締めは件数から外すが、除外件数として出す
+    try {
+      const { getUnansweredRowsMap } = await import('../services/unanswered-inbox.js');
+      const { buildUnansweredAlert, findMediaSinceReply, UNANSWERED_YELLOW_HOURS } = await import('../furim/unanswered-alert.js');
+      const nowMs = Date.parse(now.slice(0, 19) + '+09:00');
+      const rows = [...(await getUnansweredRowsMap(db)).values()].filter((r) => {
+        const at = Date.parse(String(r.lastIncomingAt).replace(' ', 'T'));
+        return !Number.isNaN(at) && nowMs - at >= UNANSWERED_YELLOW_HOURS * 3600_000;
+      });
+      const media = rows.length ? await findMediaSinceReply(db, rows) : new Set<string>();
+      const alert = buildUnansweredAlert(rows, media, nowMs);
+      if (alert) {
+        items.push({
+          kind: 'unanswered',
+          label: `未返信 ${alert.count} 件（最古 ${alert.oldestHours} 時間）`,
+          count: alert.count,
+          since: alert.since,
+          href: '/chats?unanswered=1',
+          severity: alert.severity,
+          acked: null,
+          isNew: false,
+          details: alert.top.map((t) => ({ label: t.name, sub: `${t.hours} 時間・${t.preview}`, href: `/chats?friend=${encodeURIComponent(t.friendId)}` })),
+          note: alert.excludedClosing > 0 ? `締めと判定して除外 ${alert.excludedClosing} 件` : undefined,
+        });
+      }
+    } catch (e) {
+      console.log('[dashboard] unanswered check skipped:', e);
+    }
 
     // 巡回キューの取りこぼし（Capsec #294）。直近 24 時間に絞って「今日のできごと」側に出す。
     // 拡張が collect-skip を送ってきた分だけ数える（送られない限り 0 件のまま）

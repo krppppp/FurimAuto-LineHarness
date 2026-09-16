@@ -52,6 +52,8 @@ type Anomaly = {
   severity: 'red' | 'yellow'
   acked: { at: string; by: string; note: string | null } | null
   isNew: boolean
+  details?: Array<{ label: string; sub: string; href: string }>
+  note?: string
 }
 type AnomaliesSection = { ok: true; items: Anomaly[] }
 
@@ -180,6 +182,23 @@ function AnomalyRow({ a, onChanged }: { a: Anomaly; onChanged: () => void }) {
         >
           確認済みにする
         </button>
+      )}
+      {(a.details?.length || a.note) && (
+        <div className="basis-full pl-5">
+          {a.details && a.details.length > 0 && (
+            <ul className="mt-1 space-y-0.5">
+              {a.details.map((d) => (
+                <li key={d.href} className="text-xs">
+                  <Link href={d.href} className="font-medium text-gray-800 underline-offset-2 hover:underline">
+                    {d.label}
+                  </Link>
+                  <span className="ml-2 text-gray-500">{d.sub}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {a.note && <p className="mt-1 text-[11px] text-gray-400">{a.note}</p>}
+        </div>
       )}
     </li>
   )
