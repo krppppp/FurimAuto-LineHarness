@@ -48,7 +48,7 @@ import type { Env } from '../index.js';
 const furimAdmin = new Hono<Env>();
 
 const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
+const MAX_LIMIT = 1000;
 const RELATED_LIMIT = 20;
 const ALL_ROWS_LIMIT = 10000;
 const EXPORT_LIMIT = 50000;

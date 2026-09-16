@@ -49,7 +49,7 @@ type RelatedEntry = { table: AdminTableMeta; total: number; rows: Row[]; q: stri
 
 type RelatedResponse = { success: boolean; error?: string; data: { identity: Identity; related: RelatedEntry[] } }
 
-const LIMIT = 50
+const LIMIT = 1000
 const DATETIME_PLACEHOLDER = '2026/09/13 23:45:43'
 
 // fetchApi は 4xx を例外にして本文を捨てるので、PATCH/POST/DELETE のエラー文（列の型違い・UNIQUE 制約など）を出すために本文を読む
