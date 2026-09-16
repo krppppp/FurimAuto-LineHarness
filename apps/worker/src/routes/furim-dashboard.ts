@@ -334,6 +334,29 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
       'yellow',
     );
 
+    // 日次ヘルス巡回が止まっていないか（Capsec #292）。テーブルが未作成でも区画ごと落とさない
+    try {
+      const hb = await db.prepare("SELECT last_run_at FROM furim_health_heartbeat WHERE id = 'patrol'").first<{ last_run_at: string }>();
+      if (hb?.last_run_at) {
+        const lastMs = Date.parse(hb.last_run_at.replace(' ', 'T').slice(0, 19) + '+09:00');
+        const hours = Math.floor((Date.parse(now.slice(0, 19) + '+09:00') - lastMs) / 3600_000);
+        if (hours >= 3) {
+          items.push({
+            kind: 'patrol_stale',
+            label: `日次ヘルス巡回が ${hours} 時間動いていない`,
+            count: hours,
+            since: hb.last_run_at,
+            href: '/data/table?name=furim_health_heartbeat',
+            severity: 'red',
+            acked: null,
+            isNew: false,
+          });
+        }
+      }
+    } catch (e) {
+      console.log('[dashboard] heartbeat check skipped:', e);
+    }
+
     // 広告費の取り込みが止まっていないか（自動実行が死んでも気づけるように）
     const lastAd = await db.prepare('SELECT MAX(date) AS d FROM furim_ad_spend').first<{ d: string | null }>();
     const staleDays = lastAd?.d

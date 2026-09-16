@@ -1131,6 +1131,13 @@ async function scheduled(
   // プラン変更（PB-…）の未反映検知: LINE でコード送信済みなのに 30分経っても used_at が無い、
   // または used なのに Stripe に反映が無いものを1回だけ通知する（Capsec #240）
   jobs.push(watchPlanChangeIntents(env.DB, defaultLineClient, env));
+  // 日次ヘルス巡回そのものが止まっていないか（Capsec #292）。巡回は Mac の launchd で動くので、
+  // 見張りは Worker 側に置く（Mac が落ちても鳴るように）。3/24/48 時間で 1 通ずつ
+  jobs.push(
+    import('./furim/patrol-watch.js')
+      .then(({ watchPatrolHeartbeat }) => watchPatrolHeartbeat(env.DB, defaultLineClient))
+      .catch((err) => console.error('[cron] patrol-watch error:', err)),
+  );
   // 顧客マスター（シート）⇄ D1 furim_customers の差分検知（Capsec #243）。
   // 内部で JST :15/:45 の tick だけ動き、30分以上続くズレをスタッフへ1回だけ通知する
   jobs.push(
