@@ -886,6 +886,32 @@ export const ADMIN_TABLES: AdminTable[] = [
     ],
     keys: [],
   },
+  // 広告費（Capsec #282 段階2 / #285）。取り込みは GoogleAds/ad_spend_to_d1.py が
+  // POST /api/furim/ad-spend/import に流す。手入力・修正もここからできる
+  {
+    name: 'furim_ad_spend',
+    label: '広告費（日次）',
+    pk: ['date', 'source', 'campaign_id'],
+    orderBy: 'date DESC',
+    touchUpdatedAt: false,
+    timeColumn: 'date',
+    idColumns: ['campaign_id'],
+    labels: {
+      date: '日付', source: '媒体', campaign_id: 'キャンペーンID', campaign_name: 'キャンペーン名',
+      cost_yen: '費用（円）', clicks: 'クリック', impressions: '表示回数', imported_at: '取り込み日時',
+    },
+    columns: [
+      t('date', true, true),
+      t('source', true, true),
+      t('campaign_id', true, true),
+      t('campaign_name', true, true),
+      i('cost_yen'),
+      i('clicks'),
+      i('impressions'),
+      ro('imported_at'),
+    ],
+    keys: [],
+  },
 ];
 
 export function getAdminTable(name: string): AdminTable | undefined {

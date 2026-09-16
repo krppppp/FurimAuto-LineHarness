@@ -1,346 +1,394 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { api } from '@/lib/api'
-import CcPromptButton from '@/components/cc-prompt-button'
-import { useAccount } from '@/contexts/account-context'
+import Header from '@/components/layout/header'
+import Segmented from '@/components/charts/segmented'
+import StatCard, { formatNumber, formatYen } from '@/components/charts/stat-card'
+import TimeSeriesChart, { labelOf, type ChartPoint, type ChartSeries } from '@/components/charts/time-series-chart'
 
-const ccPrompts = [
-  {
-    title: 'ダッシュボードのKPI分析',
-    prompt: `LINE CRM ダッシュボードのデータを分析してください。
-1. 友だち数の推移を確認
-2. アクティブシナリオの効果を評価
-3. 配信の開封率・クリック率を分析
-改善提案を含めてレポートしてください。`,
-  },
-  {
-    title: '新しいシナリオを提案',
-    prompt: `現在の友だちデータとタグ情報を元に、効果的なシナリオ配信を提案してください。
-1. ターゲットセグメントの特定
-2. メッセージ内容の提案
-3. 配信タイミングの最適化
-具体的なステップ配信の構成を含めてください。`,
-  },
+/**
+ * 管理画面トップ（Capsec #282 段階2 / #285）。
+ *
+ * 設計は .claude-company/departments/engineering/FurimAuto-LineHarness/2026-09-16-admin-top-dashboard-design.md。
+ * 数字はすべて D1（GET /api/furim/dashboard）。マスタースプレッドシートには依存しない。
+ * 区画ごとに ok を持ち、取得に失敗したところは 0 ではなく「—」と理由を出す。
+ *
+ * upstream マージではこのファイルを ours 固定にする（docs/furimauto/FORK_OVERLAY.md に登録済み）。
+ */
+
+type Granularity = 'day' | 'month' | 'year'
+type Period = '3m' | '6m' | '1y' | 'all'
+
+const GRANULARITIES: ReadonlyArray<{ value: Granularity; label: string }> = [
+  { value: 'day', label: '日' },
+  { value: 'month', label: '月' },
+  { value: 'year', label: '年' },
+]
+const PERIODS: ReadonlyArray<{ value: Period; label: string }> = [
+  { value: '3m', label: '3ヶ月' },
+  { value: '6m', label: '6ヶ月' },
+  { value: '1y', label: '1年' },
+  { value: 'all', label: '全期間' },
 ]
 
-interface DashboardStats {
-  friendCount: number | null
-  activeScenarioCount: number | null
-  broadcastCount: number | null
-  templateCount: number | null
-  automationCount: number | null
-  scoringRuleCount: number | null
+type Failed = { ok: false; error: string }
+type FriendsSection = { ok: true; series: Array<{ t: string; total: number; fromAds: number; byRoute: Record<string, number> }>; following: number }
+type RevenueSection = {
+  ok: true
+  members: number
+  series: Array<{ t: string; invoices: number; payers: number; revenueExclTax: number; revenueInclTax: number; newPaidInvoices: number; converted: number }>
+}
+type ChurnSection = { ok: true; series: Array<{ t: string; churned: number }>; blocked: number }
+type AdSpendSection = { ok: true; series: Array<{ t: string; cost: number; clicks: number; impressions: number }>; lastImportedAt: string | null }
+type TrialSection = { ok: true; active: number; endingSoon: number }
+type AnomaliesSection = { ok: true; items: Array<{ kind: string; label: string; count: number; since: string | null; href: string }> }
+
+type Dashboard = {
+  success: boolean
+  range: { from: string; to: string; granularity: Granularity; period: Period }
+  sections: {
+    friends: FriendsSection | Failed
+    revenue: RevenueSection | Failed
+    churn: ChurnSection | Failed
+    adSpend: AdSpendSection | Failed
+    trial: TrialSection | Failed
+    anomalies: AnomaliesSection | Failed
+  }
 }
 
-interface StatCardProps {
+const COLORS = { friends: '#06C755', ads: '#2563eb', revenue: '#7c3aed', converted: '#f59e0b', churn: '#dc2626', cost: '#0ea5e9', cpa: '#ea580c' }
+
+function SectionShell({
+  title,
+  note,
+  href,
+  linkLabel,
+  failed,
+  children,
+}: {
   title: string
-  value: number | null
-  loading: boolean
-  icon: React.ReactNode
-  href: string
-  accentColor?: string
+  note?: string
+  href?: string
+  linkLabel?: string
+  failed?: string
+  children: React.ReactNode
+}) {
+  return (
+    <section className="mb-6 rounded-xl border border-gray-200 bg-white p-5">
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <div>
+          <h2 className="text-base font-bold text-gray-900">{title}</h2>
+          {note && <p className="mt-0.5 text-xs text-gray-400">{note}</p>}
+        </div>
+        {href && (
+          <Link href={href} className="shrink-0 text-xs text-gray-500 hover:text-gray-800">
+            {linkLabel ?? '詳しく見る'} →
+          </Link>
+        )}
+      </div>
+      {failed ? <p className="py-6 text-center text-sm text-red-600">取得に失敗しました（{failed}）</p> : children}
+    </section>
+  )
 }
 
-function StatCard({ title, value, loading, icon, href, accentColor = '#06C755' }: StatCardProps) {
+function DataTable({ rows, columns, granularity }: { rows: ChartPoint[]; columns: Array<{ key: string; label: string; yen?: boolean }>; granularity: Granularity }) {
   return (
-    <Link href={href} className="block bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow group">
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-sm font-medium text-gray-500 mb-2">{title}</p>
-          {loading ? (
-            <div className="h-8 w-20 bg-gray-100 rounded animate-pulse" />
-          ) : (
-            <p className="text-3xl font-bold text-gray-900">
-              {value !== null ? value.toLocaleString('ja-JP') : '-'}
-            </p>
-          )}
-        </div>
-        <div
-          className="w-10 h-10 rounded-lg flex items-center justify-center text-white shrink-0"
-          style={{ backgroundColor: accentColor }}
-        >
-          {icon}
-        </div>
-      </div>
-      <p className="text-xs text-gray-400 mt-3 group-hover:text-green-600 transition-colors">
-        詳細を見る →
-      </p>
-    </Link>
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 text-xs text-gray-500">
+            <th className="px-3 py-2 text-left font-medium">期間</th>
+            {columns.map((c) => (
+              <th key={c.key} className="px-3 py-2 text-right font-medium">
+                {c.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {[...rows].reverse().map((r) => (
+            <tr key={r.t} className="border-b border-gray-100">
+              <td className="px-3 py-1.5 text-gray-600">{labelOf(granularity, r.t, true)}</td>
+              {columns.map((c) => (
+                <td key={c.key} className="px-3 py-1.5 text-right tabular-nums text-gray-900">
+                  {c.yen ? formatYen(Number(r[c.key] ?? 0)) : formatNumber(Number(r[c.key] ?? 0))}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
 export default function DashboardPage() {
-  const { selectedAccountId, selectedAccount } = useAccount()
-  const [stats, setStats] = useState<DashboardStats>({
-    friendCount: null,
-    activeScenarioCount: null,
-    broadcastCount: null,
-    templateCount: null,
-    automationCount: null,
-    scoringRuleCount: null,
-  })
+  const [granularity, setGranularity] = useState<Granularity>('month')
+  const [period, setPeriod] = useState<Period>('1y')
+  const [asTable, setAsTable] = useState(false)
+  const [data, setData] = useState<Dashboard | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
+  // 選んだ粒度と期間は URL に持たせる（再読み込みとリンク共有で同じ絵が出る）
   useEffect(() => {
-    const load = async () => {
-      setLoading(true)
-      setError('')
-      try {
-        const [friendCountRes, scenariosRes, broadcastsRes, templatesRes, automationsRes, scoringRes] = await Promise.allSettled([
-          api.friends.count({ accountId: selectedAccountId ?? undefined }),
-          api.scenarios.list(),
-          api.broadcasts.list(),
-          api.templates.list(),
-          api.automations.list(),
-          api.scoring.rules(),
-        ])
+    const q = new URLSearchParams(window.location.search)
+    const g = q.get('g')
+    const p = q.get('p')
+    if (g === 'day' || g === 'month' || g === 'year') setGranularity(g)
+    if (p === '3m' || p === '6m' || p === '1y' || p === 'all') setPeriod(p)
+  }, [])
 
-        setStats({
-          friendCount:
-            friendCountRes.status === 'fulfilled' && friendCountRes.value.success
-              ? friendCountRes.value.data.count
-              : null,
-          activeScenarioCount:
-            scenariosRes.status === 'fulfilled' && scenariosRes.value.success
-              ? scenariosRes.value.data.filter((s) => s.isActive).length
-              : null,
-          broadcastCount:
-            broadcastsRes.status === 'fulfilled' && broadcastsRes.value.success
-              ? broadcastsRes.value.data.length
-              : null,
-          templateCount:
-            templatesRes.status === 'fulfilled' && templatesRes.value.success
-              ? templatesRes.value.data.length
-              : null,
-          automationCount:
-            automationsRes.status === 'fulfilled' && automationsRes.value.success
-              ? automationsRes.value.data.filter((a) => a.isActive).length
-              : null,
-          scoringRuleCount:
-            scoringRes.status === 'fulfilled' && scoringRes.value.success
-              ? scoringRes.value.data.length
-              : null,
-        })
-      } catch {
-        setError('データの読み込みに失敗しました')
-      } finally {
-        setLoading(false)
-      }
+  const load = useCallback(async (g: Granularity, p: Period) => {
+    setLoading(true)
+    setError('')
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/furim/dashboard?granularity=${g}&period=${p}`, { credentials: 'include' })
+      if (!res.ok) throw new Error(`API error: ${res.status}`)
+      setData((await res.json()) as Dashboard)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '読み込みに失敗しました')
+    } finally {
+      setLoading(false)
     }
+  }, [])
 
-    load()
-  }, [selectedAccountId])
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search)
+    q.set('g', granularity)
+    q.set('p', period)
+    window.history.replaceState(null, '', `?${q.toString()}`)
+    void load(granularity, period)
+  }, [granularity, period, load])
+
+  const s = data?.sections
+  const friends = s?.friends
+  const revenue = s?.revenue
+  const churn = s?.churn
+  const adSpend = s?.adSpend
+  const trial = s?.trial
+  const anomalies = s?.anomalies
+
+  const failOf = (sec: { ok: boolean; error?: string } | undefined) => (sec && !sec.ok ? (sec.error ?? '不明なエラー') : undefined)
+
+  // 広告費の区画は、費用と「広告経由の友だち追加」から実 CPA を出す
+  const adPoints: ChartPoint[] =
+    adSpend?.ok && friends?.ok
+      ? adSpend.series.map((a) => {
+          const f = friends.series.find((x) => x.t === a.t)
+          const adFriends = f?.fromAds ?? 0
+          return { t: a.t, cost: a.cost, cpa: adFriends > 0 ? Math.round(a.cost / adFriends) : 0, adFriends }
+        })
+      : []
+
+  const friendSeries: ChartSeries[] = [
+    { key: 'total', label: '友だち追加', kind: 'bar', color: COLORS.friends },
+    { key: 'fromAds', label: 'うち広告経由', kind: 'line', color: COLORS.ads },
+  ]
+  const revenueSeries: ChartSeries[] = [
+    { key: 'revenueExclTax', label: '課金実績（税抜）', kind: 'bar', color: COLORS.revenue, format: formatYen },
+    { key: 'converted', label: '新規の有料転換', kind: 'line', color: COLORS.converted, right: true },
+  ]
+  const adSeries: ChartSeries[] = [
+    { key: 'cost', label: '広告費', kind: 'bar', color: COLORS.cost, format: formatYen },
+    { key: 'cpa', label: '実 CPA（友だち 1 人あたり）', kind: 'line', color: COLORS.cpa, right: true, format: formatYen },
+  ]
+  const churnSeries: ChartSeries[] = [{ key: 'churned', label: '解約', kind: 'bar', color: COLORS.churn }]
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-xl sm:text-2xl font-bold text-gray-900">ダッシュボード</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          {selectedAccount
-            ? `${selectedAccount.displayName || selectedAccount.name} の管理画面`
-            : 'LINE公式アカウント CRM 管理画面'}
-        </p>
-      </div>
+      <Header
+        title="ダッシュボード"
+        description={data ? `${data.range.from} 〜 ${data.range.to}・数字はすべて D1 から` : '数字はすべて D1 から'}
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            <Segmented options={GRANULARITIES} value={granularity} onChange={setGranularity} ariaLabel="粒度" />
+            <Segmented options={PERIODS} value={period} onChange={setPeriod} ariaLabel="期間" />
+            <button
+              type="button"
+              onClick={() => setAsTable((v) => !v)}
+              className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            >
+              {asTable ? 'グラフ表示' : '表で見る'}
+            </button>
+          </div>
+        }
+      />
 
       {error && (
-        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-          {error}
+        <div className="mb-6 flex items-center justify-between rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <span>読み込みに失敗しました（{error}）</span>
+          <button type="button" onClick={() => void load(granularity, period)} className="rounded border border-red-300 bg-white px-2.5 py-1 text-xs hover:bg-red-50">
+            再読み込み
+          </button>
         </div>
       )}
 
-      {/* Demo banner */}
-      <a
-        href="https://your-worker.your-subdomain.workers.dev/auth/line?ref=dashboard"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="block mb-6 p-4 rounded-xl border border-green-200 bg-gradient-to-r from-green-50 to-emerald-50 hover:from-green-100 hover:to-emerald-100 transition-colors"
-      >
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-bold text-gray-900">LINE で体験する</p>
-            <p className="text-xs text-gray-500 mt-0.5">友だち追加でステップ配信・フォーム・自動返信を体験</p>
-          </div>
-          <span className="text-xs px-3 py-1.5 rounded-full text-white font-medium" style={{ backgroundColor: '#06C755' }}>
-            友だち追加
-          </span>
-        </div>
-      </a>
+      {loading && !data ? (
+        <p className="text-sm text-gray-400">読み込み中...</p>
+      ) : (
+        <>
+          {/* 異常: あるときだけ最上段に赤で出す。無いときは区画ごと出さない */}
+          {anomalies && (!anomalies.ok || anomalies.items.length > 0) && (
+            <section className="mb-6 rounded-xl border border-red-200 bg-red-50 p-5">
+              <h2 className="mb-2 text-base font-bold text-red-700">異常</h2>
+              {!anomalies.ok ? (
+                <p className="text-sm text-red-600">取得に失敗しました（{anomalies.error}）</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {anomalies.items.map((a) => (
+                    <li key={a.kind} className="flex items-center gap-3 text-sm text-red-800">
+                      <Link href={a.href} className="font-medium underline-offset-2 hover:underline">
+                        {a.label}
+                      </Link>
+                      {a.count > 0 && <span className="tabular-nums">{formatNumber(a.count)} 件</span>}
+                      {a.since && <span className="text-xs text-red-500">最古 {a.since.slice(0, 16).replace('T', ' ')}</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 mb-8">
-        <StatCard
-          title="友だち数"
-          value={stats.friendCount}
-          loading={loading}
-          href="/friends"
-          icon={
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          }
-        />
-        <StatCard
-          title="アクティブシナリオ数"
-          value={stats.activeScenarioCount}
-          loading={loading}
-          href="/scenarios"
-          accentColor="#3B82F6"
-          icon={
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-            </svg>
-          }
-        />
-        <StatCard
-          title="配信数 (合計)"
-          value={stats.broadcastCount}
-          loading={loading}
-          href="/broadcasts"
-          accentColor="#8B5CF6"
-          icon={
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
-            </svg>
-          }
-        />
-      </div>
+          <SectionShell title="友だち追加と流入別" href="/lp-analytics" linkLabel="LP 分析" failed={failOf(friends)}>
+            {friends?.ok && (
+              <>
+                <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <StatCard label="期間内の友だち追加" value={friends.series.reduce((a, b) => a + b.total, 0)} unit="人" />
+                  <StatCard label="うち広告経由" value={friends.series.reduce((a, b) => a + b.fromAds, 0)} unit="人" />
+                  <StatCard label="いま友だち（現在値）" value={friends.following} unit="人" href="/friends" />
+                  <StatCard label="流入経路の数" value={new Set(friends.series.flatMap((x) => Object.keys(x.byRoute))).size} unit="種" href="/inflow-links" />
+                </div>
+                {asTable ? (
+                  <DataTable rows={friends.series as unknown as ChartPoint[]} columns={[{ key: 'total', label: '友だち追加' }, { key: 'fromAds', label: 'うち広告経由' }]} granularity={granularity} />
+                ) : (
+                  <TimeSeriesChart points={friends.series as unknown as ChartPoint[]} series={friendSeries} granularity={granularity} />
+                )}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {Object.entries(
+                    friends.series.reduce<Record<string, number>>((acc, p) => {
+                      for (const [k, v] of Object.entries(p.byRoute)) acc[k] = (acc[k] ?? 0) + v
+                      return acc
+                    }, {}),
+                  )
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 8)
+                    .map(([name, n]) => (
+                      <span key={name} className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-600">
+                        {name} <span className="font-medium tabular-nums text-gray-900">{formatNumber(n)}</span>
+                      </span>
+                    ))}
+                </div>
+              </>
+            )}
+          </SectionShell>
 
-      {/* Round 3 summary cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 mb-8">
-        <StatCard
-          title="テンプレート数"
-          value={stats.templateCount}
-          loading={loading}
-          href="/templates"
-          accentColor="#F59E0B"
-          icon={
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6z" />
-            </svg>
-          }
-        />
-        <StatCard
-          title="アクティブルール数"
-          value={stats.automationCount}
-          loading={loading}
-          href="/automations"
-          accentColor="#EF4444"
-          icon={
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-          }
-        />
-        <StatCard
-          title="スコアリングルール数"
-          value={stats.scoringRuleCount}
-          loading={loading}
-          href="/scoring"
-          accentColor="#10B981"
-          icon={
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-            </svg>
-          }
-        />
-      </div>
-
-      {/* Quick links */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <h2 className="text-sm font-semibold text-gray-800 mb-4">クイックアクション</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Link
-            href="/friends"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-green-300 hover:bg-green-50 transition-colors group"
+          <SectionShell
+            title="月次課金実績"
+            note="実際に入った課金の合計。定期収益の現在値（MRR）とは別物で、日割りや単発も含む"
+            href="/conversions"
+            linkLabel="コンバージョン"
+            failed={failOf(revenue)}
           >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0" style={{ backgroundColor: '#06C755' }}>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-green-700 transition-colors">友だち管理</p>
-              <p className="text-xs text-gray-400">友だちの一覧・タグ管理</p>
-            </div>
-          </Link>
+            {revenue?.ok && (
+              <>
+                <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <StatCard label="いま月額会員（現在値）" value={revenue.members} unit="人" href="/data/table?name=furim_customers" />
+                  <StatCard label="期間内の課金実績（税抜）" value={revenue.series.reduce((a, b) => a + b.revenueExclTax, 0)} unit="円" />
+                  <StatCard label="期間内の有料転換" value={revenue.series.reduce((a, b) => a + b.converted, 0)} unit="人" hint="初めて課金が成立した人。1 人 1 回" />
+                  <StatCard label="期間内の請求件数" value={revenue.series.reduce((a, b) => a + b.invoices, 0)} unit="件" href="/data/table?name=furim_payments" />
+                </div>
+                {asTable ? (
+                  <DataTable
+                    rows={revenue.series as unknown as ChartPoint[]}
+                    columns={[
+                      { key: 'revenueExclTax', label: '課金実績（税抜）', yen: true },
+                      { key: 'revenueInclTax', label: '税込', yen: true },
+                      { key: 'payers', label: '支払った人数' },
+                      { key: 'converted', label: '有料転換' },
+                    ]}
+                    granularity={granularity}
+                  />
+                ) : (
+                  <TimeSeriesChart points={revenue.series as unknown as ChartPoint[]} series={revenueSeries} granularity={granularity} />
+                )}
+              </>
+            )}
+          </SectionShell>
 
-          <Link
-            href="/scenarios"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors group"
+          <SectionShell
+            title="広告費と実 CPA"
+            note={adSpend?.ok ? `最終取り込み ${adSpend.lastImportedAt ? adSpend.lastImportedAt.slice(0, 16).replace('T', ' ') : 'なし'}・実 CPA は広告費 ÷ 広告経由の友だち追加` : undefined}
+            href="/data/table?name=furim_ad_spend"
+            linkLabel="広告費の明細"
+            failed={failOf(adSpend) ?? failOf(friends)}
           >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0 bg-blue-500">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-blue-700 transition-colors">シナリオ配信</p>
-              <p className="text-xs text-gray-400">自動配信シナリオの作成・編集</p>
-            </div>
-          </Link>
+            {adSpend?.ok && friends?.ok && (
+              <>
+                <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <StatCard label="期間内の広告費" value={adSpend.series.reduce((a, b) => a + b.cost, 0)} unit="円" failed={adSpend.series.length === 0} hint={adSpend.series.length === 0 ? 'まだ取り込まれていません' : undefined} />
+                  <StatCard label="広告経由の友だち" value={friends.series.reduce((a, b) => a + b.fromAds, 0)} unit="人" />
+                  <StatCard
+                    label="実 CPA"
+                    value={(() => {
+                      const cost = adSpend.series.reduce((a, b) => a + b.cost, 0)
+                      const n = friends.series.reduce((a, b) => a + b.fromAds, 0)
+                      return n > 0 ? Math.round(cost / n) : null
+                    })()}
+                    unit="円"
+                    failed={adSpend.series.length === 0}
+                  />
+                  <StatCard label="クリック" value={adSpend.series.reduce((a, b) => a + b.clicks, 0)} unit="回" failed={adSpend.series.length === 0} />
+                </div>
+                {asTable ? (
+                  <DataTable rows={adPoints} columns={[{ key: 'cost', label: '広告費', yen: true }, { key: 'adFriends', label: '広告経由の友だち' }, { key: 'cpa', label: '実 CPA', yen: true }]} granularity={granularity} />
+                ) : (
+                  <TimeSeriesChart points={adPoints} series={adSeries} granularity={granularity} />
+                )}
+              </>
+            )}
+          </SectionShell>
 
-          <Link
-            href="/broadcasts"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-purple-300 hover:bg-purple-50 transition-colors group"
-          >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0 bg-purple-500">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-purple-700 transition-colors">一斉配信</p>
-              <p className="text-xs text-gray-400">メッセージの一斉送信・予約</p>
-            </div>
-          </Link>
+          <SectionShell title="解約" href="/data/table?name=furim_cancellations" linkLabel="解約履歴" failed={failOf(churn)}>
+            {churn?.ok && (
+              <>
+                <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <StatCard label="期間内の解約" value={churn.series.reduce((a, b) => a + b.churned, 0)} unit="件" />
+                  <StatCard
+                    label="期間内の解約率"
+                    value={(() => {
+                      const c = churn.series.reduce((a, b) => a + b.churned, 0)
+                      const payers = revenue?.ok ? revenue.series.reduce((a, b) => a + b.payers, 0) : 0
+                      return payers > 0 ? Math.round((c / payers) * 1000) / 10 : null
+                    })()}
+                    unit="%"
+                    hint="解約数 ÷ その期間に支払いがあった人数"
+                    failed={!revenue?.ok}
+                  />
+                  <StatCard label="ブロック（現在値）" value={churn.blocked} unit="人" hint="離脱時刻の記録が無いため現在値のみ" />
+                </div>
+                {asTable ? (
+                  <DataTable rows={churn.series as unknown as ChartPoint[]} columns={[{ key: 'churned', label: '解約' }]} granularity={granularity} />
+                ) : (
+                  <TimeSeriesChart points={churn.series as unknown as ChartPoint[]} series={churnSeries} granularity={granularity} height={220} />
+                )}
+              </>
+            )}
+          </SectionShell>
 
-          <Link
-            href="/chats"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-green-300 hover:bg-green-50 transition-colors group"
-          >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0" style={{ backgroundColor: '#06C755' }}>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-green-700 transition-colors">チャット</p>
-              <p className="text-xs text-gray-400">オペレーターチャット管理</p>
-            </div>
-          </Link>
-
-          <Link
-            href="/health"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-red-300 hover:bg-red-50 transition-colors group"
-          >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0 bg-red-500">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-red-700 transition-colors">BAN検知</p>
-              <p className="text-xs text-gray-400">アカウント健康度ダッシュボード</p>
-            </div>
-          </Link>
-        </div>
-      </div>
-
-      <CcPromptButton prompts={ccPrompts} />
+          <SectionShell title="試用中" href="/data/table?name=furim_customers" linkLabel="顧客マスター" failed={failOf(trial)}>
+            {trial?.ok && (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatCard label="いま試用中" value={trial.active} unit="人" />
+                <StatCard label="3 日以内に終わる" value={trial.endingSoon} unit="人" />
+                <StatCard label="スコアリング" value={null} hint="ルールの確認へ" href="/scoring" failed />
+                <StatCard label="システムの健康状態" value={null} hint="ヘルス画面へ" href="/health" failed />
+              </div>
+            )}
+          </SectionShell>
+        </>
+      )}
     </div>
   )
 }

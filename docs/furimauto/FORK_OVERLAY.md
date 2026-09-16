@@ -33,6 +33,7 @@
 - apps/web/src/components/app-shell.tsx — upstream の `UpdateBanner`(改造検知) を furim の `UpstreamUpdateBanner`(フォーク元更新通知のみ) に差し替え（import + タグの2行） | upstream UpdateBanner は無改変で残す。差し替え2行を再適用
 - apps/web/src/components/layout/sidebar.tsx — メインセクションに `/tags`「タグ管理」項目を1行追加（FurimAuto独自ページ）。加えて2026-07-16: upstream の `/notifications`「未対応」メニュー項目を**削除**し、バッジを「個別チャット(/chats)」に移設＝意味を「未対応(messages_log計算)」→「未読(chats.status='unread')」に変更。カウント取得を `api.inbox.unanswered.count()`→`api.furimChats.unreadCount()` に差し替え、ポーリング 5分→60秒 | メニュー配列の /tags 1行再追加＋/notifications 削除＋バッジの href='/chats'・unreadCount 化を再適用。upstream が /notifications を残す場合は本フォークでは非表示のまま
 - apps/web/next.config.ts — `typescript.ignoreBuildErrors:true` ・ `eslint.ignoreDuringBuilds:true`（upstream管理UIの型strict起因のビルド停止を回避する暫定） | 暫定措置。upstream側の型が直れば外す
+- apps/web/src/app/page.tsx — 管理画面トップを全面差し替え（Capsec #282 段階2 / #285・2026-09-16）。upstream の 6 枚のカードとデモバナーと Claude 用プロンプトは全部消し、D1 だけを読む 6 区画（異常・友だち追加と流入別・月次課金実績・広告費と実CPA・解約・試用中）に作り替えた。中身がフォーク元と完全に別物なので upstream の変更は取り込まない（ours 固定） | 衝突したら常に ours を採用する（`git checkout --ours apps/web/src/app/page.tsx`）。upstream 側に必要な変更があるかは git diff で読んでから個別に入れる
 - apps/web/src/app/chats/page.tsx — モバイルUX一式（2026-07-14〜: タイトル削除・全画面固定・5s/15sポーリング・LINE準拠描画・入力欄・pull-to-refresh）。upstream改修が入ると競合大 | 差分が大きいのでマージ時は git diff で当該コミット群を個別再適用
 - apps/web/src/components/friends/friend-list-table.tsx — 展開パネル内に `<CouponManager>`（Stripeクーポン付与）を1ブロック追加。実体は components/friends/coupon-manager.tsx（fork独自） | import + JSX 1ブロックを再適用
 - apps/web/src/components/friends/friend-list-row.tsx — ボタンラベル「タグ編集」→「タグ・クーポン」（1語） | 1行再適用
@@ -47,6 +48,7 @@
 ## マージ後チェックリスト
 - [ ] worker ビルド: `pnpm --filter './packages/*' run build && pnpm --filter worker run build`
 - [ ] web ビルド: `NEXT_PUBLIC_API_URL=… pnpm --filter web run build`
+- [ ] トップ（apps/web/src/app/page.tsx）がフォーク版のままか確認（6 区画のダッシュボード。upstream のカード群に戻っていないこと）
 - [ ] 上記レジストリの各フックが残っているか grep 確認（fireEvent / furim import / 独自action case / ADMIN_ORIGIN）
 - [ ] 型エラー境界（completeFriendActiveScenarios→completeFriendScenario / getScenarioByName→getScenarioById 等、reapply-analysis C節）
 - [ ] `apps/web/src/components/furim/upstream-update-banner.tsx` のベースライン(APP_VERSION=package.json version)が新upstream版に追従しているか
