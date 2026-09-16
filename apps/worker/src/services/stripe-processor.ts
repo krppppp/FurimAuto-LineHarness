@@ -748,6 +748,32 @@ export async function processStripeEvent(
  * 対象は最終試行から10分以上経過（=初回waitUntilが打ち切られたと判断できる）した行。
  * 最大4回試行し、超えたらfailedにして手動対応に回す。
  */
+// 打ち切りをスタッフの LINE に 1 通出す（plan-change-watch と同じ宛先・同じ流儀）。
+// 通知に失敗しても sweep は止めない
+const SWEEP_STAFF_LINE_USER_ID = 'U5d35c3e6b2be0a6ec699b2a1de2aba93';
+
+export async function notifyStripeSweepGaveUp(
+  env: Bindings,
+  stripeEventId: string,
+  eventType: string,
+  error: string,
+): Promise<void> {
+  if (!env.LINE_CHANNEL_ACCESS_TOKEN) return;
+  const text = [
+    '⚠️ Stripe イベントの再処理を打ち切りました',
+    `event: ${stripeEventId}（${eventType}）`,
+    `error: ${error.slice(0, 200)}`,
+    'このイベントは自動では二度と再処理されません。管理画面トップの異常区画から確認してください。',
+  ].join('\n');
+  try {
+    await new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN).pushMessage(SWEEP_STAFF_LINE_USER_ID, [
+      { type: 'text', text } as never,
+    ]);
+  } catch (e) {
+    console.error('[stripe/sweep] staff notify failed:', e);
+  }
+}
+
 export async function sweepPendingStripeEvents(db: D1Database, env: Bindings): Promise<void> {
   const MAX_ATTEMPTS = 4;
 
@@ -775,6 +801,8 @@ export async function sweepPendingStripeEvents(db: D1Database, env: Bindings): P
       const exhausted = ev.attempts + 1 >= MAX_ATTEMPTS;
       await markStripeEventFailed(db, ev.id, String(err), !exhausted);
       console.error(`[stripe/sweep] ${ev.stripe_event_id} failed (attempt ${ev.attempts + 1}${exhausted ? ', giving up' : ''})`, err);
+      // 打ち切りは黙って起きると誰も気づかない。2026-08〜09 は 10 件が 1 か月そのままだった（Capsec #287）
+      if (exhausted) await notifyStripeSweepGaveUp(env, ev.stripe_event_id, ev.event_type, String(err));
     }
   }
 }

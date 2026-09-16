@@ -54,6 +54,7 @@ export async function watchPlanChangeIntents(
        LEFT JOIN friends f ON f.line_user_id = i.line_user_id
        WHERE i.notified_at IS NULL
          AND json_extract(i.payload, '$.type') = 'change'
+         AND (i.stage IS NULL OR i.stage NOT LIKE 'manual:%')
          AND substr(replace(i.created_at, ' ', 'T'), 1, 19) < ?
          AND substr(replace(i.created_at, ' ', 'T'), 1, 19) > ?
        ORDER BY i.created_at
@@ -72,6 +73,17 @@ export async function watchPlanChangeIntents(
         .bind(row.line_user_id, `%【プラン変更】${row.id}%`)
         .first();
       if (!sent) continue; // LIFF で発行しただけ。送られたら次の tick で見る
+
+      // 同じサブスクに、これより新しい used 済みの変更があるなら、この intent は上書きされている。
+      // 今の Stripe の構成は新しい方に合っているのが正しいので、古い方と突き合わせると必ず「不足」に見える
+      // （2026-09-15 PB-321DC7: 4 分後の PB-6E70D0 で機能を入れ替えた分が誤検知になった・Capsec #288）
+      const superseded = await findSupersedingIntent(db, row);
+      if (superseded) {
+        await db.prepare('UPDATE plan_builder_intents SET notified_at = ?, updated_at = ? WHERE id = ?')
+          .bind(`ok:superseded:${superseded}`, jstNow(), row.id).run();
+        console.log(`[plan-change-watch] ${row.id} は ${superseded} に上書きされているので検査しない`);
+        continue;
+      }
 
       let reason: string | null = null;
       if (!row.used_at) {
@@ -119,6 +131,23 @@ export async function watchPlanChangeIntents(
       console.error('[plan-change-watch] check failed:', row.id, e);
     }
   }
+}
+
+/** 同じサブスクに対する、これより新しい used 済みの変更（あればそのコード） */
+async function findSupersedingIntent(db: D1Database, row: IntentRow): Promise<string | null> {
+  const subscriptionId = parsePayload(row.payload).subscriptionId;
+  if (!subscriptionId) return null;
+  const hit = await db
+    .prepare(
+      `SELECT id FROM plan_builder_intents
+       WHERE line_user_id = ? AND used_at IS NOT NULL
+         AND substr(replace(created_at, ' ', 'T'), 1, 19) > substr(replace(?, ' ', 'T'), 1, 19)
+         AND json_extract(payload, '$.subscriptionId') = ?
+       ORDER BY created_at LIMIT 1`,
+    )
+    .bind(row.line_user_id, row.created_at, subscriptionId)
+    .first<{ id: string }>();
+  return hit?.id ?? null;
 }
 
 function parsePayload(raw: string): ChangePayload {

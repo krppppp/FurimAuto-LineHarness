@@ -47,6 +47,23 @@ export class LineClient {
 
     const res = await fetch(url, options);
 
+    // 再送キー付きの 409 は「同じキーの送信をすでに受理済み」の意味で、LINE 側は送信を終えている。
+    // 例外にすると再送のたびに失敗扱いになり、配信の2段階記録が done にならず、
+    // stripe_events が完了しないまま試行を使い切って止まる（Capsec #287・2026-08〜09 に 10 件）。
+    // 再送キーを付けて送った場合の 409 に限って成功として扱う（付けていない 409 は従来どおり例外）。
+    const retryKeySent = Boolean(extraHeaders?.['X-Line-Retry-Key']);
+    if (res.status === 409 && retryKeySent) {
+      const text = await res.text().catch(() => '');
+      console.log(`[line] 409: 再送キーが効いたので成功として扱う (${method} ${path}) — ${text.slice(0, 200)}`);
+      let data: unknown;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = undefined;
+      }
+      return { data, headers: res.headers };
+    }
+
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(

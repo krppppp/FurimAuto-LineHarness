@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
+import { getCsrfToken } from '@/lib/api'
 import Segmented from '@/components/charts/segmented'
 import StatCard, { formatNumber, formatYen } from '@/components/charts/stat-card'
 import TimeSeriesChart, { labelOf, type ChartPoint, type ChartSeries } from '@/components/charts/time-series-chart'
@@ -42,7 +43,17 @@ type RevenueSection = {
 type ChurnSection = { ok: true; series: Array<{ t: string; churned: number }>; blocked: number }
 type AdSpendSection = { ok: true; series: Array<{ t: string; cost: number; clicks: number; impressions: number }>; lastImportedAt: string | null }
 type TrialSection = { ok: true; active: number; endingSoon: number }
-type AnomaliesSection = { ok: true; items: Array<{ kind: string; label: string; count: number; since: string | null; href: string }> }
+type Anomaly = {
+  kind: string
+  label: string
+  count: number
+  since: string | null
+  href: string
+  severity: 'red' | 'yellow'
+  acked: { at: string; by: string; note: string | null } | null
+  isNew: boolean
+}
+type AnomaliesSection = { ok: true; items: Anomaly[] }
 
 type Dashboard = {
   success: boolean
@@ -120,6 +131,122 @@ function DataTable({ rows, columns, granularity }: { rows: ChartPoint[]; columns
         </tbody>
       </table>
     </div>
+  )
+}
+
+async function postAnomaly(path: 'ack' | 'unack', body: Record<string, unknown>): Promise<void> {
+  const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/furim/dashboard/anomalies/${path}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`API error: ${res.status}`)
+}
+
+function AnomalyRow({ a, onChanged }: { a: Anomaly; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const red = a.severity === 'red'
+  const act = async (path: 'ack' | 'unack') => {
+    setBusy(true)
+    try {
+      await postAnomaly(path, path === 'ack' ? { kind: a.kind, count: a.count, since: a.since } : { kind: a.kind })
+      onChanged()
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <li className={`flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-sm ${a.acked ? 'opacity-60' : ''}`}>
+      <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${red ? 'bg-red-500' : 'bg-amber-400'}`} />
+      <Link href={a.href} className={`font-medium underline-offset-2 hover:underline ${red ? 'text-red-800' : 'text-amber-800'}`}>
+        {a.label}
+      </Link>
+      {a.count > 0 && <span className="tabular-nums text-gray-600">{formatNumber(a.count)} 件</span>}
+      {a.since && <span className="text-xs text-gray-500">初回 {a.since.slice(0, 16).replace('T', ' ')}</span>}
+      {a.acked ? (
+        <span className="ml-auto flex items-center gap-2 text-xs text-gray-500">
+          確認済み {a.acked.by}・{a.acked.at.slice(0, 16).replace('T', ' ')}
+          <button type="button" disabled={busy} onClick={() => void act('unack')} className="rounded border border-gray-300 bg-white px-2 py-0.5 hover:bg-gray-50 disabled:opacity-50">
+            戻す
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void act('ack')}
+          className="ml-auto rounded border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+        >
+          確認済みにする
+        </button>
+      )}
+    </li>
+  )
+}
+
+function AnomalySection({ section, onChanged }: { section: AnomaliesSection | Failed; onChanged: () => void }) {
+  const [showAcked, setShowAcked] = useState(false)
+  const [openOld, setOpenOld] = useState(false)
+
+  if (!section.ok) {
+    return (
+      <section className="mb-6 rounded-xl border border-red-200 bg-red-50 p-5">
+        <h2 className="mb-2 text-base font-bold text-red-700">異常</h2>
+        <p className="text-sm text-red-600">取得に失敗しました（{section.error}）</p>
+      </section>
+    )
+  }
+
+  const visible = section.items.filter((a) => showAcked || !a.acked)
+  if (visible.length === 0 && section.items.length === 0) return null
+
+  // 今日のできごと（直近 24 時間に初めて出たもの）と、続いているものを分ける
+  const today = visible.filter((a) => a.isNew)
+  const continuing = visible.filter((a) => !a.isNew)
+  const ackedCount = section.items.filter((a) => a.acked).length
+
+  return (
+    <section className="mb-6 rounded-xl border border-red-200 bg-red-50 p-5">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h2 className="text-base font-bold text-red-700">異常</h2>
+        {ackedCount > 0 && (
+          <button type="button" onClick={() => setShowAcked((v) => !v)} className="text-xs text-gray-500 hover:text-gray-800">
+            {showAcked ? '確認済みを隠す' : `確認済みも表示（${ackedCount}）`}
+          </button>
+        )}
+      </div>
+
+      {today.length > 0 && (
+        <>
+          <p className="text-xs font-medium text-red-600">今日のできごと</p>
+          <ul className="mb-2 divide-y divide-red-100">
+            {today.map((a) => (
+              <AnomalyRow key={a.kind} a={a} onChanged={onChanged} />
+            ))}
+          </ul>
+        </>
+      )}
+
+      {continuing.length > 0 && (
+        <>
+          <button type="button" onClick={() => setOpenOld((v) => !v)} className="text-xs font-medium text-gray-600 hover:text-gray-900">
+            {openOld ? '▾' : '▸'} 続いているもの（{continuing.length}）
+          </button>
+          {openOld && (
+            <ul className="divide-y divide-red-100">
+              {continuing.map((a) => (
+                <AnomalyRow key={a.kind} a={a} onChanged={onChanged} />
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+
+      {today.length === 0 && continuing.length === 0 && (
+        <p className="text-sm text-gray-500">未確認の異常はありません</p>
+      )}
+    </section>
   )
 }
 
@@ -229,27 +356,8 @@ export default function DashboardPage() {
         <p className="text-sm text-gray-400">読み込み中...</p>
       ) : (
         <>
-          {/* 異常: あるときだけ最上段に赤で出す。無いときは区画ごと出さない */}
-          {anomalies && (!anomalies.ok || anomalies.items.length > 0) && (
-            <section className="mb-6 rounded-xl border border-red-200 bg-red-50 p-5">
-              <h2 className="mb-2 text-base font-bold text-red-700">異常</h2>
-              {!anomalies.ok ? (
-                <p className="text-sm text-red-600">取得に失敗しました（{anomalies.error}）</p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {anomalies.items.map((a) => (
-                    <li key={a.kind} className="flex items-center gap-3 text-sm text-red-800">
-                      <Link href={a.href} className="font-medium underline-offset-2 hover:underline">
-                        {a.label}
-                      </Link>
-                      {a.count > 0 && <span className="tabular-nums">{formatNumber(a.count)} 件</span>}
-                      {a.since && <span className="text-xs text-red-500">最古 {a.since.slice(0, 16).replace('T', ' ')}</span>}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          )}
+          {/* 異常: あるときだけ最上段に出す。無いときは区画ごと出さない（緑の帯は出さない） */}
+          {anomalies && <AnomalySection section={anomalies} onChanged={() => void load(granularity, period)} />}
 
           <SectionShell title="友だち追加と流入別" href="/lp-analytics" linkLabel="LP 分析" failed={failOf(friends)}>
             {friends?.ok && (

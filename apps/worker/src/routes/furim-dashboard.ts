@@ -69,6 +69,47 @@ async function section<T>(name: string, run: () => Promise<T>): Promise<Section<
 
 const num = (v: unknown): number => Number(v ?? 0);
 
+export type AnomalyItem = {
+  kind: string;
+  label: string;
+  count: number;
+  /** 初回検知（この異常がいつから続いているか） */
+  since: string | null;
+  href: string;
+  severity: 'red' | 'yellow';
+  /** 確認済みなら誰がいつ確認したか。再発・増加で自動的に外れる */
+  acked: { at: string; by: string; note: string | null } | null;
+  /** 直近 24 時間に初めて出たもの */
+  isNew: boolean;
+};
+
+const ACK_FRESH_HOURS = 24;
+
+/**
+ * 確認済みの反映（Capsec #289）。
+ * 件数が確認時より増えたか、いったん解消してから再発した（初回検知が確認時より新しい）ときは、
+ * 確認済みを無効にしてまた出す。放置の言い訳にしないため。
+ */
+export async function applyAcks(db: D1Database, items: AnomalyItem[], nowIso: string): Promise<void> {
+  if (items.length === 0) return;
+  const rows = await db
+    .prepare('SELECT kind, ack_key, acked_at, acked_by, count_at_ack, first_seen_at_ack, note FROM furim_anomaly_acks')
+    .all<{ kind: string; ack_key: string; acked_at: string; acked_by: string; count_at_ack: number; first_seen_at_ack: string | null; note: string | null }>();
+  const acks = new Map((rows.results ?? []).map((r) => [`${r.kind}:${r.ack_key}`, r]));
+  const freshFrom = new Date(Date.parse(nowIso.slice(0, 19) + '+09:00') - ACK_FRESH_HOURS * 3600_000).toISOString().slice(0, 19);
+
+  for (const item of items) {
+    const sinceSec = (item.since ?? '').replace(' ', 'T').slice(0, 19);
+    item.isNew = sinceSec !== '' && sinceSec >= freshFrom;
+    const ack = acks.get(`${item.kind}:`);
+    if (!ack) continue;
+    const grew = item.count > Number(ack.count_at_ack ?? 0);
+    const reappeared = Boolean(ack.first_seen_at_ack) && sinceSec !== '' && sinceSec > String(ack.first_seen_at_ack).replace(' ', 'T').slice(0, 19);
+    if (grew || reappeared) continue; // 確認済みを外してまた出す
+    item.acked = { at: ack.acked_at, by: ack.acked_by, note: ack.note };
+  }
+}
+
 furimDashboard.get('/api/furim/dashboard', async (c) => {
   const db = c.env.DB;
   const g = parseGranularity(c.req.query('granularity'));
@@ -244,16 +285,17 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
   });
 
   const anomalies = await section('anomalies', async () => {
-    const items: Array<{ kind: string; label: string; count: number; since: string | null; href: string }> = [];
+    const items: AnomalyItem[] = [];
     const add = async (
       kind: string,
       label: string,
       href: string,
       sql: string,
       binds: unknown[] = [],
+      severity: 'red' | 'yellow' = 'red',
     ): Promise<void> => {
       const r = await db.prepare(sql).bind(...binds).first<{ n: number; since: string | null }>();
-      if (num(r?.n) > 0) items.push({ kind, label, count: num(r?.n), since: r?.since ?? null, href });
+      if (num(r?.n) > 0) items.push({ kind, label, count: num(r?.n), since: r?.since ?? null, href, severity, acked: null, isNew: false });
     };
 
     await add(
@@ -283,11 +325,13 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
     await add(
       'ad_cv_failed', '広告 CV 送信の失敗', '/data/table?name=ad_conversion_logs',
       "SELECT COUNT(*) AS n, MIN(created_at) AS since FROM ad_conversion_logs WHERE status <> 'sent'",
+      [], 'yellow',
     );
     await add(
       'ext_errors', '拡張のエラー（直近 24 時間）', '/data/table?name=furim_ext_errors',
       `SELECT COUNT(*) AS n, MIN(created_at) AS since FROM furim_ext_errors WHERE ${secOf('created_at')} >= ?`,
       [new Date(Date.parse(now.slice(0, 19) + '+09:00') - 86400_000).toISOString().slice(0, 19)],
+      'yellow',
     );
 
     // 広告費の取り込みが止まっていないか（自動実行が死んでも気づけるように）
@@ -302,6 +346,9 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
         count: staleDays ?? 0,
         since: lastAd?.d ?? null,
         href: '/data/table?name=furim_ad_spend',
+        severity: 'yellow',
+        acked: null,
+        isNew: false,
       });
     }
 
@@ -321,13 +368,51 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
         count: diff,
         since: null,
         href: '/data/table?name=furim_payments',
+        severity: 'yellow',
+        acked: null,
+        isNew: false,
       });
     }
 
+    await applyAcks(db, items, now);
     return { items };
   });
 
   return c.json({ success: true, range, sections: { friends, revenue, churn, adSpend, trial, anomalies } });
+});
+
+// POST /api/furim/dashboard/anomalies/ack — 異常を「確認済み」にする（Capsec #289）。
+// 誰がいつ確認したかを残す。件数が増えるか、解消後に再発したら自動でまた出る
+furimDashboard.post('/api/furim/dashboard/anomalies/ack', async (c) => {
+  const staff = c.get('staff');
+  type AckBody = { kind?: string; count?: number; since?: string | null; note?: string };
+  const body: AckBody = await c.req.json<AckBody>().catch(() => ({}) as AckBody);
+  const kind = String(body.kind ?? '').trim();
+  if (!kind) return c.json({ success: false, error: 'kind が必要です' }, 400);
+  const now = jstNow();
+  await c.env.DB.prepare(
+    `INSERT INTO furim_anomaly_acks (kind, ack_key, acked_at, acked_by, acked_by_id, count_at_ack, first_seen_at_ack, note)
+     VALUES (?, '', ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(kind, ack_key) DO UPDATE SET
+       acked_at = excluded.acked_at, acked_by = excluded.acked_by, acked_by_id = excluded.acked_by_id,
+       count_at_ack = excluded.count_at_ack, first_seen_at_ack = excluded.first_seen_at_ack, note = excluded.note`,
+  )
+    .bind(kind, now, staff?.name ?? '(不明)', staff?.id ?? null, Math.max(0, Number(body.count ?? 0)), body.since ?? null, body.note ?? null)
+    .run();
+  console.log(`[dashboard] ${staff?.name}(${staff?.id}) が異常 ${kind} を確認済みにした（件数 ${body.count ?? 0}）`);
+  return c.json({ success: true, ackedAt: now, ackedBy: staff?.name ?? '(不明)' });
+});
+
+// POST /api/furim/dashboard/anomalies/unack — 確認済みを取り消してまた出す
+furimDashboard.post('/api/furim/dashboard/anomalies/unack', async (c) => {
+  const staff = c.get('staff');
+  type UnackBody = { kind?: string };
+  const body: UnackBody = await c.req.json<UnackBody>().catch(() => ({}) as UnackBody);
+  const kind = String(body.kind ?? '').trim();
+  if (!kind) return c.json({ success: false, error: 'kind が必要です' }, 400);
+  await c.env.DB.prepare('DELETE FROM furim_anomaly_acks WHERE kind = ? AND ack_key = ?').bind(kind, '').run();
+  console.log(`[dashboard] ${staff?.name}(${staff?.id}) が異常 ${kind} の確認済みを取り消した`);
+  return c.json({ success: true });
 });
 
 type AdSpendRow = {
