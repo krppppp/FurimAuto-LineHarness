@@ -451,4 +451,47 @@ mount('collect-skip', async (c, p, client) => {
   return c.json({ success: true, recorded: true });
 });
 
+// ── 2-10. patrol-run ← 巡回 1 回分の実行記録（Capsec #294） ──
+// 巡回は D1 に実行記録が無く、取りこぼしが起きても後から何も読めなかった。
+// 直したあとに「効いているか」を確かめる手段が、記録を残すこと以外に無い。
+mount('patrol-run', async (c, p, client) => {
+  const dedupeKey = str(p.dedupeKey);
+  if (!dedupeKey) return c.json({ success: false, error: 'dedupeKeyなし' });
+  const queue = str(p.queue) === 'delete' ? 'delete' : 'collect';
+  const keyCode = str(p.keyCode);
+  const db = c.env.DB;
+  const lineUserId = await findLineUserIdByKeyCode(db, keyCode);
+  const num = (v: unknown): number | null => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  };
+
+  const ins = await db
+    .prepare(
+      `INSERT OR IGNORE INTO furim_patrol_runs
+        (id, dedupe_key, line_user_id, key_code, queue, service, planned, processed, skipped, found, started_at, finished_at, client, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      dedupeKey,
+      lineUserId,
+      keyCode || null,
+      queue,
+      strOrNull(p.service),
+      num(p.planned),
+      num(p.processed),
+      num(p.skipped),
+      num(p.found),
+      strOrNull(p.startedAt),
+      strOrNull(p.finishedAt),
+      client || null,
+      jstNow(),
+    )
+    .run();
+  if ((ins.meta?.changes ?? 0) === 0) return c.json({ success: true, message: '再送のためスキップ' });
+  console.log(`[ext-api] patrol-run queue=${queue} service=${str(p.service)} processed=${str(p.processed)} skipped=${str(p.skipped)} client=${client}`);
+  return c.json({ success: true, created: true });
+});
+
 export { extApi };

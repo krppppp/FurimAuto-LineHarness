@@ -654,3 +654,35 @@ describe('collect-skip（巡回キューの取りこぼし・Capsec #294）', ()
     expect(res.status).toBe(401);
   });
 });
+
+describe('patrol-run（巡回 1 回分の実行記録・Capsec #294）', () => {
+  it('収集の件数を記録する', async () => {
+    const { db, statements } = makeDb((sql) =>
+      /SELECT line_user_id FROM furim_customers WHERE key_code/.test(sql) ? { first: { line_user_id: 'U1' } } : undefined,
+    );
+    const res = await call(envWith(db), 'patrol-run', {
+      dedupeKey: 'run-1', keyCode: 'pb_x', queue: 'collect', service: 'ラクマ',
+      planned: 5, processed: 4, skipped: 1, found: 2, startedAt: '2026-09-17T10:00:00+09:00', finishedAt: '2026-09-17T10:03:00+09:00',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, created: true });
+    const ins = statements.find((x) => /INSERT OR IGNORE INTO furim_patrol_runs/.test(x.sql));
+    expect(ins).toBeDefined();
+    expect(ins!.args).toContain('collect');
+    expect(ins!.args).toContain(4);
+    expect(ins!.args).toContain(1);
+  });
+
+  it('dedupeKey が無ければ記録しない', async () => {
+    const { db, statements } = makeDb(() => undefined);
+    const res = await call(envWith(db), 'patrol-run', { queue: 'collect' });
+    expect(await res.json()).toMatchObject({ success: false, error: 'dedupeKeyなし' });
+    expect(statements.some((x) => /furim_patrol_runs/.test(x.sql))).toBe(false);
+  });
+
+  it('再送（同じ dedupeKey）は二重に入れない', async () => {
+    const { db } = makeDb((sql) => (/INSERT OR IGNORE INTO furim_patrol_runs/.test(sql) ? { changes: 0 } : undefined));
+    const res = await call(envWith(db), 'patrol-run', { dedupeKey: 'run-1', queue: 'delete' });
+    expect(await res.json()).toMatchObject({ success: true, message: '再送のためスキップ' });
+  });
+});
