@@ -494,4 +494,56 @@ mount('patrol-run', async (c, p, client) => {
   return c.json({ success: true, created: true });
 });
 
+// ── 2-11. restriction-event ← フリマの利用制限（ACLException）の検知（Capsec #293） ──
+// メルカリの利用制限は、これまでどの経路でも検知できていなかった（account_health_logs は書き手が無く、
+// 重大警告のマーカーはメルカリから発火しない）。2026-09-05 には制限中のアカウントに 26〜30 時間
+// 値下げを叩き続けた実例がある。拡張が API の応答で ACLException を受けたら、ここに 1 件送る。
+//
+// 【個人情報を残さない】応答の本文には氏名・住所・電話が入りうるため、拡張のログからも意図的に外している
+// （2026-09-01 くろさん指示・拡張 0256bff）。拡張は既知の機能名だけを配列で送る。受け口の側でも
+// 許可した語以外は捨て、本文そのものは受け取っても保存しない（拡張の実装ミスで本文が来ても D1 に残さない）。
+export const RESTRICTED_FEATURE_WHITELIST = ['出品', '購入', 'いいね', 'コメント'] as const;
+
+/** 許可した機能名だけを、重複なし・決まった順で返す。それ以外の語や文は全部捨てる */
+export function sanitizeRestrictedFeatures(v: unknown): string[] {
+  const list = Array.isArray(v) ? v : [];
+  const allowed = new Set<string>(RESTRICTED_FEATURE_WHITELIST);
+  const picked = new Set<string>();
+  for (const item of list) {
+    const s = typeof item === 'string' ? item.trim() : '';
+    if (allowed.has(s)) picked.add(s);
+  }
+  return RESTRICTED_FEATURE_WHITELIST.filter((f) => picked.has(f));
+}
+
+// 同じ制限で行が積もらないよう、キーコード・販路・機能・日付（JST）で 1 日 1 行に束ねる。
+// 1 時間ごとにすると 9/5 の実例（26〜30 時間）で 30 行近くになる。1 日 1 行でも「続いている」ことは分かる
+mount('restriction-event', async (c, p, client) => {
+  const keyCode = str(p.keyCode);
+  if (!keyCode) return bad(c, 'keyCode が必要です');
+  const service = str(p.service).slice(0, 40) || '(販路不明)';
+  const features = sanitizeRestrictedFeatures(p.restrictedFeatures);
+  const db = c.env.DB;
+
+  const lineUserId = await findLineUserIdByKeyCode(db, keyCode);
+  const error = ['aclException', service, features.length ? features.join('・') : '(機能不明)'].join(' / ');
+  const day = jstNow().slice(0, 10);
+
+  const exists = await db
+    .prepare(
+      `SELECT 1 FROM furim_ext_errors
+       WHERE method = 'aclException' AND key_code = ? AND error = ?
+         AND substr(replace(created_at, ' ', 'T'), 1, 10) = ?
+       LIMIT 1`,
+    )
+    .bind(keyCode, error, day)
+    .first();
+  if (exists) return c.json({ success: true, message: '同じ日の同じ制限は記録済み' });
+
+  // 本文（message 等）は引数に取らない。accountUrl も保存しない（誰かは keyCode → line_user_id で分かる）
+  await recordExtError(db, { method: 'aclException', error, lineUserId, keyCode, mercariUrl: null, discriminationCode: null, client });
+  console.warn(`[ext-api] restriction-event service=${service} features=${features.join(',')} keyCode=${keyCode} client=${client}`);
+  return c.json({ success: true, recorded: true });
+});
+
 export { extApi };
