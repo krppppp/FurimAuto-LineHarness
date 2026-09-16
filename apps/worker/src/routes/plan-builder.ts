@@ -58,7 +58,15 @@ const planBuilder = new Hono<Env>();
 
 export async function loadPlanBuilderMaster(db: D1Database | undefined): Promise<Master> {
   if (!db) throw new Error('DB is not configured');
-  return (await loadFurimMaster(db)) as unknown as Master;
+  const master = (await loadFurimMaster(db)) as unknown as Master;
+  // 表示順はマスタの sort_order に従う（Capsec #271）。loadFurimMaster は rowid 順で返すため、
+  // 後から追加した機能が必ず末尾に出てしまう。機能フラグの計算は順序に依存しないので、
+  // 並べ替えは料金シミュレーターが使うこの読み出しだけで行う。
+  // パッケージは並べ替えない（プラン選択肢の順序が変わるため）。
+  return {
+    ...master,
+    features: [...master.features].sort((a, b) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0)),
+  };
 }
 
 // 複数discountスタック（併用割引+キャンペーンクーポン等）はこのバージョン以降でのみ操作可能。

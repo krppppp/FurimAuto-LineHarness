@@ -9,6 +9,12 @@ import { planBuilder, resolvePlanSelection, buildItemsFromSelection } from '../r
 
 const AFTER_PROMO = Date.parse('2026-10-01T00:00:00+09:00');
 
+// 料金シミュレーターが読む /plan-builder/features は sort_order 順で返す（Capsec #271）。
+// シート（GAS getFeatureMaster）の並びは sort_order 順とは限らない（470・480 が重複していて、
+// 在庫管理シートがヤフフリの機能の後ろに置かれている）ので、期待値もここで並べ替える。
+const sortOrderOf = (row: unknown): number => Number((row as { sort_order?: number | string }).sort_order ?? 0);
+const bySortOrder = <T>(items: T[]): T[] => [...items].sort((a, b) => sortOrderOf(a) - sortOrderOf(b));
+
 type Write = { sql: string; args: unknown[] };
 
 function makeDb(rows: MasterRow[], customer: Record<string, unknown> | null = null) {
@@ -86,11 +92,11 @@ describe('#264 切り替え前後で結果が同じ', () => {
     expect(fresh.map(({ payload: _p, ...rest }) => rest)).toEqual(sheet.map(({ payload: _p, ...rest }) => rest));
   });
 
-  it('料金シミュレーターの /plan-builder/features は、GAS getFeatureMaster の応答と同じ（シート取り込み値・保存し直し）', async () => {
+  it('料金シミュレーターの /plan-builder/features は、GAS getFeatureMaster の応答と同じ（シート取り込み値・保存し直し）。並びは sort_order 順', async () => {
     for (const rows of [sheet, resaved]) {
       const res = await planBuilder.request('/plan-builder/features', {}, { DB: makeDb(rows).db });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ success: true, features: masterFixture.features, packages: masterFixture.packages });
+      expect(await res.json()).toEqual({ success: true, features: bySortOrder(masterFixture.features), packages: masterFixture.packages });
     }
   });
 
@@ -103,7 +109,7 @@ describe('#264 切り替え前後で結果が同じ', () => {
       );
     const res = await planBuilder.request('/plan-builder/features', {}, { DB: makeDb(fresh).db });
     const body = (await res.json()) as { features: Array<Record<string, unknown>>; packages: Array<Record<string, unknown>> };
-    expect(norm(body.features)).toEqual(norm(masterFixture.features));
+    expect(norm(body.features)).toEqual(norm(bySortOrder(masterFixture.features)));
     expect(norm(body.packages)).toEqual(norm(masterFixture.packages));
   });
 
