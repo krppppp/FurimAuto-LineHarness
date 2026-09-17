@@ -1,3 +1,5 @@
+import { jstNow } from '@line-crm/db';
+
 // webhook.ts が bot のハンドラーに回して返す受信テキストの判定（Capsec #295・2026-09-17）。
 //
 // 未対応の判定（services/unanswered-inbox.ts）は auto_replies テーブルの証拠しか見ないため、
@@ -75,4 +77,97 @@ export function isBotRoutedText(raw: string): boolean {
 
 export function isBotRoutedIncoming(messageType: string, content: string | null | undefined): boolean {
   return messageType === 'text' && isBotRoutedText(String(content ?? ''));
+}
+
+/**
+ * bot が返信しない押下（リッチメニューのタブ切り替えだけ）と、返信の有無が決まっていない旧キーワード。
+ * これらは送信記録が無くても「bot が処理した」とみなす（Capsec #300）
+ */
+const NO_REPLY_RICHMENU_TABS = ['ホームタブ', 'ガイドタブ'];
+
+function botReplyExpected(raw: string): boolean {
+  const text = normalizeBotCommand(raw);
+  if (text.startsWith(RICHMENU_MESSAGE_PREFIX) && NO_REPLY_RICHMENU_TABS.includes(text.slice(RICHMENU_MESSAGE_PREFIX.length))) return false;
+  if (AUTO_KEYWORDS.includes(text) || TIME_COMMAND_PATTERN.test(text)) return false;
+  return true;
+}
+
+/** 押下から bot の送信記録までの許容時間。当時の無返信は 15 秒の打ち切りで起きていた（#300） */
+export const BOT_REPLY_EVIDENCE_WINDOW_MS = 60_000;
+
+/**
+ * 候補の友だちの「最後の手動返信より後」の bot 送信（furim ハンドラーは source を付けずに記録する）。
+ * unanswered-inbox の RECENT_* と同じく bind 変数を使わない
+ */
+export const BOT_OUTGOINGS_SQL = `
+  WITH last_manual AS (
+    SELECT friend_id, MAX(created_at) AS lm
+    FROM messages_log
+    WHERE direction='outgoing' AND source='manual'
+    GROUP BY friend_id
+  )
+  SELECT ml.friend_id, ml.created_at, ml.content
+  FROM messages_log ml
+  LEFT JOIN last_manual lm ON lm.friend_id = ml.friend_id
+  WHERE ml.direction='outgoing'
+    AND ml.source IS NULL
+    AND (lm.lm IS NULL OR ml.created_at > lm.lm)
+  ORDER BY ml.friend_id, ml.created_at ASC
+`;
+
+export type BotOutgoing = { created_at: string; content: string | null };
+
+const toMs = (v: string): number => {
+  const s = String(v).replace(' ', 'T');
+  return /[+-]\d{2}:\d{2}$|Z$/.test(s) ? Date.parse(s) : Date.parse(`${s.slice(0, 19)}+09:00`);
+};
+
+/** 「エラーが発生しました」等の失敗の案内は、bot が処理した証拠にしない */
+const isBotErrorNotice = (content: string | null): boolean => /エラーが発生しました/.test(String(content ?? ''));
+
+/**
+ * 人の返事待ちから外してよい押下か（Capsec #295 / #300）。
+ * bot に回る押下でも、返信するはずの操作は、押下から 60 秒以内に bot の送信記録（失敗の案内を除く）があるときだけ外す。
+ * bot が落ちて何も返さなかった押下は未返信に残り、人が気づける（#300 の 8/17〜9/13 の無返信 20 回の型）
+ */
+export function isBotHandledIncoming(
+  messageType: string,
+  content: string | null | undefined,
+  createdAt: string,
+  botOutgoings: BotOutgoing[],
+): boolean {
+  if (!isBotRoutedIncoming(messageType, content)) return false;
+  if (!botReplyExpected(String(content ?? ''))) return true;
+  const inMs = toMs(createdAt);
+  if (Number.isNaN(inMs)) return false;
+  return botOutgoings.some((o) => {
+    const d = toMs(o.created_at) - inMs;
+    return d >= 0 && d <= BOT_REPLY_EVIDENCE_WINDOW_MS && !isBotErrorNotice(o.content);
+  });
+}
+
+/**
+ * bot のハンドラーが落ちた・返信も push も失敗したことを furim_ext_errors に 1 行残す（method=botHandler・Capsec #300）。
+ * トップの「拡張のエラー（直近 24 時間）」に出る。記録の失敗で本処理を止めない
+ */
+export async function recordBotHandlerError(
+  db: D1Database | undefined,
+  lineUserId: string,
+  label: string,
+  stage: 'handler' | 'fallback_push',
+  err: unknown,
+): Promise<void> {
+  if (!db) return;
+  try {
+    const message = err instanceof Error ? err.message : String(err);
+    await db
+      .prepare(
+        `INSERT INTO furim_ext_errors (id, line_user_id, key_code, method, error, mercari_url, discrimination_code, client, created_at)
+         VALUES (?, ?, NULL, 'botHandler', ?, NULL, NULL, 'webhook', ?)`,
+      )
+      .bind(crypto.randomUUID(), lineUserId, `${label} / ${stage} / ${message}`.slice(0, 500), jstNow())
+      .run();
+  } catch (e) {
+    console.error('[bot-handler] error record failed:', e);
+  }
 }

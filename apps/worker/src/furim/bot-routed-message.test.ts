@@ -87,3 +87,30 @@ describe('normalizeBotCommand（Capsec #298）', () => {
     expect([...handled].sort()).toEqual([...RICHMENU_COMMANDS].sort());
   });
 });
+
+describe('bot の処理の証拠と失敗の記録（Capsec #300）', () => {
+  it('送信記録の時刻がオフセット無しの旧形式でも 60 秒の判定ができる', async () => {
+    const { isBotHandledIncoming } = await import('./bot-routed-message.js');
+    const tap = '2026-08-21 12:49:31';
+    expect(isBotHandledIncoming('text', '【リッチメニュー】キーコード発行', tap, [{ created_at: '2026-08-21T12:49:40.000+09:00', content: 'pb_x' }])).toBe(true);
+    expect(isBotHandledIncoming('text', '【リッチメニュー】キーコード発行', tap, [{ created_at: '2026-08-21T12:51:00.000+09:00', content: 'pb_x' }])).toBe(false);
+    expect(isBotHandledIncoming('text', 'スマホ対応してますか？', tap, [{ created_at: '2026-08-21T12:49:40.000+09:00', content: 'x' }])).toBe(false);
+  });
+
+  it('ハンドラーの失敗を furim_ext_errors に method=botHandler で 1 行残す。db が無ければ何もしない', async () => {
+    const { recordBotHandlerError } = await import('./bot-routed-message.js');
+    const calls: Array<{ sql: string; binds: unknown[] }> = [];
+    const db = {
+      prepare(sql: string) {
+        return { bind: (...binds: unknown[]) => ({ run: async () => { calls.push({ sql, binds }); return {}; } }) };
+      },
+    } as unknown as D1Database;
+    await recordBotHandlerError(db, 'Uabc', 'handleFurimAction:限定特典GET', 'handler', new Error('Firebase 503'));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toContain("'botHandler'");
+    expect(calls[0].binds[1]).toBe('Uabc');
+    expect(calls[0].binds[2]).toBe('handleFurimAction:限定特典GET / handler / Firebase 503');
+    await recordBotHandlerError(undefined, 'Uabc', 'x', 'handler', new Error('y'));
+    expect(calls).toHaveLength(1);
+  });
+});

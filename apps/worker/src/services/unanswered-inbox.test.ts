@@ -43,6 +43,8 @@ function stubDB(canned: {
   // 応答ありルールの evidence-based 判定をテストするには autoReplyOutgoings を渡す。
   autoReplies?: AutoReplyRow[];
   autoReplyOutgoings?: AutoReplyOutgoing[];
+  // FurimAuto: bot（furim ハンドラー）の送信記録（source IS NULL）
+  botOutgoings?: Array<{ friend_id: string; created_at: string; content: string | null }>;
   // 旧 fixture 互換: 期待値メモとして残されている純粋データ。stubDB は使わない。
   total?: number;
   byAccount?: unknown[];
@@ -76,13 +78,15 @@ function stubDB(canned: {
       // auto_reply outgoing クエリ: source='auto_reply' を WHERE に含む
       const isAutoReplyOutgoings =
         sql.includes("source='auto_reply'") && sql.includes('outgoing');
+      const isBotOutgoings = sql.includes('AND ml.source IS NULL');
       // それ以外で messages_log を見るのは incomings クエリ
       const isRecentIncomings =
-        sql.includes('messages_log') && !isAutoReplyOutgoings && !isCandidates;
+        sql.includes('messages_log') && !isAutoReplyOutgoings && !isCandidates && !isBotOutgoings;
       return {
         all: async () => {
           if (isAutoReplies) return { results: silentRules };
           if (isAutoReplyOutgoings) return { results: autoReplyOutgoings };
+          if (isBotOutgoings) return { results: canned.botOutgoings ?? [] };
           if (isRecentIncomings) return { results: incomings };
           return { results: canned.rows };
         },
@@ -641,14 +645,43 @@ describe('FurimAuto: bot に回る押下は未対応にしない（Capsec #295�
     ...overrides,
   });
 
-  test('リッチメニューの押下だけの会話は除外される', async () => {
+  test('リッチメニューの押下だけの会話は、bot が 60 秒以内に返していれば除外される', async () => {
     const db = stubDB({
       rows: [baseRow({ friend_id: 'f_tap', last_incoming_content: '【リッチメニュー】キーコード発行' })],
+      botOutgoings: [{ friend_id: 'f_tap', created_at: '2026-05-08T10:00:02+09:00', content: '2weektrial_abc' }],
     });
 
     const result = await computeUnansweredInbox(db);
     expect(result.total).toBe(0);
     expect((await countUnanswered(db)).total).toBe(0);
+  });
+
+  test('bot が返さなかった押下（#300 の無返信）は未返信に残る', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f_silent', last_incoming_content: '【リッチメニュー】キーコード発行' })],
+      botOutgoings: [{ friend_id: 'f_silent', created_at: '2026-05-08T10:05:00+09:00', content: '2weektrial_abc' }],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+    expect(result.rows[0].lastIncomingContent).toBe('【リッチメニュー】キーコード発行');
+  });
+
+  test('bot が返したのが「エラーが発生しました」だけなら未返信に残る', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f_err', last_incoming_content: '【リッチメニュー】限定特典GET' })],
+      botOutgoings: [{ friend_id: 'f_err', created_at: '2026-05-08T10:00:03+09:00', content: 'エラーが発生しました🙇\nお手数ですが、もう一度タップしてください。' }],
+    });
+
+    expect((await computeUnansweredInbox(db)).total).toBe(1);
+  });
+
+  test('返信の無いタブ切り替え（ホームタブ・ガイドタブ）は送信記録が無くても除外される', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f_tab', last_incoming_content: '【リッチメニュー】ホームタブ' })],
+    });
+
+    expect((await computeUnansweredInbox(db)).total).toBe(0);
   });
 
   test('押下のあとに顧客が書いた質問は対象に残る', async () => {
@@ -672,6 +705,7 @@ describe('FurimAuto: bot に回る押下は未対応にしない（Capsec #295�
         { friend_id: 'f1', message_type: 'text', content: '【ボタン】コピー出品チケット30枚GET', created_at: '2026-05-08T10:05:00+09:00' },
         { friend_id: 'f1', message_type: 'text', content: 'スマホ対応してますか？', created_at: '2026-05-08T10:00:00+09:00' },
       ],
+      botOutgoings: [{ friend_id: 'f1', created_at: '2026-05-08T10:05:01+09:00', content: 'タップありがとうございます。' }],
     });
 
     const { getUnansweredFriendIds } = await import('./unanswered-inbox.js');

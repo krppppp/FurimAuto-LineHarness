@@ -198,6 +198,56 @@ SELECT 'c1a0e2b4-5d6f-4a7b-8c9d-0e1f2a3b4c08', '91b14aec-a9bf-46e9-8d08-4f1cfb39
 WHERE NOT EXISTS (SELECT 1 FROM chats WHERE friend_id = '91b14aec-a9bf-46e9-8d08-4f1cfb3915bc')
   AND NOT EXISTS (SELECT 1 FROM messages_log WHERE friend_id = '91b14aec-a9bf-46e9-8d08-4f1cfb3915bc' AND direction = 'incoming' AND created_at > '2026-09-16T16:32:36.987+09:00');  -- TANAKAmium
 
+-- ── 1-c. #300 の判定（bot の送信記録が無い押下は未返信に残す）で新たに出る 7 件 ─────
+-- #300 のコミットでは、bot に回る押下でも 60 秒以内に bot の送信記録（失敗の案内を除く）が無ければ未返信に残す。
+-- 本番で再現すると、過去に bot が返せなかった押下の 7 人が未返信に戻る（8/2〜9/12。#300 の GAS 打ち切りや #299 のエラー）。
+-- くろさんの「全部解決済」に含める。#300 のデプロイより前に流しても後に流しても結果は同じ（解決済みの友だちは判定の対象外）。
+-- 実行前の確認: SELECT friend_id, status FROM chats WHERE friend_id IN ('c28683b3-331f-46a7-9487-94d846f7498b','5255275b-6011-4084-b5e7-147f0d206318','66f2aa77-959c-43e4-8544-02a103e7ea67','a9b8e5f7-0666-49e4-8a2e-c3af53ac69de','b2ab1365-4e17-41e6-9c77-bd092b0e81ed','e6e88056-65b1-42b1-acb6-181aff7e2b3f','f33b27aa-2877-4cd3-9968-a191b76c6ddf');
+--   → 1 行（c28683b3… の in_progress）だけ
+UPDATE chats SET status = 'resolved', updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00'
+WHERE id = '46a38369-3811-46b0-baf7-1fe95a66f0f4' AND status != 'resolved'
+  AND NOT EXISTS (SELECT 1 FROM messages_log WHERE friend_id = 'c28683b3-331f-46a7-9487-94d846f7498b' AND direction = 'incoming' AND created_at > '2026-09-12T01:38:28.733+09:00');  -- 友紀
+INSERT OR IGNORE INTO chats (id, friend_id, status, last_message_at, created_at, updated_at)
+SELECT 'c1a0e2b4-5d6f-4a7b-8c9d-0e1f2a3b4c09', '5255275b-6011-4084-b5e7-147f0d206318', 'resolved',
+       (SELECT MAX(created_at) FROM messages_log WHERE friend_id = '5255275b-6011-4084-b5e7-147f0d206318' AND (delivery_type IS NULL OR delivery_type != 'test')),
+       strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00', strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00'
+WHERE NOT EXISTS (SELECT 1 FROM chats WHERE friend_id = '5255275b-6011-4084-b5e7-147f0d206318')
+  AND NOT EXISTS (SELECT 1 FROM messages_log WHERE friend_id = '5255275b-6011-4084-b5e7-147f0d206318' AND direction = 'incoming' AND created_at > '2026-09-12T01:53:15.851+09:00');  -- みのる
+INSERT OR IGNORE INTO chats (id, friend_id, status, last_message_at, created_at, updated_at)
+SELECT 'c1a0e2b4-5d6f-4a7b-8c9d-0e1f2a3b4c10', '66f2aa77-959c-43e4-8544-02a103e7ea67', 'resolved',
+       (SELECT MAX(created_at) FROM messages_log WHERE friend_id = '66f2aa77-959c-43e4-8544-02a103e7ea67' AND (delivery_type IS NULL OR delivery_type != 'test')),
+       strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00', strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00'
+WHERE NOT EXISTS (SELECT 1 FROM chats WHERE friend_id = '66f2aa77-959c-43e4-8544-02a103e7ea67')
+  AND NOT EXISTS (SELECT 1 FROM messages_log WHERE friend_id = '66f2aa77-959c-43e4-8544-02a103e7ea67' AND direction = 'incoming' AND created_at > '2026-09-13T15:06:07.526+09:00');  -- めぐみ（66f2aa77）
+INSERT OR IGNORE INTO chats (id, friend_id, status, last_message_at, created_at, updated_at)
+SELECT 'c1a0e2b4-5d6f-4a7b-8c9d-0e1f2a3b4c11', 'a9b8e5f7-0666-49e4-8a2e-c3af53ac69de', 'resolved',
+       (SELECT MAX(created_at) FROM messages_log WHERE friend_id = 'a9b8e5f7-0666-49e4-8a2e-c3af53ac69de' AND (delivery_type IS NULL OR delivery_type != 'test')),
+       strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00', strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00'
+WHERE NOT EXISTS (SELECT 1 FROM chats WHERE friend_id = 'a9b8e5f7-0666-49e4-8a2e-c3af53ac69de')
+  AND NOT EXISTS (SELECT 1 FROM messages_log WHERE friend_id = 'a9b8e5f7-0666-49e4-8a2e-c3af53ac69de' AND direction = 'incoming' AND created_at > '2026-09-15T10:33:42.227+09:00');  -- Keishi/なるやん
+INSERT OR IGNORE INTO chats (id, friend_id, status, last_message_at, created_at, updated_at)
+SELECT 'c1a0e2b4-5d6f-4a7b-8c9d-0e1f2a3b4c12', 'b2ab1365-4e17-41e6-9c77-bd092b0e81ed', 'resolved',
+       (SELECT MAX(created_at) FROM messages_log WHERE friend_id = 'b2ab1365-4e17-41e6-9c77-bd092b0e81ed' AND (delivery_type IS NULL OR delivery_type != 'test')),
+       strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00', strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00'
+WHERE NOT EXISTS (SELECT 1 FROM chats WHERE friend_id = 'b2ab1365-4e17-41e6-9c77-bd092b0e81ed')
+  AND NOT EXISTS (SELECT 1 FROM messages_log WHERE friend_id = 'b2ab1365-4e17-41e6-9c77-bd092b0e81ed' AND direction = 'incoming' AND created_at > '2026-09-03T09:38:02.652+09:00');  -- けんた
+INSERT OR IGNORE INTO chats (id, friend_id, status, last_message_at, created_at, updated_at)
+SELECT 'c1a0e2b4-5d6f-4a7b-8c9d-0e1f2a3b4c13', 'e6e88056-65b1-42b1-acb6-181aff7e2b3f', 'resolved',
+       (SELECT MAX(created_at) FROM messages_log WHERE friend_id = 'e6e88056-65b1-42b1-acb6-181aff7e2b3f' AND (delivery_type IS NULL OR delivery_type != 'test')),
+       strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00', strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00'
+WHERE NOT EXISTS (SELECT 1 FROM chats WHERE friend_id = 'e6e88056-65b1-42b1-acb6-181aff7e2b3f')
+  AND NOT EXISTS (SELECT 1 FROM messages_log WHERE friend_id = 'e6e88056-65b1-42b1-acb6-181aff7e2b3f' AND direction = 'incoming' AND created_at > '2026-08-21T12:49:31.800+09:00');  -- Syun Shiratori
+INSERT OR IGNORE INTO chats (id, friend_id, status, last_message_at, created_at, updated_at)
+SELECT 'c1a0e2b4-5d6f-4a7b-8c9d-0e1f2a3b4c14', 'f33b27aa-2877-4cd3-9968-a191b76c6ddf', 'resolved',
+       (SELECT MAX(created_at) FROM messages_log WHERE friend_id = 'f33b27aa-2877-4cd3-9968-a191b76c6ddf' AND (delivery_type IS NULL OR delivery_type != 'test')),
+       strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00', strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00'
+WHERE NOT EXISTS (SELECT 1 FROM chats WHERE friend_id = 'f33b27aa-2877-4cd3-9968-a191b76c6ddf')
+  AND NOT EXISTS (SELECT 1 FROM messages_log WHERE friend_id = 'f33b27aa-2877-4cd3-9968-a191b76c6ddf' AND direction = 'incoming' AND created_at > '2026-08-27T11:22:12.500+09:00');  -- 真央
+
+INSERT INTO furim_ops_log (id, acted_at, actor, action, target, target_count, goal, note)
+VALUES ('0917a001-0000-4000-8000-000000000005', strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00', '権限管理課', 'mark_resolved', 'chats', 7, 'Capsec #300',
+        '#300 の判定（bot の送信記録が無い押下は未返信に残す）で新たに未返信に戻る 7 件（過去の bot の無返信・エラー）を、くろさんの「全部解決済」に含めて解決済みに');
+
 INSERT INTO furim_ops_log (id, acted_at, actor, action, target, target_count, goal, note)
 VALUES ('0917a001-0000-4000-8000-000000000001', strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours') || '+09:00', '権限管理課', 'mark_resolved', 'chats', 39, 'Capsec #295',
         'くろさん指示「未返信は今 0 だから全部解決済に」。判定の修正（38b4ece）後に残る 39 件を friend_id 指定で解決済みに（行あり 31 更新・行なし 8 作成）。一覧作成後に新着があった友だちは除外');

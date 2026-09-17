@@ -19,7 +19,7 @@ import { handleFurimAction, actionFurimanCoupon, actionExtendTrial } from '../fu
 import type { FurimActionsEnv } from '../furim/actions.js';
 import { handleButtonAction } from '../furim/button-actions.js';
 import { handleKeywordAction } from '../furim/keyword-actions.js';
-import { AUTO_KEYWORDS, RICHMENU_MESSAGE_PREFIX, TIME_COMMAND_PATTERN, normalizeBotCommand } from '../furim/bot-routed-message.js';
+import { AUTO_KEYWORDS, RICHMENU_MESSAGE_PREFIX, TIME_COMMAND_PATTERN, normalizeBotCommand, recordBotHandlerError } from '../furim/bot-routed-message.js';
 import { FRIEND_TRIAL_DAYS, formatJstIso, generateTrialKeyCode, getFurimCustomer, upsertFurimCustomer, type FurimCustomerPatch } from '../furim/customer-store.js';
 
 // X口コミクーポン申請の通知先（くろさん）。申請URLと付与コマンドをpushする
@@ -200,12 +200,15 @@ async function runHandlerSafely(
   userId: string,
   retryHint: string,
   fn: () => Promise<boolean | void>,
+  db?: D1Database,
 ): Promise<boolean> {
   try {
     const handled = await fn();
     return handled !== false;
   } catch (err) {
     console.error(`[webhook] ${label} failed:`, userId, err);
+    // 次に起きたら原因が分かるよう D1 に残す（Capsec #300）
+    await recordBotHandlerError(db, userId, label, 'handler', err);
     try {
       await lineClient.pushMessage(userId, [{
         type: 'text',
@@ -213,6 +216,7 @@ async function runHandlerSafely(
       } as never]);
     } catch (pushErr) {
       console.error(`[webhook] ${label} fallback push failed:`, pushErr);
+      await recordBotHandlerError(db, userId, label, 'fallback_push', pushErr);
     }
     return true;
   }
@@ -505,7 +509,7 @@ async function handleEvent(
           GAS_DEPLOY_ID: gasDeployId,
           WORKER_PUBLIC_URL: workerUrl,
           FURIM_EXT_CACHE: env.FURIM_EXT_CACHE,
-        }));
+        }), db);
       return;
     }
 
@@ -535,7 +539,7 @@ async function handleEvent(
           WORKER_NAME: env.WORKER_NAME,
           FURIM_TICKET_LIFF_URL: env.FURIM_TICKET_LIFF_URL,
           FURIM_TICKET_PRICE_IDS: env.FURIM_TICKET_PRICE_IDS,
-        }, db));
+        }, db), db);
       return;
     }
 
@@ -556,7 +560,7 @@ async function handleEvent(
         WORKER_URL: env.WORKER_URL,
         WORKER_PUBLIC_URL: workerUrl,
         FURIM_AMBASSADOR_OFFER_ID: env.FURIM_AMBASSADOR_OFFER_ID,
-      }, db));
+      }, db), db);
       if (furimHandled) return;
     }
 
@@ -567,7 +571,7 @@ async function handleEvent(
         : 'もう一度お試しください';
       const gasDeployId = env.GAS_DEPLOY_ID;
       await runHandlerSafely('handleKeywordAction', loggingClient, userId, retryHint, () =>
-        handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, LIFF_URL: env.LIFF_URL, WORKER_NAME: env.WORKER_NAME }, db));
+        handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, LIFF_URL: env.LIFF_URL, WORKER_NAME: env.WORKER_NAME }, db), db);
       return;
     }
 
@@ -597,7 +601,7 @@ async function handleEvent(
           type: 'text',
           text: `📣 X口コミクーポン申請\n${friend.display_name ?? '(名前不明)'} さん\n${xPostUrl}\n\n確認OKなら付与コマンド:\nnode scripts/grant-coupon.mjs ${userId} --amount=500 --name=X口コミ感謝クーポン --prod --yes`,
         } as never]);
-      });
+      }, db);
       return;
     }
 

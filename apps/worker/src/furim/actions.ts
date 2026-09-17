@@ -2,6 +2,7 @@ import type { LineClient } from '@line-crm/line-sdk';
 import { jstNow } from '@line-crm/db';
 import { mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
 import { getSentGiftBatches, setSentGiftBatches } from './firebase-client.js';
+import { recordBotHandlerError } from './bot-routed-message.js';
 import { getFurimCustomer, upsertFurimCustomer, resolveStripeCustomerId, deriveGiftStatus, parseJstDateTime, formatJstDateTime, formatJstIso } from './customer-store.js';
 import type { ExtCache } from './ext-auth.js';
 import {
@@ -299,11 +300,14 @@ export async function handleFurimAction(
     }
   } catch (err) {
     console.error(`[furim] handleFurimAction error (${action}):`, err);
+    // 次に起きたら原因が分かるよう D1 に残す（Capsec #299 / #300。当時は例外の中身がどこにも残らなかった）
+    await recordBotHandlerError(db, lineUserId, `handleFurimAction:${action}`, 'handler', err);
     // 無言で終わらせない: replyToken は失効している可能性があるので push で再操作を促す
     try {
       await lineClient.pushMessage(lineUserId, [{ type: 'text', text: 'エラーが発生しました🙇\nお手数ですが、もう一度タップしてください。' } as never]);
     } catch (pushErr) {
       console.error('[furim] error-fallback push failed:', pushErr);
+      await recordBotHandlerError(db, lineUserId, `handleFurimAction:${action}`, 'fallback_push', pushErr);
     }
     return true;
   }

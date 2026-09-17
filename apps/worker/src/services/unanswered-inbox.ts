@@ -1,4 +1,4 @@
-import { isBotRoutedIncoming } from '../furim/bot-routed-message.js';
+import { BOT_OUTGOINGS_SQL, isBotHandledIncoming, type BotOutgoing } from '../furim/bot-routed-message.js';
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 2000;
@@ -255,11 +255,20 @@ async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
   // 候補 friend のみを残すための Set。後段の JS group で他の friend は無視する。
   const candidateIds = new Set(candidates.map((c) => c.friend_id));
 
-  const [incomingsResult, autoReplyOutgoingsResult, activeRulesResult] = await Promise.all([
+  const [incomingsResult, autoReplyOutgoingsResult, activeRulesResult, botOutgoingsResult] = await Promise.all([
     db.prepare(RECENT_INCOMINGS_SQL).all<RawIncomingRow>(),
     db.prepare(RECENT_AUTO_REPLY_OUTGOINGS_SQL).all<{ friend_id: string; created_at: string }>(),
     db.prepare(ACTIVE_AUTO_REPLIES_SQL).all<ActiveRuleRow>(),
+    db.prepare(BOT_OUTGOINGS_SQL).all<BotOutgoing & { friend_id: string }>(),
   ]);
+  // FurimAuto: bot（furim ハンドラー）の送信記録を friend ごとに（Capsec #300）
+  const botOutgoingsByFriend = new Map<string, BotOutgoing[]>();
+  for (const row of botOutgoingsResult.results ?? []) {
+    if (!candidateIds.has(row.friend_id)) continue;
+    const list = botOutgoingsByFriend.get(row.friend_id) ?? [];
+    list.push(row);
+    botOutgoingsByFriend.set(row.friend_id, list);
+  }
 
   const activeRules = activeRulesResult.results ?? [];
 
@@ -292,8 +301,8 @@ async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
     for (const i of incomings) {
       if (consumeAutoReplyEvidence(i.created_at, remainingOutgoings)) continue;
       if (matchesAnyKeyword(i.content, i.message_type, activeRules)) continue;
-      // FurimAuto: リッチメニュー・ボタン等は webhook の bot が返すので人の返事待ちにしない（Capsec #295）
-      if (isBotRoutedIncoming(i.message_type, i.content)) continue;
+      // FurimAuto: リッチメニュー・ボタン等は bot が返したときだけ人の返事待ちにしない（Capsec #295 / #300）
+      if (isBotHandledIncoming(i.message_type, i.content, i.created_at, botOutgoingsByFriend.get(c.friend_id) ?? [])) continue;
       // この incoming は人間対応必要 → preview として採用 (最新の非マッチ)
       nonMatching = i;
       break;
