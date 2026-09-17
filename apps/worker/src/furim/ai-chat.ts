@@ -1,36 +1,49 @@
 import type { LineClient } from '@line-crm/line-sdk';
+import { jstNow } from '@line-crm/db';
 import { getChatHistory, saveChatHistory } from './firebase-client.js';
 import { loadHowtoText } from './howto-source.js';
+import { recordBotHandlerError } from './bot-routed-message.js';
+
+/**
+ * LINE の AI チャットボット（Capsec #307）。
+ *
+ * 2026-09-17 くろさんの方針変更:
+ * - 回答はつらつら説明せず、要点だけをテキストで返す
+ * - 根拠にした説明書の章の URL（アンカー付き）を別の吹き出しで返す。画像やデザインのあるページで読む方が分かりやすいため
+ * - 機能ごとの解説動画の案内（旧 FUNCTION_URLS）と、「答えが見つからないとき」の長尺動画への誘導はやめる
+ * - AI が出した章の id は、説明書を取得したときに作った見出し id の一覧にあるときだけ URL にする（作り話の id で飛ばないリンクを送らない）
+ * - 1 問 1 答で furim_ai_chat_logs に 1 行残す（くろさん「誰がどの質問でどういった回答をしたのかを D1 で」）
+ */
 
 export type AIChatEnv = {
   GEMINI_API_KEY: string;
   GITHUB_PAT: string;
   FIREBASE_DATABASE_URL: string;
-  /** 説明書の本文のキャッシュと、直近の使用量の記録に使う（Capsec #307） */
+  /** 説明書の本文のキャッシュと、直近の使用量の記録に使う */
   FURIM_EXT_CACHE?: KVNamespace;
-  /** 説明書の取得失敗の記録に使う */
+  /** 会話の記録（furim_ai_chat_logs）と、取得・送信の失敗の記録に使う */
   DB?: D1Database;
 };
 
-const FUNCTION_URLS: Record<string, { video: string; manual: string }> = {
-  '値段変更': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E5%80%A4%E6%AE%B5%E5%A4%89%E6%9B%B4.mov', manual: 'https://furimauto.com/howto/#ｍChangePrice' },
-  'コメント投稿': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%82%B3%E3%83%A1%E3%83%B3%E3%83%88%E6%8A%95%E7%A8%BF.mov', manual: 'https://furimauto.com/howto/#ｍComment' },
-  'コメント削除': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%82%B3%E3%83%A1%E3%83%B3%E3%83%88%E5%89%8A%E9%99%A4.mov', manual: 'https://furimauto.com/howto/#ｍCommentDelete' },
-  '商品別底値設定': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E5%95%86%E5%93%81%E5%88%A5%E5%BA%95%E5%80%A4%E8%A8%AD%E5%AE%9A.mov', manual: 'https://furimauto.com/howto/#mBottomPrice' },
-  'オークション': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%82%AA%E3%83%BC%E3%82%AF%E3%82%B7%E3%83%A7%E3%83%B3.mov', manual: 'https://furimauto.com/howto/#mAuction' },
-  'バックアップ': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%83%8F%E3%82%99%E3%83%83%E3%82%AF%E3%82%A2%E3%83%83%E3%83%95%E3%82%9A.mov', manual: 'https://furimauto.com/howto/#mBackup' },
-  '再出品': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E5%86%8D%E5%87%BA%E5%93%81.mov', manual: 'https://furimauto.com/howto/#mRelist' },
-  '商品削除': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E5%95%86%E5%93%81%E5%89%8A%E9%99%A4.mov', manual: 'https://furimauto.com/howto/#mDelete' },
-  '出品一覧追加情報表示': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E5%87%BA%E5%93%81%E4%B8%80%E8%A6%A7%E8%BF%BD%E5%8A%A0%E6%83%85%E5%A0%B1%E8%A1%A8%E7%A4%BA.mov', manual: 'https://furimauto.com/howto/#mLoadAdditionalInfo' },
-  'チェックコントローラー': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%83%81%E3%82%A7%E3%83%83%E3%82%AF%E3%83%9B%E3%82%99%E3%83%83%E3%82%AF%E3%82%B9%E3%82%B3%E3%83%B3%E3%83%88%E3%83%AD%E3%83%BC%E3%83%A9%E3%83%BC.mov', manual: 'https://furimauto.com/howto/#mAttributeCheckbox' },
-  'ショップ調査機能': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%82%B7%E3%83%A7%E3%83%83%E3%83%95%E3%82%9A%E8%AA%BF%E6%9F%BB.mov', manual: 'https://furimauto.com/howto/#mProfileOptions' },
-  '自動化処理予約機能': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E8%87%AA%E5%8B%95%E5%8C%96%E5%87%A6%E7%90%86%E4%BA%88%E7%B4%84.mov', manual: 'https://furimauto.com/howto/#mTimeReservation' },
-  '自動いいね対応機能': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E8%87%AA%E5%8B%95%E3%81%84%E3%81%84%E3%81%AD%E5%AF%BE%E5%BF%9C.mov', manual: 'https://furimauto.com/howto/#mAutoComment' },
-  '自動取引対応機能': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E8%87%AA%E5%8B%95%E5%8F%96%E5%BC%95%E5%AF%BE%E5%BF%9C.mov', manual: 'https://furimauto.com/howto/#mAutoTransaction' },
-  '売上表CSV出力機能': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E5%A3%B2%E4%B8%8ACSV%E5%87%BA%E5%8A%9B.mov', manual: 'https://furimauto.com/howto/#mCSV' },
-};
+export type ChatMessage = { role: 'user' | 'model'; text: string; ts: number };
+
+export const HOWTO_BASE_URL = 'https://furimauto.com/howto/';
+const KEYCODE_RESET_TOKEN = '[キーコードリセット]';
+const ANCHOR_TOKEN_RE = /\[\[howto:([^\]\s]+)\]\]/g;
+
+export const FALLBACK_TEXT =
+  'お問い合わせありがとうございます。恐れ入りますが、AIでのご案内は難しい内容のようです。\n\nリッチメニュー下部の「AIチャットボットを終了する」ボタンを押した後、「追加サポートを希望する」ボタンをタップしてご連絡ください。担当者より確認の上、返信させていただきます。';
+const FALLBACK_MARKER = 'AIでのご案内は難しい内容のようです';
+const GEMINI_ERROR_TEXT = 'AIからの応答中にエラーが発生しました。少し時間をおいて、もう一度お試しください。';
 
 const SPEC_FILE_PATHS = ['.claude-company/projects/furim-auto/specs/faq.md'];
+
+/** base64 → UTF-8 の文字列。atob だけだと日本語が 1 バイト 1 文字の文字化けのまま AI に渡っていた（2026-09-17 まで） */
+export function decodeBase64Utf8(b64: string): string {
+  const binary = atob(b64.replace(/\n/g, ''));
+  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  return new TextDecoder('utf-8').decode(bytes);
+}
 
 async function fetchSpecFiles(githubPat: string): Promise<string> {
   const results = await Promise.all(
@@ -44,47 +57,45 @@ async function fetchSpecFiles(githubPat: string): Promise<string> {
         return '';
       }
       const json = await res.json() as { content: string };
-      return atob(json.content.replace(/\n/g, ''));
+      return decodeBase64Utf8(json.content);
     })
   );
   return results.filter(Boolean).join('\n\n---\n\n');
 }
 
-export type ChatMessage = { role: 'user' | 'model'; text: string; ts: number };
+/**
+ * 429 の再試行は短く、合計の上限つき。webhook の処理は応答後の約 30 秒で打ち切られるため、
+ * 以前の 10・20・40・80 秒の待ちでは、再試行に入った時点で返信が出ないまま打ち切られていた
+ */
+const RETRY_DELAYS_MS = [2000, 4000];
+const GEMINI_DEADLINE_MS = 20_000;
 
-const RETRY_DELAYS_MS = [10000, 20000, 40000, 80000]; // 10s, 20s, 40s, 80s
-
-async function callGeminiWithRetry(apiKey: string, body: unknown): Promise<Response> {
+async function callGeminiWithRetry(apiKey: string, body: unknown, startedAt: number): Promise<Response> {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (res.status === 429 && attempt < RETRY_DELAYS_MS.length) {
-      const delay = RETRY_DELAYS_MS[attempt];
+    const delay = RETRY_DELAYS_MS[attempt];
+    if (res.status === 429 && delay !== undefined && Date.now() - startedAt + delay < GEMINI_DEADLINE_MS) {
       console.warn(`[furim/ai-chat] 429 retry ${attempt + 1}/${RETRY_DELAYS_MS.length} after ${delay}ms`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await new Promise((resolve) => setTimeout(resolve, delay));
       continue;
     }
     return res;
   }
-  throw new Error('Gemini API unreachable after retries');
 }
 
-const FALLBACK_MESSAGE =
-  '「お問い合わせありがとうございます。恐れ入りますが、AIでのご案内は難しい内容のようです。\n\nまずは以下の長尺解説動画をご覧いただくと、多くの疑問が解決できる可能性がございます。\nhttps://www.youtube.com/watch?v=jhaCPxgE_Sk&t=6s\n\nそれでもご不明な点がございましたら、リッチメニュー下部の「AIチャットボットを終了する」ボタンを押した後、「追加サポートを希望する」ボタンをタップしてご連絡ください。担当者より確認の上、返信させていただきます。」';
-
 /**
- * Gemini に渡すプロンプト（Capsec #307）。
- * 固定の指示・説明書・faq.md を先頭（prefix）、会話履歴とお客様のメッセージを末尾（suffix）に置く。
- * 先頭が毎回同じ文字列になるので、Gemini の暗黙キャッシュが効く。
+ * Gemini に渡すプロンプト。固定の指示・説明書・faq.md を先頭（prefix）、会話履歴とお客様のメッセージを末尾（suffix）に置く。
  * systemInstruction と contents を分けると履歴が増えたときに不安定だった（2026-04-24）ため、1 つの user メッセージの 2 つの part で送る
  */
 export function buildAIChatPrompt(input: { howtoText: string; faqText: string; history: ChatMessage[]; queryText: string }): { prefix: string; suffix: string } {
+  const hasHowto = Boolean(input.howtoText);
   const sources = [
-    input.howtoText ? `【資料1: 利用方法説明書（https://furimauto.com/howto/ の本文・最新の仕様）】\n${input.howtoText}` : '',
+    hasHowto ? `【資料1: 利用方法説明書（https://furimauto.com/howto/ の本文・最新の仕様）】\n見出しの末尾の〔id: …〕は、その章のページ内リンクの id です。\n\n${input.howtoText}` : '',
     input.faqText ? `【資料2: よくある質問（faq.md）】\n${input.faqText}` : '',
   ].filter(Boolean).join('\n\n----------------------------\n\n');
 
@@ -92,29 +103,26 @@ export function buildAIChatPrompt(input: { howtoText: string; faqText: string; h
 このあとに続く「サービス仕様情報」だけを根拠に、最後に書かれている「お客様からのメッセージ」に回答してください。
 
 **資料の優先順位:**
-${input.howtoText ? '資料1（利用方法説明書）が最新の仕様です。資料1と資料2（よくある質問）の内容が食い違う場合は、必ず資料1を正として回答してください。資料2は、料金・キーコード・LINEの操作など資料1に書かれていない内容の根拠として使ってください。' : '今回は資料2（よくある質問）だけを根拠に回答してください。'}
+${hasHowto ? '資料1（利用方法説明書）が最新の仕様です。資料1と資料2（よくある質問）の内容が食い違う場合は、必ず資料1を正として回答してください。資料2は、料金・キーコード・LINEの操作・症状別の対応など資料1に書かれていない内容の根拠として使ってください。' : '今回は資料2（よくある質問）だけを根拠に回答してください。'}
 
-**回答冒頭の指示:**
-文章の最初にはAIからの返信であるとユーザーに明確に認識させるために【AIチャットボット】というテキストを必ず付けてください。
-その次の行には、ユーザーのメッセージが「質問」であれば、「〇〇についての質問で承りました。」のような形で、質問内容を要約した一文を返答の冒頭に含めてください。
-ユーザーのメッセージが「エラー報告」のように思える場合は、「〇〇についてのエラー報告として承りました。」のように要約して返答の冒頭に含めてください。
-それ以外のメッセージの場合は、この冒頭文は含めないでください。
+**回答の書き方（必ず守ってください）:**
+- 1行目は必ず【AIチャットボット】とだけ書いてください。
+- 2行目から、要点だけを書いてください。結論を1文で書き、補足が必要なら「・」で始まる行を最大3つまで続けます。全体で200文字以内を目安にしてください。
+- 手順の細かい説明や画面の操作の一つ一つは書かないでください（説明書のページで案内します）。
+- 「**」などの装飾記号や見出し記号は使わないでください（LINEではそのまま表示されてしまいます）。
+- 動画の案内はしないでください。
+${hasHowto ? `- 回答の根拠にした資料1の章が1つに決まる場合は、回答の最後の行に [[howto:その章のid]] を1つだけ書いてください（idは資料1の見出しの〔id: …〕に書かれているものをそのまま使い、作らないでください）。資料2だけを根拠にした場合や、該当する章が無い場合は書かないでください。
+` : ''}- キーコードが認証されない、無効になる、などの趣旨の場合は、回答の最後に ${KEYCODE_RESET_TOKEN} と書いてください。
+- 上の ${hasHowto ? '[[howto:…]] と ' : ''}${KEYCODE_RESET_TOKEN} 以外に、[ ] で囲んだ文字は書かないでください。
 
-----------------------------
-もし、提供されたサービス仕様情報の中に、お客様のメッセージへの適切な回答が見つからない場合は、以下のメッセージを返してください。
-${FALLBACK_MESSAGE}
-----------------------------
-もしお客様のメッセージがエラーやバグの報告のように思える場合は、「リッチメニューのガイドタブから、「バグ・エラー報告」をタップして、指示に従ってご報告ください。」と案内をしてください。
-----------------------------
+**答えられないとき:**
+提供されたサービス仕様情報の中に、お客様のメッセージへの適切な回答が見つからない場合は、1行目の【AIチャットボット】のあとに、次の文だけを返してください。
+${FALLBACK_TEXT}
 
-**補足:**
-もし、お客様の質問がツールの「利用方法」、「操作方法」、「設定方法」に関するもので、かつ、以下の機能リストのいずれかに関連する場合は、回答の最後に該当する機能名を記載してください。
-（例: 「[バックアップ] [再出品]」）
-- 値段変更 / コメント投稿 / コメント削除 / 商品別底値設定 / オークション / バックアップ / 再出品 / 商品削除 / 出品一覧追加情報表示 / チェックコントローラー / ショップ調査機能 / 自動化処理予約機能 / 自動いいね対応機能 / 自動取引対応機能 / 売上表CSV出力機能
-キーコードがNGになる、や有効ににならないなどの趣旨の場合も「[キーコードリセット]」を使用してください。
-----------------------------
-日本語で回答してください。LINEにて返答をするので、読みやすいように改行を入れてください。
-会話履歴がある場合はその流れを踏まえて回答してください。
+**エラーやバグの報告のとき:**
+お客様のメッセージがエラーやバグの報告のように思える場合は、要点に「リッチメニューのガイドタブから、「バグ・エラー報告」をタップして、指示に従ってご報告ください。」という案内を含めてください。
+
+会話履歴がある場合は、その流れを踏まえて回答してください。
 
 ==============================
 サービス仕様情報:
@@ -135,6 +143,46 @@ ${sources}
 
   const suffix = `${historyText}お客様からのメッセージ: ${input.queryText}`;
   return { prefix, suffix };
+}
+
+/** 説明書の章の URL。全角の id（ｍCommentDelete 等）も LINE で押せるようパーセントエンコードする */
+export function howtoAnchorUrl(id: string): string {
+  return `${HOWTO_BASE_URL}#${encodeURIComponent(id)}`;
+}
+
+export type ParsedAIReply = {
+  text: string;
+  anchorId: string | null;
+  anchorRejected: string | null;
+  keycodeReset: boolean;
+  fallback: boolean;
+};
+
+/**
+ * AI の返答から、章の id とキーコードリセットの札を取り出し、本文から消す。
+ * id は説明書の見出し id の一覧（validIds）にあるときだけ採用する。無ければ URL を付けず、作り話として anchorRejected に残す。
+ * ほかの [ ] だけの行（「[下書き予約出品機能]」のような札）は消す
+ */
+export function parseAIReply(raw: string, validIds: ReadonlySet<string>): ParsedAIReply {
+  let text = raw;
+  const found = [...text.matchAll(ANCHOR_TOKEN_RE)].map((m) => m[1]);
+  text = text.replace(ANCHOR_TOKEN_RE, '');
+  const first = found[0] ?? null;
+  const anchorId = first && validIds.has(first) ? first : null;
+  const anchorRejected = first && !validIds.has(first) ? first : null;
+
+  const keycodeReset = text.includes(KEYCODE_RESET_TOKEN);
+  text = text.split(KEYCODE_RESET_TOKEN).join('');
+
+  text = text
+    .split('\n')
+    .filter((line) => !/^\s*(\[[^\]\n]+\]\s*)+$/.test(line))
+    .join('\n')
+    .replace(/\*\*/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  return { text, anchorId, anchorRejected, keycodeReset, fallback: text.includes(FALLBACK_MARKER) };
 }
 
 export type GeminiUsage = {
@@ -160,7 +208,16 @@ async function recordUsage(kv: KVNamespace | undefined, entry: Record<string, un
   }
 }
 
-async function generateAIResponse(queryText: string, lineUserId: string, env: AIChatEnv): Promise<{ text: string; additionalMessages: unknown[] }> {
+type GeneratedReply = {
+  messages: unknown[];
+  answer: string;
+  parsed: ParsedAIReply | null;
+  howtoSource: string;
+  usage: GeminiUsage;
+  error: string | null;
+};
+
+async function generateAIResponse(queryText: string, lineUserId: string, env: AIChatEnv, startedAt: number): Promise<GeneratedReply> {
   const [faqText, howto, history] = await Promise.all([
     fetchSpecFiles(env.GITHUB_PAT),
     loadHowtoText(env.FURIM_EXT_CACHE, env.DB),
@@ -168,59 +225,110 @@ async function generateAIResponse(queryText: string, lineUserId: string, env: AI
   ]);
 
   if (!faqText && !howto.text) {
-    return { text: '申し訳ありません、関連する情報が見つかりませんでした。', additionalMessages: [] };
+    const answer = '申し訳ありません、関連する情報が見つかりませんでした。';
+    return { messages: [{ type: 'text', text: answer }], answer, parsed: null, howtoSource: howto.source, usage: {}, error: 'no sources' };
   }
 
   const { prefix, suffix } = buildAIChatPrompt({ howtoText: howto.text, faqText, history, queryText });
-
-  const startedAt = Date.now();
   const res = await callGeminiWithRetry(env.GEMINI_API_KEY, {
     contents: [{ role: 'user', parts: [{ text: prefix }, { text: suffix }] }],
-  });
+  }, startedAt);
 
   if (!res.ok) {
-    console.error('[furim/ai-chat] Gemini API error:', res.status, await res.text());
-    return { text: 'AIからの応答中にエラーが発生しました。もう一度お試しください。', additionalMessages: [] };
+    const detail = await res.text();
+    console.error('[furim/ai-chat] Gemini API error:', res.status, detail);
+    return { messages: [{ type: 'text', text: GEMINI_ERROR_TEXT }], answer: GEMINI_ERROR_TEXT, parsed: null, howtoSource: howto.source, usage: {}, error: `gemini ${res.status}: ${detail.slice(0, 200)}` };
   }
 
   const json = await res.json() as { candidates?: Array<{ content: { parts: Array<{ text: string }> } }>; usageMetadata?: GeminiUsage };
-  let aiReply = json.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  const rawReply = json.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  const usage = json.usageMetadata ?? {};
+  if (!rawReply) {
+    return { messages: [{ type: 'text', text: GEMINI_ERROR_TEXT }], answer: GEMINI_ERROR_TEXT, parsed: null, howtoSource: howto.source, usage, error: 'gemini empty reply' };
+  }
+
+  const parsed = parseAIReply(rawReply, new Set(howto.ids));
+
+  // 履歴には、利用者に見せた本文を残す
+  const now = Date.now();
+  await saveChatHistory(env.FIREBASE_DATABASE_URL, lineUserId, [
+    ...history,
+    { role: 'user', text: queryText, ts: now },
+    { role: 'model', text: parsed.text, ts: now },
+  ]);
+
+  const messages: unknown[] = [{ type: 'text', text: parsed.text }];
+  if (parsed.anchorId) {
+    messages.push({ type: 'text', text: `詳しい手順は説明書（画像つき）をご覧ください👇\n${howtoAnchorUrl(parsed.anchorId)}` });
+  }
+  if (parsed.keycodeReset) {
+    messages.push({ type: 'text', text: '【キーワード】キーコードリセット' });
+  }
+
   await recordUsage(env.FURIM_EXT_CACHE, {
     at: new Date(startedAt).toISOString(),
     latencyMs: Date.now() - startedAt,
     howto: howto.source,
     howtoChars: howto.text.length,
+    howtoIds: howto.ids.length,
     faqChars: faqText.length,
     historyCount: history.length,
-    ...(json.usageMetadata ?? {}),
+    anchorId: parsed.anchorId,
+    anchorRejected: parsed.anchorRejected,
+    fallback: parsed.fallback,
+    ...usage,
   });
-  if (!aiReply) return { text: 'AIからの応答中にエラーが発生しました。もう一度お試しください。', additionalMessages: [] };
 
-  // 履歴を保存
-  const now = Date.now();
-  await saveChatHistory(env.FIREBASE_DATABASE_URL, lineUserId, [
-    ...history,
-    { role: 'user', text: queryText, ts: now },
-    { role: 'model', text: aiReply, ts: now },
-  ]);
+  return { messages, answer: parsed.text, parsed, howtoSource: howto.source, usage, error: null };
+}
 
-  const additionalMessages: unknown[] = [];
-
-  for (const [keyword, urls] of Object.entries(FUNCTION_URLS)) {
-    const regex = new RegExp(`\\[${keyword}\\]`, 'g');
-    if (regex.test(aiReply)) {
-      aiReply = aiReply.replace(new RegExp(`\\[${keyword}\\]`, 'g'), '');
-      additionalMessages.push({ type: 'video', originalContentUrl: urls.video, previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png', altText: `${keyword}機能の解説動画` });
-      additionalMessages.push({ type: 'text', text: `【利用方法説明書】\n${urls.manual}` });
-    }
+/** 1 問 1 答で 1 行（furim_ai_chat_logs）。受けた時点で質問だけ書き、送り終えたら回答と結果で埋める（途中で打ち切られた回は pending のまま残る） */
+async function insertChatLog(db: D1Database | undefined, id: string, lineUserId: string, question: string): Promise<void> {
+  if (!db) return;
+  try {
+    await db
+      .prepare(
+        `INSERT INTO furim_ai_chat_logs (id, line_user_id, question, reply_status, created_at)
+         VALUES (?, ?, ?, 'pending', ?)`,
+      )
+      .bind(id, lineUserId, question, jstNow())
+      .run();
+  } catch (e) {
+    console.error('[furim/ai-chat] chat log insert failed:', e);
   }
+}
 
-  if (aiReply.includes('[キーコードリセット]')) {
-    aiReply = aiReply.replace(/\[キーコードリセット\]/g, '');
-    additionalMessages.push({ type: 'text', text: '【キーワード】キーコードリセット' });
+async function finishChatLog(
+  db: D1Database | undefined,
+  id: string,
+  r: { answer: string; parsed: ParsedAIReply | null; latencyMs: number; replyStatus: 'replied' | 'pushed' | 'failed'; error: string | null; howtoSource: string; usage: GeminiUsage },
+): Promise<void> {
+  if (!db) return;
+  try {
+    await db
+      .prepare(
+        `UPDATE furim_ai_chat_logs
+         SET answer = ?, howto_anchor = ?, anchor_rejected = ?, fallback = ?, latency_ms = ?, reply_status = ?, error = ?,
+             howto_source = ?, prompt_tokens = ?, cached_tokens = ?
+         WHERE id = ?`,
+      )
+      .bind(
+        r.answer,
+        r.parsed?.anchorId ?? null,
+        r.parsed?.anchorRejected ?? null,
+        r.parsed?.fallback ? 1 : 0,
+        r.latencyMs,
+        r.replyStatus,
+        r.error ? r.error.slice(0, 500) : null,
+        r.howtoSource,
+        r.usage.promptTokenCount ?? null,
+        r.usage.cachedContentTokenCount ?? null,
+        id,
+      )
+      .run();
+  } catch (e) {
+    console.error('[furim/ai-chat] chat log update failed:', e);
   }
-
-  return { text: aiReply.trim(), additionalMessages };
 }
 
 export async function handleAIChat(
@@ -231,7 +339,38 @@ export async function handleAIChat(
   env: AIChatEnv,
 ): Promise<void> {
   console.log('[furim/ai-chat] handling:', lineUserId);
-  const { text: aiReply, additionalMessages } = await generateAIResponse(text, lineUserId, env);
-  const messages: unknown[] = [{ type: 'text', text: aiReply }, ...additionalMessages];
-  await lineClient.replyMessage(replyToken, (messages.slice(0, 5)) as never[]);
+  const startedAt = Date.now();
+  const logId = crypto.randomUUID();
+  await insertChatLog(env.DB, logId, lineUserId, text);
+
+  const generated = await generateAIResponse(text, lineUserId, env, startedAt);
+  const messages = generated.messages.slice(0, 5) as never[];
+
+  // reply トークンは受信から約 1 分で失効する。失効や一時的な失敗で無返信にならないよう、reply が落ちたら push で送り直す
+  let replyStatus: 'replied' | 'pushed' | 'failed' = 'replied';
+  let error = generated.error;
+  try {
+    await lineClient.replyMessage(replyToken, messages);
+  } catch (replyErr) {
+    console.warn('[furim/ai-chat] reply failed, falling back to push:', replyErr);
+    try {
+      await lineClient.pushMessage(lineUserId, messages);
+      replyStatus = 'pushed';
+      error = error ?? `reply failed: ${replyErr instanceof Error ? replyErr.message : String(replyErr)}`;
+    } catch (pushErr) {
+      replyStatus = 'failed';
+      error = `reply and push failed: ${pushErr instanceof Error ? pushErr.message : String(pushErr)}`;
+      await recordBotHandlerError(env.DB, lineUserId, 'handleAIChat', 'fallback_push', pushErr);
+    }
+  }
+
+  await finishChatLog(env.DB, logId, {
+    answer: generated.answer,
+    parsed: generated.parsed,
+    latencyMs: Date.now() - startedAt,
+    replyStatus,
+    error,
+    howtoSource: generated.howtoSource,
+    usage: generated.usage,
+  });
 }

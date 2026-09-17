@@ -926,6 +926,50 @@ export const ADMIN_TABLES: AdminTable[] = [
     keys: [],
   },
   // 手で片づけた操作の記録（Capsec #289 追加）。確認済み（見た記録）とは別に、
+  // LINE の AI チャットボットの会話（1 問 1 答で 1 行・Capsec #307・migration 084）。閲覧のみ
+  {
+    name: 'furim_ai_chat_logs',
+    label: 'AI チャットの会話',
+    pk: 'id',
+    insertable: false,
+    deletable: false,
+    orderBy: 'created_at DESC',
+    touchUpdatedAt: false,
+    timeColumn: 'created_at',
+    internal: ['id'],
+    idColumns: ['line_user_id'],
+    listOrder: ['question', 'answer', 'howto_anchor', 'fallback', 'reply_status', 'latency_ms', 'anchor_rejected', 'error', 'howto_source', 'prompt_tokens', 'cached_tokens'],
+    labels: {
+      created_at: '受けた日時', question: '質問', answer: '回答', howto_anchor: '付けた説明書の章', anchor_rejected: '一覧に無かった章の id',
+      fallback: '答えられなかった', latency_ms: '応答時間（ミリ秒）', reply_status: '送信', error: 'エラー', howto_source: '説明書の本文',
+      prompt_tokens: '入力トークン', cached_tokens: 'キャッシュされたトークン',
+    },
+    valueLabels: {
+      reply_status: { pending: '処理中か打ち切り', replied: '返信した', pushed: '返信が失効し push で送った', failed: '送れなかった' },
+      fallback: { '0': '', '1': '答えられなかった' },
+      howto_source: { cache: 'キャッシュ', fetched: '取得', failed: '取得失敗（faq.md だけで回答）' },
+    },
+    emptyLabels: {
+      howto_anchor: { dependsOn: 'reply_status', byValue: { pending: '' }, default: '—（URL を付けていない）' },
+    },
+    columns: [
+      ro('id'),
+      ro('line_user_id', true),
+      ro('question', true),
+      ro('answer', true),
+      ro('howto_anchor', true),
+      ro('anchor_rejected', true),
+      roi('fallback'),
+      roi('latency_ms'),
+      ro('reply_status', true),
+      ro('error', true),
+      ro('howto_source'),
+      roi('prompt_tokens'),
+      roi('cached_tokens'),
+      ro('created_at'),
+    ],
+    keys: [k('line_user_id', 'line_user_id')],
+  },
   // 「何を何件、なぜ完了扱いにしたか」を残す。閲覧のみ
   {
     name: 'furim_ops_log',

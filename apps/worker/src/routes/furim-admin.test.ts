@@ -310,7 +310,7 @@ describe('GET /api/furim/admin/:table/:id/related', () => {
       'furim_customers', 'furim_payments', 'furim_ticket_ledger', 'furim_cancellations', 'furim_referrals', 'affiliates',
       'furim_execution_logs', 'furim_ext_errors', 'furim_free_accounts', 'furim_manual_copy_logs', 'furim_shop_research_logs',
       'furim_auto_copy_logs', 'furim_survey_answers', 'furim_coupon_applications', 'furim_referral_cashbacks',
-      'furim_feature_flags',
+      'furim_feature_flags', 'furim_ai_chat_logs',
     ]);
     const payments = body.data.related[1];
     expect(payments.total).toBe(2);
@@ -322,7 +322,7 @@ describe('GET /api/furim/admin/:table/:id/related', () => {
 
     expect(batches).toHaveLength(1);
     const stmts = batches[0];
-    expect(stmts).toHaveLength(32);
+    expect(stmts).toHaveLength(34);
     expect(stmts[0].sql).toBe('SELECT COUNT(*) AS n FROM furim_customers WHERE (line_user_id = ? OR stripe_customer_id = ? OR key_code = ?) AND NOT (line_user_id = ?)');
     expect(stmts[0].args).toEqual(['U1', 'cus_1', 'ABC', 'U1']);
     expect(stmts[3].sql).toBe('SELECT * FROM furim_payments WHERE (line_user_id = ? OR stripe_customer_id = ?) ORDER BY paid_at DESC, invoice_id LIMIT ?');
@@ -569,6 +569,7 @@ describe('#253 decision #372: 列順・内部 ID・日本語ラベル・日時�
       furim_coupons: null,
       furim_execution_logs: 'created_at',
       furim_ext_errors: 'created_at',
+      furim_ai_chat_logs: 'created_at',
       furim_free_accounts: 'created_at',
       furim_manual_copy_logs: 'started_at',
       furim_shop_research_logs: 'created_at',
@@ -890,6 +891,7 @@ describe('#263 顧客マスター以外の ID 類は一覧から外しドロワ�
     furim_master: ['stripe_price_id'],
     furim_ad_spend: ['campaign_id'],
     furim_ops_log: ['id'],
+    furim_ai_chat_logs: ['id', 'line_user_id'],
   };
 
   type Tbl = {

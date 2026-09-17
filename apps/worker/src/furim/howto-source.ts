@@ -14,7 +14,7 @@
 import { jstNow } from '@line-crm/db';
 
 export const HOWTO_URL = 'https://furimauto.com/howto/';
-export const HOWTO_CACHE_KEY = 'furim:ai-chat:howto-text:v1';
+export const HOWTO_CACHE_KEY = 'furim:ai-chat:howto-text:v2';
 export const HOWTO_CACHE_TTL_SECONDS = 3 * 60 * 60;
 const HOWTO_FETCH_TIMEOUT_MS = 8_000;
 /** 取れた本文がこれより短ければ壊れたページとみなす（本来は約 5.4 万字） */
@@ -48,9 +48,12 @@ export function howtoHtmlToText(html: string): string {
 
   // ソースの改行・インデントは意味を持たないので先に詰め、そのあとタグから段落と改行を作る
   t = t.replace(/\s+/g, ' ');
-  t = t.replace(/<h([1-4])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level: string, inner: string) => {
+  // 見出しに id があれば「〔id: …〕」を付け、AI が根拠の章を id で言えるようにする（Capsec #307 方針変更）
+  t = t.replace(/<h([1-4])\b([^>]*)>([\s\S]*?)<\/h\1>/gi, (_, level: string, attrs: string, inner: string) => {
     const heading = inner.replace(/<[^>]+>/g, '').trim();
-    return heading ? `\n\n${'#'.repeat(Number(level))} ${heading}\n` : '';
+    if (!heading) return '';
+    const id = attrs.match(/\bid="([^"]+)"/)?.[1];
+    return `\n\n${'#'.repeat(Number(level))} ${heading}${id ? ` 〔id: ${id}〕` : ''}\n`;
   });
   t = t.replace(/<br\s*\/?>/gi, '\n');
   t = t.replace(/<hr\b[^>]*>/gi, '\n');
@@ -67,7 +70,15 @@ export function howtoHtmlToText(html: string): string {
     .trim();
 }
 
-export type HowtoLoadResult = { text: string; source: 'cache' | 'fetched' | 'failed'; error?: string };
+/** 説明書の <main> の見出し（h1〜h4）に付いた id の一覧。AI が出した章の id は、これにあるときだけ URL にする */
+export function howtoHeadingIds(html: string): string[] {
+  const main = html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i);
+  const t = main ? main[1] : html;
+  const ids = [...t.matchAll(/<h[1-4]\b[^>]*\bid="([^"]+)"[^>]*>/gi)].map((m) => m[1]);
+  return [...new Set(ids)];
+}
+
+export type HowtoLoadResult = { text: string; ids: string[]; source: 'cache' | 'fetched' | 'failed'; error?: string };
 
 async function recordHowtoFailure(db: D1Database | undefined, error: string): Promise<void> {
   if (!db) return;
@@ -96,7 +107,10 @@ export async function loadHowtoText(
   if (kv) {
     try {
       const cached = await kv.get(HOWTO_CACHE_KEY);
-      if (cached) return { text: cached, source: 'cache' };
+      if (cached) {
+        const parsed = JSON.parse(cached) as { text?: string; ids?: string[] };
+        if (parsed.text) return { text: parsed.text, ids: parsed.ids ?? [], source: 'cache' };
+      }
     } catch (e) {
       console.warn('[furim/howto-source] KV get failed:', e);
     }
@@ -108,20 +122,22 @@ export async function loadHowtoText(
       signal: AbortSignal.timeout(HOWTO_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`howto fetch ${res.status}`);
-    const text = howtoHtmlToText(await res.text());
+    const html = await res.text();
+    const text = howtoHtmlToText(html);
+    const ids = howtoHeadingIds(html);
     if (text.length < HOWTO_MIN_CHARS) throw new Error(`howto text too short (${text.length} chars)`);
     if (kv) {
       try {
-        await kv.put(HOWTO_CACHE_KEY, text, { expirationTtl: HOWTO_CACHE_TTL_SECONDS });
+        await kv.put(HOWTO_CACHE_KEY, JSON.stringify({ text, ids }), { expirationTtl: HOWTO_CACHE_TTL_SECONDS });
       } catch (e) {
         console.warn('[furim/howto-source] KV put failed:', e);
       }
     }
-    return { text, source: 'fetched' };
+    return { text, ids, source: 'fetched' };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     console.error('[furim/howto-source] howto load failed, faq.md only:', error);
     await recordHowtoFailure(db, error);
-    return { text: '', source: 'failed', error };
+    return { text: '', ids: [], source: 'failed', error };
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HOWTO_CACHE_KEY, HOWTO_CACHE_TTL_SECONDS, howtoHtmlToText, loadHowtoText } from './howto-source.js';
+import { HOWTO_CACHE_KEY, HOWTO_CACHE_TTL_SECONDS, howtoHeadingIds, howtoHtmlToText, loadHowtoText } from './howto-source.js';
 
 const PAGE = `<!doctype html><html><head><style>.x{color:red}</style><script>var a=1</script></head><body>
 <nav class="sidebar-navigation"><a href="#x">目次の見出し</a></nav>
@@ -25,7 +25,7 @@ const PAGE = `<!doctype html><html><head><style>.x{color:red}</style><script>var
 describe('説明書の HTML → AI に渡すテキスト（Capsec #307）', () => {
   it('main の本文だけを残し、見出し・段落・箇条書き・表をテキストにする', () => {
     const t = howtoHtmlToText(PAGE);
-    expect(t).toContain('## 再出品');
+    expect(t).toContain('## 再出品 〔id: mRelist〕');
     expect(t).toContain('商品を 停止してから出品し直します。\nメルカリShopsにも対応しています。');
     expect(t).toContain('・ラクマ\n・ヤフフリ');
     expect(t).toContain('機能 | 料金 |');
@@ -51,10 +51,10 @@ const longPage = PAGE.replace('<p>商品を', `<p>${'説明書の本文。'.repe
 
 describe('説明書の本文の取得とキャッシュ（Capsec #307）', () => {
   it('KV にあれば取得しない', async () => {
-    const { kv } = makeKv('キャッシュ済みの本文');
+    const { kv } = makeKv(JSON.stringify({ text: 'キャッシュ済みの本文', ids: ['mRelist'] }));
     const fetchImpl = vi.fn();
     const r = await loadHowtoText(kv, undefined, fetchImpl as never);
-    expect(r).toEqual({ text: 'キャッシュ済みの本文', source: 'cache' });
+    expect(r).toEqual({ text: 'キャッシュ済みの本文', ids: ['mRelist'], source: 'cache' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -63,8 +63,9 @@ describe('説明書の本文の取得とキャッシュ（Capsec #307）', () =>
     const fetchImpl = vi.fn(async () => new Response(longPage, { status: 200 }));
     const r = await loadHowtoText(kv, undefined, fetchImpl as never);
     expect(r.source).toBe('fetched');
-    expect(r.text).toContain('## 再出品');
-    expect(put).toHaveBeenCalledWith(HOWTO_CACHE_KEY, r.text, { expirationTtl: HOWTO_CACHE_TTL_SECONDS });
+    expect(r.text).toContain('## 再出品 〔id: mRelist〕');
+    expect(r.ids).toEqual(['mRelist']);
+    expect(put).toHaveBeenCalledWith(HOWTO_CACHE_KEY, JSON.stringify({ text: r.text, ids: r.ids }), { expirationTtl: HOWTO_CACHE_TTL_SECONDS });
     expect(HOWTO_CACHE_TTL_SECONDS).toBe(10800);
   });
 
@@ -84,5 +85,14 @@ describe('説明書の本文の取得とキャッシュ（Capsec #307）', () =>
     const r = await loadHowtoText(kv, undefined, vi.fn(async () => new Response(PAGE, { status: 200 })) as never);
     expect(r.source).toBe('failed');
     expect(put).not.toHaveBeenCalled();
+  });
+});
+
+describe('説明書の見出し id の一覧（Capsec #307 方針変更）', () => {
+  it('main の見出し（h1〜h4）の id だけを集め、中身の無い旧アンカーの受け皿や main の外は入れない', () => {
+    const html = `<nav><h2 id="navHead">目次</h2></nav><main>
+      <h2 id="ｍCommentDelete">コメント削除機能</h2><span id="ｍRelist"></span>
+      <h3 id="msRelist" class="x">再出品機能</h3><h2>id なし</h2><h2 id="msRelist">重複</h2></main>`;
+    expect(howtoHeadingIds(html)).toEqual(['ｍCommentDelete', 'msRelist']);
   });
 });
