@@ -1206,6 +1206,20 @@ async function scheduled(
     }
   }
 
+  // シート「自動化処理履歴」→ D1 furim_execution_logs の差分取り込み（Capsec #296）— 6h cron tick。
+  // 拡張 4.3.0 以前の会員はまだシートに実行ログを送っているので、D1 だけで件数を数えられるように写す。
+  // 取り込み済みの最新からさかのぼるので、止まっていた間の抜けも次の回で埋まる。
+  // 旧経路の会員が 0 人になったら内部で何もしない（移行が終わったら自然に止まる）。デプロイは権限管理課
+  if (event.cron === '0 */6 * * *' && env.GAS_DEPLOY_ID) {
+    try {
+      const { syncExecutionLogsFromSheet } = await import('./furim/sheet-execution-sync.js');
+      const result = await syncExecutionLogsFromSheet(env.DB, env.GAS_DEPLOY_ID, { dryRun: false });
+      console.log('[sheet-execution-sync]', JSON.stringify(result));
+    } catch (e) {
+      console.error('sheet-execution-sync error:', e);
+    }
+  }
+
   // Cross-account duplicate detection — disabled.
   // The cron used to materialize duplicates into the tag system but the 1k-subrequest
   // budget can't drain a 1k+ candidate backlog, and a live SELECT against
