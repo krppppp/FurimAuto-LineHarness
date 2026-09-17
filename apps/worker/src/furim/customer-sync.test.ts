@@ -217,6 +217,20 @@ describe('reconcileFurimCustomers', () => {
     expect(sendPushToAll).not.toHaveBeenCalled();
   });
 
+  it('検証用アカウント（あじゃぱー）はシートと D1 の突き合わせから外す（Capsec #301）', async () => {
+    const test = 'Ue4941a030cb2ec8758095fb0fffff344';
+    gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ 'LINE_ID': test, 'キーコード': '2weektrial_old' })] });
+    const { db, writes } = makeDb({ customers: [customer({ line_user_id: test, key_code: '2weektrial_new' }), customer({ line_user_id: uid('7') })] });
+
+    const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
+
+    const inserts = writes.filter((w) => /INSERT INTO furim_sync_diffs/.test(w.sql));
+    expect(inserts.some((w) => w.args[1] === test)).toBe(false);
+    // 検証用以外（シートに無い uid(7)）は今までどおり出る
+    expect(inserts.map((w) => [w.args[1], w.args[2]])).toEqual([[uid('7'), 'row_missing_in_sheet']]);
+    expect(r.newDiffs).toBe(1);
+  });
+
   it('人がシート側の誤りとして受け入れた差分は、シートの値が同じなら数え直さない（Capsec #289）', async () => {
     gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ 'LINE_ID': uid('9'), 'キーコード': '2weektrial_x' }), sheetRow({ 'Stripe顧客ID': 'cus_other' })] });
     const { db, writes } = makeDb({

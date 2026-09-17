@@ -13,6 +13,7 @@ import { buildUpsertStatement, formatJstIso, parseJstDateTime, type FurimCustome
 import { notifyStaff } from './staff-notify.js';
 import { isJstMinuteWindow } from './cron-window.js';
 import type { PushEnv } from '../services/push-notify.js';
+import { TEST_LINE_IDS } from './segments.js';
 
 export const MASTER_SHEET = '顧客情報-サブスク情報-キーコード';
 const GAS_TIMEOUT_MS = 120_000;
@@ -421,6 +422,8 @@ export async function reconcileFurimCustomers(
     const lineUserId = sheetRowLineUserId(row);
     if (!lineUserId || seenSheet.has(lineUserId)) continue;
     seenSheet.add(lineUserId);
+    // 検証用アカウントはテストのたびに D1 だけ作り直し、凍結中のシートの古い行とは必ず食い違うので突き合わせない（Capsec #301）
+    if (TEST_LINE_IDS.has(lineUserId)) continue;
     const patch = sheetRowToPatch(row);
     const cur = d1.get(lineUserId);
     if (!cur) {
@@ -458,6 +461,7 @@ export async function reconcileFurimCustomers(
     observed.push(...diffCustomerRow(lineUserId, patch, cur));
   }
   for (const lineUserId of d1.keys()) {
+    if (TEST_LINE_IDS.has(lineUserId)) continue;
     if (!seenSheet.has(lineUserId)) observed.push({ lineUserId, field: 'row_missing_in_sheet', d1Value: d1.get(lineUserId)?.key_code ?? '(row)', sheetValue: null });
   }
 

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
 import { jstNow } from '@line-crm/db';
-import { EXCLUDED_LINE_IDS } from '../furim/segments.js';
+import { EXCLUDED_LINE_IDS, TEST_LINE_IDS } from '../furim/segments.js';
 
 /**
  * 管理画面トップのダッシュボード API（Capsec #282 段階2 / #285）。
@@ -23,7 +23,8 @@ export type Granularity = 'day' | 'month' | 'year';
 export type Period = '3m' | '6m' | '1y' | 'all';
 
 const KEY_LEN: Record<Granularity, number> = { day: 10, month: 7, year: 4 };
-const EXCLUDED = [...EXCLUDED_LINE_IDS];
+// 社内アカウントと検証用アカウント（TEST_LINE_IDS・Capsec #301）を集計から除く
+const EXCLUDED = [...EXCLUDED_LINE_IDS, ...TEST_LINE_IDS];
 
 export function parseGranularity(v: string | undefined): Granularity {
   return v === 'day' || v === 'year' ? v : 'month';
@@ -210,6 +211,7 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
            FROM furim_payments
            WHERE line_user_id IS NOT NULL AND actual_paid_amount > 0
              AND billing_reason IN ('subscription_create', 'subscription_cycle', 'subscription_update')
+             ${exclude('line_user_id')}
            GROUP BY line_user_id
          )
          SELECT substr(first_at, 1, ${KEY_LEN[g]}) AS t, COUNT(*) AS n
@@ -217,7 +219,7 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
          WHERE substr(first_at, 1, 10) BETWEEN ? AND ?
          GROUP BY t`,
       )
-      .bind(from, today)
+      .bind(...EXCLUDED, from, today)
       .all<{ t: string; n: number }>();
     const convByT = new Map((conv.results ?? []).map((r) => [r.t, num(r.n)]));
 

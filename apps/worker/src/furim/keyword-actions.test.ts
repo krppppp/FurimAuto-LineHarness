@@ -275,7 +275,7 @@ describe('handleKeywordAction キーコードリセットの特別対応（段�
     expect(client.replyMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('30 字を超える文・バグ報告のひな形は、含まれていてもリセットしない（Capsec #298・統括決定）', async () => {
+  it('40 字を超える文・バグ報告のひな形は、含まれていてもリセットしない（Capsec #298・統括決定）', async () => {
     const client = makeClient();
     const db = makeKeycodeDb('pb_test123');
     const pasted = '✕ 認証できませんでした\n理由：このキーコードは別の端末で既に使用されているか、紐付けが処理中です。\nLINE で「キーコードリセット」と送信してください。';

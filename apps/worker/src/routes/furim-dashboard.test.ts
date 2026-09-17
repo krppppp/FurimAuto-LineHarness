@@ -96,6 +96,10 @@ describe('GET /api/furim/dashboard', () => {
     const q = captured.find((x) => /FROM friends\s+WHERE/.test(x.sql))!;
     expect(q.sql).toContain('NOT IN');
     expect(q.binds.length).toBeGreaterThan(50);
+    // 検証用アカウント（TEST_LINE_IDS・あじゃぱー）も集計から除く（Capsec #301）
+    expect(q.binds).toContain('Ue4941a030cb2ec8758095fb0fffff344');
+    const conv = captured.find((x) => /WITH first_paid AS/.test(x.sql))!;
+    expect(conv.binds).toContain('Ue4941a030cb2ec8758095fb0fffff344');
   });
 
   it('有料転換は最初の入金で数え、試用から始めた人（最初が subscription_cycle）も入れる。送信を諦めた広告 CV は数えない（Capsec #289）', async () => {

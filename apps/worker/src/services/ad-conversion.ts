@@ -13,6 +13,7 @@ import {
   type RefTracking,
   toJstString,
 } from '@line-crm/db';
+import { TEST_LINE_IDS } from '../furim/segments.js';
 
 export async function sendAdConversions(
   db: D1Database,
@@ -22,6 +23,13 @@ export async function sendAdConversions(
 ): Promise<void> {
   const ref = await getRefTrackingWithClickIds(db, friendId);
   if (!ref) return;
+
+  // 検証用アカウントのテストを広告の成果として送らない（Capsec #301・2026-09-17 16:07 にあじゃぱーの実機テストが送られた）
+  const friend = await db.prepare('SELECT line_user_id FROM friends WHERE id = ?').bind(friendId).first<{ line_user_id: string | null }>();
+  if (friend?.line_user_id && TEST_LINE_IDS.has(friend.line_user_id)) {
+    console.log('[ad-conversion] 検証用アカウントなので送信しない:', friendId, eventName);
+    return;
+  }
 
   const platforms = await getActiveAdPlatforms(db);
 

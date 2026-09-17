@@ -4,6 +4,14 @@
 // 端末判定文字列=device_code(または device_activated)・メルカリURL=mercari_url・Free30=free30_ticket・Youtube=youtube_coupon・延長KW=extend_keyword）
 import { parseJstDateTime, type FurimCustomer } from './customer-store.js';
 
+// 検証用アカウント（テストのたびに新規の友だちに作り直すもの・Capsec #301 統括決定 2026-09-17）。
+// 数字の集計（トップのダッシュボード・自動化の区画・有料転換）、広告のオフライン CV 送信、シートと D1 の突き合わせから除く。
+// クロージング配信の除外（下の EXCLUDED_LINE_IDS）には入れない（配信の検証ができなくなるため）。
+// 2026-09-17 16:07 にあじゃぱーの実機テストが広告の成果として Google に送られた（#305 で取り消し）
+export const TEST_LINE_IDS: ReadonlySet<string> = new Set([
+  'Ue4941a030cb2ec8758095fb0fffff344', // あじゃぱー（くろさんの検証用・reset-test-friend の既定）
+]);
+
 // 社内・検証用アカウント（GAS separateLineIdsBySituation.js の EXCLUDED_LINE_IDS の写し）。クロージング配信から除外する
 export const EXCLUDED_LINE_IDS: ReadonlySet<string> = new Set([
   'Uf467cf4dbd2e89a98b18b1858badb910', 'U3ad68664c60716e18bd4d28e8e74fa79', 'U965a787efd9095b0d0c3078076040ff3', 'Ucb5fd3373546b708bb2a15d6d3126aa3',

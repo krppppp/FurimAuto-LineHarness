@@ -116,7 +116,7 @@ describe('bot の処理の証拠と失敗の記録（Capsec #300）', () => {
 });
 
 describe('キーコードリセットの依頼とみなす文（Capsec #298・統括決定）', () => {
-  it('30 字以下の依頼はリセットに回す', async () => {
+  it('40 字以下の依頼はリセットに回す', async () => {
     const { isKeycodeResetRequest } = await import('./bot-routed-message.js');
     for (const t of ['キーコードリセット', '「【キーワード】キーコードリセット」', 'キーコードリセットしたい', '【pb_2ketnafp】キーコードリセット']) {
       expect(isKeycodeResetRequest(t), t).toBe(true);
@@ -134,8 +134,10 @@ describe('キーコードリセットの依頼とみなす文（Capsec #298・�
     expect(isBotRoutedText(bugReport)).toBe(false);
   });
 
-  it('30 字を超える依頼文もリセットせず人に回す', async () => {
+  it('40 字以下なら名乗り付きの依頼（34・35 字）もリセットし、40 字を超える文は人に回す（統括決定で 40 字）', async () => {
     const { isKeycodeResetRequest } = await import('./bot-routed-message.js');
-    expect(isKeycodeResetRequest('遅くなりました。 當間浩輝です。 キーコードリセットお願いいたします')).toBe(false);
+    expect(isKeycodeResetRequest('遅くなりました。\n\n當間浩輝です。\nキーコードリセットお願いいたします')).toBe(true);
+    expect(isKeycodeResetRequest('遅くなりました。\n\n當間浩輝です。\nキーコードリセットお願い致します')).toBe(true);
+    expect(isKeycodeResetRequest('お世話になっております。拡張機能が動かないので、キーコードリセットをしてみたのですが認証できません')).toBe(false);
   });
 });

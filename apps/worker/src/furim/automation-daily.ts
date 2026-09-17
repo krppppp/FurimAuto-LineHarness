@@ -1,4 +1,4 @@
-import { EXCLUDED_LINE_IDS } from './segments.js';
+import { EXCLUDED_LINE_IDS, TEST_LINE_IDS } from './segments.js';
 
 /**
  * 管理画面トップ「自動化の日別件数と人数」（Capsec #296・2026-09-17 統括承認）。
@@ -22,7 +22,7 @@ export const CONFIRM_AFTER_HHMM = '03:10';
 export const SHEET_SYNC_HEARTBEAT_ID = 'sheet_execution_sync';
 export const SHEET_SYNC_STALE_HOURS = 7;
 
-const EXCLUDED = [...EXCLUDED_LINE_IDS];
+const EXCLUDED = [...EXCLUDED_LINE_IDS, ...TEST_LINE_IDS];
 const dayCol = "substr(replace(created_at, ' ', 'T'), 1, 10)";
 const timeCol = "substr(replace(created_at, ' ', 'T'), 12, 8)";
 const notExcluded = `(line_user_id IS NULL OR line_user_id NOT IN (${EXCLUDED.map(() => '?').join(',')}))`;
