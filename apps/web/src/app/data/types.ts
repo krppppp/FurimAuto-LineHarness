@@ -52,6 +52,8 @@ export type AdminTableMeta = {
   valueLabels?: Record<string, Record<string, string>> | null
   /** 一覧で空欄のときに出す説明 */
   emptyLabels?: Record<string, { dependsOn?: string; byValue?: Record<string, string>; default: string }> | null
+  /** 書き換えると事故になる列。保存の前に確認を出す（行ドロワーと個別チャットの顧客パネルで共通・#308） */
+  confirmColumns?: string[]
 }
 
 /** 一覧のセルに出す文字（日本語ラベル・空欄の説明）。title は元の値を含める */

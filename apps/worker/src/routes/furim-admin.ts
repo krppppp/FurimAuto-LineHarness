@@ -29,6 +29,7 @@ import {
   type AdminVirtualColumn,
 } from '../furim/admin-schema.js';
 import { invalidateExtCache } from '../furim/ext-auth.js';
+import { listPersonAudit } from '../furim/person-audit.js';
 import type { Env } from '../index.js';
 
 /**
@@ -155,7 +156,7 @@ export async function attachDisplayNames(db: D1Database, groups: Array<{ table: 
 }
 
 type AggregateRow = { k: string; n: number; rewarded: number | null; applied: number | null; total: number | null };
-type PaymentAggregateRow = { k: string; n: number; total: number | null; last_paid: number | null };
+type PaymentAggregateRow = { k: string; n: number; total: number | null; last_paid: number | null; last_paid_at: string | null };
 
 export async function attachPaymentTotals(db: D1Database, rows: Row[]): Promise<void> {
   if (rows.length === 0) return;
@@ -173,6 +174,8 @@ export async function attachPaymentTotals(db: D1Database, rows: Row[]): Promise<
     row._last_paid_amount = agg?.last_paid ?? null;
     row._payment_count = Number(agg?.n ?? 0);
     row._payment_total = Number(agg?.total ?? 0);
+    // 個別チャットの顧客パネルの要点で使う（一覧の列には出さない・#308）
+    row._last_paid_at = agg?.last_paid_at ?? null;
   }
 }
 
@@ -388,6 +391,7 @@ function serializeTable(table: AdminTable) {
     listColumns: listColumnNames(table),
     valueLabels: table.valueLabels ?? null,
     emptyLabels: table.emptyLabels ?? null,
+    confirmColumns: table.confirmColumns ?? [],
   };
 }
 
@@ -559,6 +563,15 @@ furimAdmin.get('/api/furim/admin/:table/:id/audit', async (c) => {
     .bind(table.name, c.req.param('id'))
     .all<Row>();
   return c.json({ success: true, data: rows.results ?? [] });
+});
+
+// GET /api/furim/person-audit/:lineUserId?limit=5 — 1 人分の変更履歴（顧客データ・機能フラグ・タグ・クーポン）。個別チャットの顧客パネル（#308）
+furimAdmin.get('/api/furim/person-audit/:lineUserId', async (c) => {
+  const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 5) || 5, 1), 50);
+  const data = await listPersonAudit(c.env.DB, c.req.param('lineUserId')!, limit, async () =>
+    new Map((await loadFeatureColumns(c.env.DB)).map((col) => [col.featureKey ?? '', col.label])),
+  );
+  return c.json({ success: true, data });
 });
 
 // GET /api/furim/admin/:table/:id/related — その行の本人に紐づく別テーブルの件数と最新 20 件

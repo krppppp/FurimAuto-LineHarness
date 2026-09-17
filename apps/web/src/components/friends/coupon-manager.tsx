@@ -7,6 +7,8 @@ import type { StripeCouponItem, SubscriptionDiscount, FriendCouponState } from '
 interface Props {
   friendId: string
   friendName: string
+  /** 付与・削除が成功したあと（個別チャットの顧客パネルが変更履歴を読み直す・#308） */
+  onChanged?: () => void
 }
 
 // FurimAuto fork 独自: 友だちリストの展開パネル内で Stripe クーポンを付与・削除する。
@@ -71,7 +73,7 @@ function formatSendAfter(iso: string): string {
   return `${iso.slice(11, 16)}頃`
 }
 
-export default function CouponManager({ friendId, friendName }: Props) {
+export default function CouponManager({ friendId, friendName, onChanged }: Props) {
   const [state, setState] = useState<FriendCouponState | null>(null)
   const [coupons, setCoupons] = useState<StripeCouponItem[] | null>(null)
   const [selectedCouponId, setSelectedCouponId] = useState('')
@@ -125,6 +127,7 @@ export default function CouponManager({ friendId, friendName }: Props) {
         setSelectedCouponId('')
         setMessage('')
         await loadState()
+        onChanged?.()
       } else {
         setError(res.error)
       }
@@ -141,8 +144,10 @@ export default function CouponManager({ friendId, friendName }: Props) {
     setError('')
     try {
       const res = await api.furimCoupons.remove(friendId, d.couponId)
-      if (res.success) await loadState()
-      else setError(res.error)
+      if (res.success) {
+        await loadState()
+        onChanged?.()
+      } else setError(res.error)
     } catch {
       setError('クーポンの削除に失敗しました')
     } finally {

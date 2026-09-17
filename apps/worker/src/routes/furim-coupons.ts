@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { getFriendById, jstNow, toJstString } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { AUDIT_COUPONS, recordPersonAudit } from '../furim/person-audit.js';
 
 /**
  * 友だちリストからの Stripe クーポン付与 (FurimAuto fork 独自)。
@@ -201,6 +202,14 @@ furimCoupons.post('/api/furim/friends/:id/coupon', async (c) => {
       )
       .run();
 
+    await recordPersonAudit(c.env.DB, c.get('staff'), {
+      tableName: AUDIT_COUPONS,
+      lineUserId: friend.line_user_id,
+      column: 'coupon',
+      oldValue: null,
+      newValue: `${applied?.name || body.couponId}（${body.couponId}）`,
+    });
+
     return c.json({
       success: true,
       data: {
@@ -243,6 +252,14 @@ furimCoupons.delete('/api/furim/friends/:id/coupon', async (c) => {
         });
         if (remaining.length === 0) params['discounts'] = ''; // 全解除
         await stripeCall(c.env.STRIPE_SECRET_KEY, `subscriptions/${subId}`, params, 'POST', STRIPE_STACK_VERSION);
+        const removed = existing.find((d) => d.couponId === couponId);
+        await recordPersonAudit(c.env.DB, c.get('staff'), {
+          tableName: AUDIT_COUPONS,
+          lineUserId: friend.line_user_id,
+          column: 'coupon',
+          oldValue: `${removed?.name || couponId}（${couponId}）`,
+          newValue: null,
+        });
       }
       discounts = await getSubDiscounts(c.env.STRIPE_SECRET_KEY, subId);
     }

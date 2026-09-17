@@ -3,9 +3,8 @@
 import { useState, useEffect } from 'react'
 import type { Tag } from '@line-crm/shared'
 import type { FriendListItem } from '@/lib/api'
-import { api } from '@/lib/api'
 import FriendListRow from './friend-list-row'
-import TagBadge from './tag-badge'
+import TagEditor from './tag-editor'
 import CouponManager, { prefetchCoupons } from './coupon-manager'
 
 interface Props {
@@ -21,9 +20,6 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
   // add/remove). Without this expander operators would lose the only path
   // to mutate friend tags from the admin UI.
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [addingTagForFriend, setAddingTagForFriend] = useState<string | null>(null)
-  const [selectedTagId, setSelectedTagId] = useState('')
-  const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
   // クーポン一覧を裏で先読み（モジュールキャッシュ）。行展開時の待ちをなくす
@@ -33,38 +29,7 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
 
   const toggleExpand = (id: string) => {
     setExpandedId(expandedId === id ? null : id)
-    setAddingTagForFriend(null)
-    setSelectedTagId('')
     setError('')
-  }
-
-  const handleAddTag = async (friendId: string) => {
-    if (!selectedTagId) return
-    setLoading(true)
-    setError('')
-    try {
-      await api.friends.addTag(friendId, selectedTagId)
-      setAddingTagForFriend(null)
-      setSelectedTagId('')
-      onRefresh()
-    } catch {
-      setError('タグの追加に失敗しました')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleRemoveTag = async (friendId: string, tagId: string) => {
-    setLoading(true)
-    setError('')
-    try {
-      await api.friends.removeTag(friendId, tagId)
-      onRefresh()
-    } catch {
-      setError('タグの削除に失敗しました')
-    } finally {
-      setLoading(false)
-    }
   }
 
   if (friends.length === 0) {
@@ -98,10 +63,6 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
           </div>
           {friends.map((friend) => {
             const isExpanded = expandedId === friend.id
-            const isAddingTag = addingTagForFriend === friend.id
-            const availableTags = allTags.filter(
-              (t) => !friend.tags.some((ft) => ft.id === t.id),
-            )
 
             return (
               <div key={friend.id}>
@@ -117,56 +78,13 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
                       <p className="text-xs text-gray-600 font-mono break-all select-all">{friend.lineUserId}</p>
                     </div>
                     <p className="text-xs font-semibold text-gray-500 mb-2">タグ管理</p>
-                    <div className="flex flex-wrap gap-1.5 mb-2">
-                      {friend.tags.map((tag) => (
-                        <TagBadge
-                          key={tag.id}
-                          tag={tag}
-                          onRemove={() => handleRemoveTag(friend.id, tag.id)}
-                        />
-                      ))}
-                    </div>
-
-                    {isAddingTag ? (
-                      <div className="flex items-center gap-2">
-                        <select
-                          className="text-sm border border-gray-300 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-green-500"
-                          value={selectedTagId}
-                          onChange={(e) => setSelectedTagId(e.target.value)}
-                        >
-                          <option value="">タグを選択...</option>
-                          {availableTags.map((tag) => (
-                            <option key={tag.id} value={tag.id}>{tag.name}</option>
-                          ))}
-                        </select>
-                        <button
-                          onClick={() => handleAddTag(friend.id)}
-                          disabled={!selectedTagId || loading}
-                          className="px-3 py-1 text-xs font-medium rounded-md text-white disabled:opacity-50 transition-opacity"
-                          style={{ backgroundColor: '#06C755' }}
-                        >
-                          追加
-                        </button>
-                        <button
-                          onClick={() => { setAddingTagForFriend(null); setSelectedTagId('') }}
-                          className="px-3 py-1 text-xs font-medium rounded-md text-gray-600 bg-gray-200 hover:bg-gray-300 transition-colors"
-                        >
-                          キャンセル
-                        </button>
-                      </div>
-                    ) : (
-                      availableTags.length > 0 && (
-                        <button
-                          onClick={() => setAddingTagForFriend(friend.id)}
-                          className="text-xs font-medium text-green-600 hover:text-green-700 flex items-center gap-1 transition-colors"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                          </svg>
-                          タグを追加
-                        </button>
-                      )
-                    )}
+                    <TagEditor
+                      friendId={friend.id}
+                      tags={friend.tags}
+                      allTags={allTags}
+                      onChanged={onRefresh}
+                      onError={setError}
+                    />
 
                     {/* FurimAuto fork 独自: Stripe クーポン付与 */}
                     <div className="pt-3 border-t border-gray-200">

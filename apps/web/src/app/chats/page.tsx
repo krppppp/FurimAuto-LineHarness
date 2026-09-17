@@ -7,7 +7,7 @@ import { UNANSWERED_REFRESH_EVENT } from '@/lib/events'
 import { useAccount } from '@/contexts/account-context'
 import CcPromptButton from '@/components/cc-prompt-button'
 import FlexPreviewComponent from '@/components/flex-preview'
-import FriendInfoSidebar from '@/components/chats/friend-info-sidebar'
+import ChatCustomerPanel from '@/components/furim/chat-customer-panel'
 import { type ImageUploaderValue } from '@/components/shared/image-uploader'
 
 interface Chat {
@@ -329,6 +329,17 @@ export default function ChatsPage() {
   const [chatDetail, setChatDetail] = useState<ChatDetail | null>(null)
   // チャットヘッダーに一目でタグを出すため、開いている friend のタグを取得する。
   const [headerTags, setHeaderTags] = useState<Array<{ id: string; name: string; color: string }>>([])
+  // FurimAuto fork（#308）: 1280px 未満で顧客パネルを重ねて出すか
+  const [customerPanelOpen, setCustomerPanelOpen] = useState(false)
+  useEffect(() => {
+    setCustomerPanelOpen(false)
+  }, [selectedChatId, selectedFriendId])
+  useEffect(() => {
+    if (!customerPanelOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setCustomerPanelOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [customerPanelOpen])
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const statusFilterRef = useRef<StatusFilter>('all')
   const unansweredOnlyRef = useRef(false)
@@ -1315,6 +1326,14 @@ export default function ChatsPage() {
                       次の未対応 →
                     </button>
                   )}
+                  {/* FurimAuto fork（#308）: 1280px 未満で顧客パネルを開く */}
+                  <button
+                    type="button"
+                    onClick={() => setCustomerPanelOpen(true)}
+                    className="xl:hidden rounded-md border border-gray-300 bg-white px-2.5 py-1 min-h-[44px] lg:min-h-0 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    顧客
+                  </button>
                   <div ref={statusMenuRef} className="relative flex-shrink-0">
                     <button
                       type="button"
@@ -1738,16 +1757,36 @@ export default function ChatsPage() {
           表示し続けて pane 間の不整合になる。selection ID 自体が friend_id なので
           直接渡せる (chat list SQL が `id: f.id` で friend_id を返す)。
         */}
+        {/* FurimAuto fork（#308）: 顧客パネル。1280px 以上は 3 列目、未満はヘッダーの「顧客」で重ねて出す（1024px 以上は右から 380px・未満は全画面） */}
         {(selectedChatId || selectedFriendId) && (
           <div className="hidden xl:flex">
-            <FriendInfoSidebar
-              friendId={selectedFriendId || selectedChatId}
+            <ChatCustomerPanel
+              key={selectedFriendId || selectedChatId}
+              friendId={(selectedFriendId || selectedChatId)!}
               chatStatus={
                 chatDetail && chatDetail.id === (selectedFriendId || selectedChatId)
                   ? { status: chatDetail.status, notes: chatDetail.notes }
                   : undefined
               }
+              onTagsChanged={setHeaderTags}
             />
+          </div>
+        )}
+        {customerPanelOpen && (selectedChatId || selectedFriendId) && (
+          <div className="xl:hidden fixed inset-0 z-50 flex justify-end bg-black/30" onClick={() => setCustomerPanelOpen(false)}>
+            <div className="h-[100dvh] w-full lg:w-[380px] bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+              <ChatCustomerPanel
+                key={selectedFriendId || selectedChatId}
+                friendId={(selectedFriendId || selectedChatId)!}
+                chatStatus={
+                  chatDetail && chatDetail.id === (selectedFriendId || selectedChatId)
+                    ? { status: chatDetail.status, notes: chatDetail.notes }
+                    : undefined
+                }
+                onClose={() => setCustomerPanelOpen(false)}
+                onTagsChanged={setHeaderTags}
+              />
+            </div>
           </div>
         )}
       </div>

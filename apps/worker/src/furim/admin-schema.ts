@@ -54,6 +54,8 @@ export interface AdminTable {
   valueLabels?: Record<string, Record<string, string>>;
   /** 一覧で空欄のときに出す説明。dependsOn の列の値ごとに出し分け、無ければ default */
   emptyLabels?: Record<string, { dependsOn?: string; byValue?: Record<string, string>; default: string }>;
+  /** 書き換えると事故になる列（キーコード・Stripe の ID など）。行ドロワーと個別チャットの顧客パネルで、保存の前に確認を出す（Capsec #308） */
+  confirmColumns?: string[];
   /** CSV に furim_feature_flags を 1 機能 1 列（_flag_<feature_key>）で横持ちにして付ける。一覧では行ドロワーの「機能」で出す（Capsec #261・顧客のみ） */
   featureFlags?: boolean;
 }
@@ -415,6 +417,7 @@ export const ADMIN_TABLES: AdminTable[] = [
     joinFriends: true,
     allRows: true,
     featureFlags: true,
+    confirmColumns: ['stripe_customer_id', 'subscription_id', 'key_code'],
     labels: { subscription_price: 'サブスク価格' },
     hidden: [
       'subscription_source',

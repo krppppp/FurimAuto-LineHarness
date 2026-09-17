@@ -4,7 +4,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Header from '@/components/layout/header'
-import { fetchApi, getCsrfToken } from '@/lib/api'
+import { fetchApi } from '@/lib/api'
 import {
   DISPLAY_NAME_COLUMN,
   ROW_ID_COLUMN,
@@ -12,13 +12,25 @@ import {
   listColumnsOf,
   rowId,
   type AdminColumn,
-  type ListColumn,
   type AdminTableMeta,
   type DateTimeStorage,
 } from '../types'
-import { toDisplayDateTime, toStorageDateTime } from '../datetime'
-
-type Row = Record<string, unknown>
+import { toDisplayDateTime } from '../datetime'
+import {
+  DATETIME_PLACEHOLDER,
+  cell,
+  mutate,
+  saveRowChanges,
+  shown,
+  tableHref,
+  type AuditRow,
+  type Row,
+  type RowResponse,
+} from '@/components/data/admin-client'
+import { canEditColumn, collectChanges, isAutoId, isFieldChanged, needsConfirm } from '@/components/data/row-fields'
+import DisplayName from '@/components/data/display-name'
+import RelatedPanel from '@/components/data/related-panel'
+import FeaturePanel from '@/components/data/feature-panel'
 
 type ListResponse = {
   success: boolean
@@ -27,42 +39,7 @@ type ListResponse = {
   meta: { table: AdminTableMeta; total: number; limit: number; cursor: string; nextCursor: string | null }
 }
 
-type RowResponse = { success: boolean; error?: string; data: Row; meta?: { changed?: string[] } }
-
-type AuditRow = {
-  id: string
-  staff_name: string
-  column_name: string
-  old_value: string | null
-  new_value: string | null
-  created_at: string
-}
-
-type Identity = {
-  line_user_id: string | null
-  friend_id: string | null
-  display_name: string | null
-  stripe_customer_id: string | null
-  key_code: string | null
-}
-
-type RelatedEntry = { table: AdminTableMeta; total: number; rows: Row[]; q: string }
-
-type RelatedResponse = { success: boolean; error?: string; data: { identity: Identity; related: RelatedEntry[] } }
-
 const LIMIT = 1000
-const DATETIME_PLACEHOLDER = '2026/09/13 23:45:43'
-
-// fetchApi は 4xx を例外にして本文を捨てるので、PATCH/POST/DELETE のエラー文（列の型違い・UNIQUE 制約など）を出すために本文を読む
-async function mutate(method: 'PATCH' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<RowResponse> {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}${path}`, {
-    method,
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  return res.json() as Promise<RowResponse>
-}
 
 // CSV 書き出し: Cookie 認証付きで取得して blob をダウンロードする（<a href> だと Pages プロキシ経由の Cookie が付かない）
 async function downloadCsv(tableName: string, q: string): Promise<void> {
@@ -85,287 +62,8 @@ async function downloadCsv(tableName: string, q: string): Promise<void> {
   URL.revokeObjectURL(url)
 }
 
-function cell(v: unknown): string {
-  if (v === null || v === undefined) return ''
-  return typeof v === 'string' ? v : String(v)
-}
-
-function shown(v: unknown, datetime: DateTimeStorage | null): string {
-  return datetime ? toDisplayDateTime(v) : cell(v)
-}
-
-function tableHref(name: string, params: Record<string, string>): string {
-  const sp = new URLSearchParams({ name, ...params })
-  return `/data/table?${sp.toString()}`
-}
-
-function DisplayName({ row }: { row: Row }) {
-  const v = cell(row[DISPLAY_NAME_COLUMN])
-  return v ? <span className="font-medium text-gray-900">{v}</span> : <span className="text-gray-300">—</span>
-}
-
 function pkIsInternal(table: AdminTableMeta): boolean {
   return table.pkColumns.some((n) => table.columns.find((c) => c.name === n)?.internal)
-}
-
-function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
-  const id = rowId(row, table)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [identity, setIdentity] = useState<Identity | null>(null)
-  const [related, setRelated] = useState<RelatedEntry[]>([])
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      setLoading(true)
-      setError('')
-      try {
-        const res = await fetchApi<RelatedResponse>(`/api/furim/admin/${table.name}/${encodeURIComponent(id)}/related`)
-        if (!alive) return
-        if (res.success) {
-          setIdentity(res.data.identity)
-          setRelated(res.data.related)
-        } else {
-          setError(res.error ?? '関連データの取得に失敗しました')
-        }
-      } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : '関連データの取得に失敗しました')
-      } finally {
-        if (alive) setLoading(false)
-      }
-    })()
-    return () => {
-      alive = false
-    }
-  }, [table.name, id])
-
-  if (loading) return <div className="px-5 py-4 text-sm text-gray-400">読み込み中...</div>
-  if (error) return <div className="m-5 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>
-
-  const idEntries: Array<[string, string, string | null]> = identity
-    ? [
-        ['LINE表示名', 'display_name', identity.display_name],
-        ['LINEユーザーID', 'line_user_id', identity.line_user_id],
-        ['Stripe顧客ID', 'stripe_customer_id', identity.stripe_customer_id],
-        ['キーコード', 'key_code', identity.key_code],
-      ]
-    : []
-  const nonEmpty = related.filter((r) => r.total > 0)
-  const empty = related.filter((r) => r.total === 0)
-
-  return (
-    <div className="px-5 py-4 space-y-5">
-      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">本人</div>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-          {idEntries.map(([label, name, v]) => (
-            <div key={name} className="contents">
-              <dt className="text-gray-500" title={name}>{label}</dt>
-              <dd className="break-all text-gray-800">{v ? v : <span className="text-gray-300">—</span>}</dd>
-            </div>
-          ))}
-        </dl>
-        {identity && !identity.line_user_id && (
-          <div className="mt-2 text-xs text-gray-500">この行から LINE ユーザーを特定できませんでした</div>
-        )}
-      </div>
-
-      {nonEmpty.length === 0 && <div className="text-sm text-gray-400">紐づくデータはありません</div>}
-
-      {nonEmpty.map((r) => {
-        const cols = listColumnsOf(r.table)
-        return (
-          <div key={r.table.name}>
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="text-sm font-semibold text-gray-900" title={r.table.name}>
-                {r.table.label}
-                <span className="ml-2 text-xs font-normal text-gray-500">{r.total} 件</span>
-              </div>
-              <Link href={tableHref(r.table.name, { q: r.q })} className="text-xs text-green-700 hover:underline">
-                もっと見る →
-              </Link>
-            </div>
-            <div className="overflow-x-auto rounded-lg border border-gray-200">
-              <table className="min-w-full text-xs">
-                <thead>
-                  <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="px-2 py-1.5 text-left font-semibold text-gray-500 whitespace-nowrap" title={DISPLAY_NAME_COLUMN}>
-                      {r.table.displayNameLabel ?? 'LINE表示名'}
-                    </th>
-                    {cols.map((c) => (
-                      <th key={c.name} className="px-2 py-1.5 text-left font-semibold text-gray-500 whitespace-nowrap" title={c.name}>
-                        {c.label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {r.rows.map((x) => {
-                    const pk = rowId(x, r.table)
-                    return (
-                      <tr key={pk} className="hover:bg-green-50">
-                        <td className="px-2 py-1.5 whitespace-nowrap">
-                          <Link href={tableHref(r.table.name, { open: pk })} className="hover:underline">
-                            <DisplayName row={x} />
-                          </Link>
-                        </td>
-                        {cols.map((c) => {
-                          const v = shown(x[c.name], c.datetime)
-                          const t = listCellText(r.table, x, c.name, v)
-                          const linked = c.name === r.table.timeColumn || r.table.pkColumns.includes(c.name)
-                          return (
-                            <td key={c.name} className="px-2 py-1.5 whitespace-nowrap max-w-[16rem] truncate text-gray-800" title={t.title}>
-                              {linked ? (
-                                <Link href={tableHref(r.table.name, { open: pk })} className="text-green-700 hover:underline">
-                                  {v === '' ? '—' : v}
-                                </Link>
-                              ) : t.empty ? (
-                                <span className="text-gray-300">{t.text}</span>
-                              ) : (
-                                t.text
-                              )}
-                            </td>
-                          )
-                        })}
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-            {r.total > r.rows.length && (
-              <div className="mt-1 text-xs text-gray-400">最新 {r.rows.length} 件を表示。残りは「もっと見る」で</div>
-            )}
-          </div>
-        )
-      })}
-
-      {empty.length > 0 && (
-        <div className="text-xs text-gray-400">
-          0 件: {empty.map((r) => r.table.label).join('・')}
-        </div>
-      )}
-    </div>
-  )
-}
-
-type FeatureFlagItem = { feature_key: string; label: string; flag: 'bool' | 'text'; value: string | null; locked: 0 | 1 }
-
-function LockIcon({ locked }: { locked: boolean }) {
-  return (
-    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
-      {locked ? (
-        <path fillRule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clipRule="evenodd" />
-      ) : (
-        <path fillRule="evenodd" d="M14.5 1A4.5 4.5 0 0 0 10 5.5V9H3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1.5V5.5a3 3 0 1 1 6 0v2.75a.75.75 0 0 0 1.5 0V5.5A4.5 4.5 0 0 0 14.5 1Z" clipRule="evenodd" />
-      )}
-    </svg>
-  )
-}
-
-// 行ドロワーの「機能」（Capsec #261）: その顧客 1 人分の機能フラグ。0/1 はその場保存、各機能に固定（鍵）の切り替え
-function FeaturePanel({ lineUserId, displayName }: { lineUserId: string; displayName: string }) {
-  const [items, setItems] = useState<FeatureFlagItem[] | null>(null)
-  const [error, setError] = useState('')
-  const [saving, setSaving] = useState<Set<string>>(() => new Set())
-  const savingRef = useRef<Set<string>>(new Set())
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      try {
-        const res = await fetchApi<{ success: boolean; error?: string; data: FeatureFlagItem[] }>(
-          `/api/furim/admin/furim_customers/${encodeURIComponent(lineUserId)}/feature-flags`,
-        )
-        if (!alive) return
-        if (res.success) setItems(res.data)
-        else setError(res.error ?? '機能フラグの取得に失敗しました')
-      } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : '機能フラグの取得に失敗しました')
-      }
-    })()
-    return () => {
-      alive = false
-    }
-  }, [lineUserId])
-
-  const update = async (item: FeatureFlagItem, kind: 'value' | 'lock') => {
-    const key = `${item.feature_key}|${kind}`
-    if (savingRef.current.has(key)) return
-    savingRef.current.add(key)
-    setSaving(new Set(savingRef.current))
-    const patch: Partial<FeatureFlagItem> =
-      kind === 'value' ? { value: item.value === '1' ? '0' : '1' } : { locked: item.locked ? 0 : 1, value: item.value ?? (item.flag === 'bool' ? '0' : '') }
-    const apply = (p: Partial<FeatureFlagItem>) =>
-      setItems((xs) => (xs ?? []).map((x) => (x.feature_key === item.feature_key ? { ...x, ...p } : x)))
-    apply(patch)
-    setError('')
-    try {
-      const base = `/api/furim/admin/furim_customers/${encodeURIComponent(lineUserId)}/feature-flags`
-      const res =
-        kind === 'value'
-          ? await mutate('PATCH', base, { feature_key: item.feature_key, value: patch.value === '1' ? 1 : 0 })
-          : await mutate('PATCH', `${base}/lock`, { feature_key: item.feature_key, locked: patch.locked })
-      if (!res.success) throw new Error(res.error ?? '保存に失敗しました')
-    } catch (e) {
-      apply({ value: item.value, locked: item.locked })
-      const what = kind === 'value' ? '' : 'の固定'
-      setError(`${displayName || lineUserId} の「${item.label}」${what}を保存できませんでした: ${e instanceof Error ? e.message : String(e)}`)
-    } finally {
-      savingRef.current.delete(key)
-      setSaving(new Set(savingRef.current))
-    }
-  }
-
-  return (
-    <div className="px-5 py-4 space-y-3">
-      {error && <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>}
-      <div className="text-xs text-gray-500">
-        鍵を付けた機能は、決済時の再計算・シート取り込みなど自動の書き込みで変わりません（旧拡張の顧客を除く）。外すと値はそのまま残り、次の再計算から契約どおりに戻ります。
-      </div>
-      {items === null ? (
-        !error && <div className="text-sm text-gray-400">読み込み中...</div>
-      ) : (
-        <ul className="divide-y divide-gray-100 border border-gray-200 rounded-lg">
-          {items.map((item) => {
-            const locked = item.locked === 1
-            return (
-              <li key={item.feature_key} className={`flex items-center gap-3 px-3 py-1.5 text-sm ${locked ? 'bg-amber-50' : ''}`}>
-                <span className="flex-1 min-w-0 truncate text-gray-800" title={item.feature_key}>
-                  {item.label}
-                </span>
-                {item.flag === 'bool' ? (
-                  <input
-                    type="checkbox"
-                    checked={item.value === '1'}
-                    disabled={saving.has(`${item.feature_key}|value`)}
-                    onChange={() => update(item, 'value')}
-                    aria-label={item.label}
-                    className="h-4 w-4 cursor-pointer accent-green-600 disabled:cursor-wait disabled:opacity-50"
-                  />
-                ) : (
-                  <span className="max-w-[16rem] truncate text-gray-700" title={item.value ?? ''}>
-                    {item.value ? item.value : <span className="text-gray-300">—</span>}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  disabled={saving.has(`${item.feature_key}|lock`)}
-                  onClick={() => update(item, 'lock')}
-                  aria-label={locked ? `${item.label}の固定を外す` : `${item.label}を固定する`}
-                  title={locked ? '固定中（クリックで外す）' : '固定する（自動の書き込みで上書きしない）'}
-                  className={`p-1 rounded disabled:cursor-wait disabled:opacity-50 ${locked ? 'text-amber-600' : 'text-gray-300 hover:text-gray-500'}`}
-                >
-                  <LockIcon locked={locked} />
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-      )}
-    </div>
-  )
 }
 
 function RowEditor({
@@ -395,8 +93,8 @@ function RowEditor({
   const [notice, setNotice] = useState('')
   const [audit, setAudit] = useState<AuditRow[]>([])
   // 追加モードでは主キー（id が自動採番のものを除く）と全列を入力できる
-  const autoId = insert && table.pkColumns.length === 1 && table.pkColumns[0] === 'id'
-  const canEdit = (c: { name: string; editable: boolean }) => (insert ? !(autoId && c.name === 'id') : c.editable)
+  const autoId = isAutoId(table, insert)
+  const canEdit = (c: { name: string; editable: boolean }) => canEditColumn(table, c, insert)
 
   const loadAudit = useCallback(async () => {
     if (insert) return
@@ -414,16 +112,9 @@ function RowEditor({
     loadAudit()
   }, [loadAudit])
 
-  // 日時列は表示形式で入力し、送るときにその列の現在の保存形式へ戻す
-  const valueToSend = (c: AdminColumn, text: string): string =>
-    c.datetime ? toStorageDateTime(text, insert ? '' : row[c.name], c.datetime) : text
-  const isChanged = (c: AdminColumn): boolean =>
-    canEdit(c) && (insert ? draft[c.name] !== '' : valueToSend(c, draft[c.name] ?? '') !== cell(row[c.name]))
-
-  const changes: Record<string, string> = {}
-  for (const c of table.columns) {
-    if (isChanged(c)) changes[c.name] = valueToSend(c, draft[c.name] ?? '')
-  }
+  // 日時列は表示形式で入力し、送るときにその列の現在の保存形式へ戻す。編集できる列・送る値・変更の判定は row-fields（個別チャットの顧客パネルと共用・#308）
+  const isChanged = (c: AdminColumn): boolean => isFieldChanged(table, c, draft[c.name] ?? '', row, insert)
+  const changes = collectChanges(table, row, draft, insert)
   const changedCount = Object.keys(changes).length
   const editable = insert || table.columns.some((c) => c.editable)
 
@@ -435,7 +126,8 @@ function RowEditor({
     try {
       const res = insert
         ? await mutate('POST', `/api/furim/admin/${table.name}`, { values: changes })
-        : await mutate('PATCH', `/api/furim/admin/${table.name}/${encodeURIComponent(id)}`, { changes })
+        : await saveRowChanges(table, id, row, changes)
+      if (!res) return
       if (res.success) {
         if (insert) {
           onSaved(res.data)
@@ -514,6 +206,9 @@ function RowEditor({
           <span className="ml-2 text-gray-400">
             {insert && table.pkColumns.includes(c.name) ? (autoId ? '自動採番' : '主キー（必須）') : editableHere ? '' : '読み取り専用'}
           </span>
+          {!insert && editableHere && needsConfirm(table, c.name) && (
+            <span className="ml-2 px-1 rounded bg-amber-50 text-amber-700" title="保存の前に確認が出ます">確認あり</span>
+          )}
         </label>
         <input
           type="text"

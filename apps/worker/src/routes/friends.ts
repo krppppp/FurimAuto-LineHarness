@@ -12,6 +12,7 @@ import {
 } from '@line-crm/db';
 import type { Friend as DbFriend, Tag as DbTag } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
+import { friendHasTag, recordFriendTagAudit } from '../furim/person-audit.js';
 import { buildMessage } from '../services/step-delivery.js';
 import type { Env } from '../index.js';
 
@@ -429,7 +430,9 @@ friends.post('/api/friends/:id/tags', async (c) => {
     }
 
     const db = c.env.DB;
+    const hadTag = await friendHasTag(db, friendId, body.tagId); // FurimAuto fork: 変更履歴（#308）
     await addTagToFriend(db, friendId, body.tagId);
+    await recordFriendTagAudit(db, c.get('staff'), friendId, body.tagId, 'add', hadTag); // FurimAuto fork
 
     // Enroll in tag_added scenarios that match this tag
     const allScenarios = await getScenarios(db);
@@ -461,7 +464,9 @@ friends.delete('/api/friends/:id/tags/:tagId', async (c) => {
     const friendId = c.req.param('id');
     const tagId = c.req.param('tagId');
 
+    const hadTag = await friendHasTag(c.env.DB, friendId, tagId); // FurimAuto fork: 変更履歴（#308）
     await removeTagFromFriend(c.env.DB, friendId, tagId);
+    await recordFriendTagAudit(c.env.DB, c.get('staff'), friendId, tagId, 'remove', hadTag); // FurimAuto fork
 
     // イベントバス発火: tag_change
     await fireEvent(c.env.DB, 'tag_change', { friendId, eventData: { tagId, action: 'remove' } });
