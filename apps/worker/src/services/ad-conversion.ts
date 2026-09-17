@@ -47,6 +47,7 @@ export async function sendAdConversions(
       .first();
     if (alreadySent) continue;
 
+    let googleRecord: string | null = null;
     try {
       switch (platform.name) {
         case 'meta':
@@ -69,10 +70,14 @@ export async function sendAdConversions(
           break;
         case 'google':
           if (ref.gclid) {
-            await sendGoogleConversion(config, ref, eventName, eventValue);
+            // 取り消し（調整）のときに照合できるよう、送った eventTimestamp 等を request_body に残す（Capsec #305）
+            const googleEvent = buildGoogleConversionEvent(config, ref, eventValue);
+            googleRecord = googleConversionRecord(googleEvent);
+            await sendGoogleConversion(config, googleEvent);
             await logAdConversion(db, {
               platformId: platform.id, friendId, eventName,
               clickId: ref.gclid, clickIdType: 'gclid', status: 'sent',
+              requestBody: googleRecord,
             });
           }
           break;
@@ -95,6 +100,7 @@ export async function sendAdConversions(
         clickIdType: platform.name,
         status: 'failed',
         errorMessage: String(error),
+        requestBody: googleRecord,
       });
     }
   }
@@ -245,15 +251,15 @@ async function getGoogleAccessToken(config: AdPlatformConfig): Promise<string> {
 // 必要スコープ: https://www.googleapis.com/auth/datamanager（refresh_token 再取得が前提）。
 // account指定は destinations 内（login=MCC / operating=顧客 / productDestinationId=CVアクションID）。
 // developer-token / login-customer-id ヘッダーは不要。
-async function sendGoogleConversion(
-  config: AdPlatformConfig,
-  ref: RefTracking,
-  _eventName: string,
-  eventValue?: number,
-): Promise<void> {
-  const accessToken = await getGoogleAccessToken(config);
-  const url = 'https://datamanager.googleapis.com/v1/events:ingest';
+type GoogleConversionEvent = { body: { destinations: Array<Record<string, unknown>>; events: Array<Record<string, unknown>>; validateOnly: boolean } };
 
+/** Data Manager API に送る本文を作る（送信と記録で同じものを使うため分けた） */
+export function buildGoogleConversionEvent(
+  config: AdPlatformConfig,
+  ref: Pick<RefTracking, 'gclid'>,
+  eventValue?: number,
+  now: Date = new Date(),
+): GoogleConversionEvent {
   const destination: Record<string, unknown> = {
     reference: 'd1',
     operatingAccount: { product: 'GOOGLE_ADS', accountId: config.customer_id },
@@ -267,7 +273,7 @@ async function sendGoogleConversion(
   const event: Record<string, unknown> = {
     destinationReferences: ['d1'],
     eventSource: 'WEB', // 友だち追加はLP→LINEのWeb由来（Data Manager API必須フィールド）
-    eventTimestamp: new Date().toISOString(), // RFC3339 Z-normalized
+    eventTimestamp: now.toISOString(), // RFC3339 Z-normalized
     adIdentifiers: { gclid: ref.gclid },
     // 友だち追加は自社サービス上の明示アクション。同意ありで送る
     consent: { adUserData: 'CONSENT_GRANTED', adPersonalization: 'CONSENT_GRANTED' },
@@ -276,8 +282,38 @@ async function sendGoogleConversion(
     event.conversionValue = eventValue;
     event.currency = 'JPY';
   }
+  return { body: { destinations: [destination], events: [event], validateOnly: false } };
+}
 
-  const body = { destinations: [destination], events: [event], validateOnly: false };
+/**
+ * ad_conversion_logs.request_body に残す内容（Capsec #305）。
+ * 取り消し（調整）の照合に要る項目だけを許可リストで取り出す: gclid・CV アクション・アカウント・eventTimestamp・値と通貨。
+ * 本文に userData（メール・電話などのハッシュ）や住所などが将来足されても、ここで拾わないので保存されない
+ */
+export function googleConversionRecord(ev: GoogleConversionEvent): string {
+  const d = ev.body.destinations[0] ?? {};
+  const e = ev.body.events[0] ?? {};
+  const record = {
+    api: 'datamanager.events:ingest',
+    conversionActionId: d.productDestinationId ?? null,
+    customerId: (d.operatingAccount as { accountId?: string } | undefined)?.accountId ?? null,
+    loginCustomerId: (d.loginAccount as { accountId?: string } | undefined)?.accountId ?? null,
+    gclid: (e.adIdentifiers as { gclid?: string } | undefined)?.gclid ?? null,
+    eventTimestamp: e.eventTimestamp ?? null,
+    eventSource: e.eventSource ?? null,
+    conversionValue: e.conversionValue ?? null,
+    currency: e.currency ?? null,
+  };
+  return JSON.stringify(record);
+}
+
+async function sendGoogleConversion(
+  config: AdPlatformConfig,
+  ev: GoogleConversionEvent,
+): Promise<void> {
+  const accessToken = await getGoogleAccessToken(config);
+  const url = 'https://datamanager.googleapis.com/v1/events:ingest';
+  const body = ev.body;
 
   const response = await fetch(url, {
     method: 'POST',
