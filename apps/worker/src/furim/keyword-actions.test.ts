@@ -275,6 +275,19 @@ describe('handleKeywordAction キーコードリセットの特別対応（段�
     expect(client.replyMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('30 字を超える文・バグ報告のひな形は、含まれていてもリセットしない（Capsec #298・統括決定）', async () => {
+    const client = makeClient();
+    const db = makeKeycodeDb('pb_test123');
+    const pasted = '✕ 認証できませんでした\n理由：このキーコードは別の端末で既に使用されているか、紐付けが処理中です。\nLINE で「キーコードリセット」と送信してください。';
+    const bugReport = '【バグ・エラー報告フォーマット】\nバグ・エラー内容：キーコードリセット';
+
+    expect(await handleKeywordAction(client as never, 'Uuser', 'rt', pasted, env, db as never)).toBe(false);
+    expect(await handleKeywordAction(client as never, 'Uuser', 'rt', bugReport, env, db as never)).toBe(false);
+    expect(client.replyMessage).not.toHaveBeenCalled();
+    const sqls = db.prepare.mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(sqls.some((q: string) => /device_code/.test(q))).toBe(false);
+  });
+
   it('従来通り【キーワード】プレフィックス付きでも動く', async () => {
     const client = makeClient();
 
