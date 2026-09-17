@@ -141,6 +141,7 @@ export async function handleKeywordAction(
     return true;
   }
 
+  // キーワード名の「1週間」は歴史的なもの。実際の終了日は 14 日後（applyTrialCampaign）。過去に配った案内が効かなくなるので名前は変えない
   if (text.includes('無料お試し1週間')) {
     const match = text.match(/無料お試し1週間(\d{8})/);
     const expiryDate = match ? match[1] : null;
