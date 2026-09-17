@@ -1,16 +1,21 @@
 import type { LineClient } from '@line-crm/line-sdk';
 import { getChatHistory, saveChatHistory } from './firebase-client.js';
+import { loadHowtoText } from './howto-source.js';
 
 export type AIChatEnv = {
   GEMINI_API_KEY: string;
   GITHUB_PAT: string;
   FIREBASE_DATABASE_URL: string;
+  /** 説明書の本文のキャッシュと、直近の使用量の記録に使う（Capsec #307） */
+  FURIM_EXT_CACHE?: KVNamespace;
+  /** 説明書の取得失敗の記録に使う */
+  DB?: D1Database;
 };
 
 const FUNCTION_URLS: Record<string, { video: string; manual: string }> = {
   '値段変更': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E5%80%A4%E6%AE%B5%E5%A4%89%E6%9B%B4.mov', manual: 'https://furimauto.com/howto/#ｍChangePrice' },
   'コメント投稿': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%82%B3%E3%83%A1%E3%83%B3%E3%83%88%E6%8A%95%E7%A8%BF.mov', manual: 'https://furimauto.com/howto/#ｍComment' },
-  'コメント削除': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%82%B3%E3%83%A1%E3%83%B3%E3%83%88%E5%89%8A%E9%99%A4.mov', manual: 'https://furimauto.com/howto/#mCommentDelete' },
+  'コメント削除': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%82%B3%E3%83%A1%E3%83%B3%E3%83%88%E5%89%8A%E9%99%A4.mov', manual: 'https://furimauto.com/howto/#ｍCommentDelete' },
   '商品別底値設定': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E5%95%86%E5%93%81%E5%88%A5%E5%BA%95%E5%80%A4%E8%A8%AD%E5%AE%9A.mov', manual: 'https://furimauto.com/howto/#mBottomPrice' },
   'オークション': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%82%AA%E3%83%BC%E3%82%AF%E3%82%B7%E3%83%A7%E3%83%B3.mov', manual: 'https://furimauto.com/howto/#mAuction' },
   'バックアップ': { video: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%83%8F%E3%82%99%E3%83%83%E3%82%AF%E3%82%A2%E3%83%83%E3%83%95%E3%82%9A.mov', manual: 'https://furimauto.com/howto/#mBackup' },
@@ -45,7 +50,7 @@ async function fetchSpecFiles(githubPat: string): Promise<string> {
   return results.filter(Boolean).join('\n\n---\n\n');
 }
 
-type ChatMessage = { role: 'user' | 'model'; text: string; ts: number };
+export type ChatMessage = { role: 'user' | 'model'; text: string; ts: number };
 
 const RETRY_DELAYS_MS = [10000, 20000, 40000, 80000]; // 10s, 20s, 40s, 80s
 
@@ -68,32 +73,26 @@ async function callGeminiWithRetry(apiKey: string, body: unknown): Promise<Respo
   throw new Error('Gemini API unreachable after retries');
 }
 
-async function generateAIResponse(queryText: string, lineUserId: string, env: AIChatEnv): Promise<{ text: string; additionalMessages: unknown[] }> {
-  const [contextText, history] = await Promise.all([
-    fetchSpecFiles(env.GITHUB_PAT),
-    getChatHistory(env.FIREBASE_DATABASE_URL, lineUserId),
-  ]);
+const FALLBACK_MESSAGE =
+  '「お問い合わせありがとうございます。恐れ入りますが、AIでのご案内は難しい内容のようです。\n\nまずは以下の長尺解説動画をご覧いただくと、多くの疑問が解決できる可能性がございます。\nhttps://www.youtube.com/watch?v=jhaCPxgE_Sk&t=6s\n\nそれでもご不明な点がございましたら、リッチメニュー下部の「AIチャットボットを終了する」ボタンを押した後、「追加サポートを希望する」ボタンをタップしてご連絡ください。担当者より確認の上、返信させていただきます。」';
 
-  if (!contextText) {
-    return { text: '申し訳ありません、関連する情報が見つかりませんでした。', additionalMessages: [] };
-  }
+/**
+ * Gemini に渡すプロンプト（Capsec #307）。
+ * 固定の指示・説明書・faq.md を先頭（prefix）、会話履歴とお客様のメッセージを末尾（suffix）に置く。
+ * 先頭が毎回同じ文字列になるので、Gemini の暗黙キャッシュが効く。
+ * systemInstruction と contents を分けると履歴が増えたときに不安定だった（2026-04-24）ため、1 つの user メッセージの 2 つの part で送る
+ */
+export function buildAIChatPrompt(input: { howtoText: string; faqText: string; history: ChatMessage[]; queryText: string }): { prefix: string; suffix: string } {
+  const sources = [
+    input.howtoText ? `【資料1: 利用方法説明書（https://furimauto.com/howto/ の本文・最新の仕様）】\n${input.howtoText}` : '',
+    input.faqText ? `【資料2: よくある質問（faq.md）】\n${input.faqText}` : '',
+  ].filter(Boolean).join('\n\n----------------------------\n\n');
 
-  // 会話履歴をテキスト形式に変換
-  const historyText = history.length > 0
-    ? '\n\n----------------------------\n【これまでの会話履歴】\n' +
-      history.map(msg => {
-        const time = new Date(msg.ts).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
-        const role = msg.role === 'user' ? 'ユーザー' : 'AI';
-        return `[${time}] ${role}: ${msg.text}`;
-      }).join('\n') +
-      '\n----------------------------'
-    : '';
+  const prefix = `あなたは、当社のサービスである、メルカリやラクマなどのフリマサイトを自動化するツールFurimAuto(フリマート)について熟知した、親切で丁寧なカスタマーサポート担当者です。
+このあとに続く「サービス仕様情報」だけを根拠に、最後に書かれている「お客様からのメッセージ」に回答してください。
 
-  const prompt = `あなたは、当社のサービスである、メルカリやラクマなどのフリマサイトを自動化するツールFurimAuto(フリマート)について熟知した、親切で丁寧なカスタマーサポート担当者です。
-以下の「お客様からのメッセージ」がLINEに届いたユーザーからのメッセージとなっております。
-
-お客様からのメッセージ: ${queryText}
-${historyText}
+**資料の優先順位:**
+${input.howtoText ? '資料1（利用方法説明書）が最新の仕様です。資料1と資料2（よくある質問）の内容が食い違う場合は、必ず資料1を正として回答してください。資料2は、料金・キーコード・LINEの操作など資料1に書かれていない内容の根拠として使ってください。' : '今回は資料2（よくある質問）だけを根拠に回答してください。'}
 
 **回答冒頭の指示:**
 文章の最初にはAIからの返信であるとユーザーに明確に認識させるために【AIチャットボット】というテキストを必ず付けてください。
@@ -102,13 +101,8 @@ ${historyText}
 それ以外のメッセージの場合は、この冒頭文は含めないでください。
 
 ----------------------------
-
-サービス仕様情報:
-${contextText}
-
-----------------------------
 もし、提供されたサービス仕様情報の中に、お客様のメッセージへの適切な回答が見つからない場合は、以下のメッセージを返してください。
-「お問い合わせありがとうございます。恐れ入りますが、AIでのご案内は難しい内容のようです。\n\nまずは以下の長尺解説動画をご覧いただくと、多くの疑問が解決できる可能性がございます。\nhttps://www.youtube.com/watch?v=jhaCPxgE_Sk&t=6s\n\nそれでもご不明な点がございましたら、リッチメニュー下部の「AIチャットボットを終了する」ボタンを押した後、「追加サポートを希望する」ボタンをタップしてご連絡ください。担当者より確認の上、返信させていただきます。」
+${FALLBACK_MESSAGE}
 ----------------------------
 もしお客様のメッセージがエラーやバグの報告のように思える場合は、「リッチメニューのガイドタブから、「バグ・エラー報告」をタップして、指示に従ってご報告ください。」と案内をしてください。
 ----------------------------
@@ -119,11 +113,69 @@ ${contextText}
 - 値段変更 / コメント投稿 / コメント削除 / 商品別底値設定 / オークション / バックアップ / 再出品 / 商品削除 / 出品一覧追加情報表示 / チェックコントローラー / ショップ調査機能 / 自動化処理予約機能 / 自動いいね対応機能 / 自動取引対応機能 / 売上表CSV出力機能
 キーコードがNGになる、や有効ににならないなどの趣旨の場合も「[キーコードリセット]」を使用してください。
 ----------------------------
-以上を踏まえて、日本語で回答してください。LINEにて返答をするので、読みやすいように改行を入れてください。
-会話履歴がある場合はその流れを踏まえて回答してください。`;
+日本語で回答してください。LINEにて返答をするので、読みやすいように改行を入れてください。
+会話履歴がある場合はその流れを踏まえて回答してください。
 
+==============================
+サービス仕様情報:
+
+${sources}
+==============================
+`;
+
+  const historyText = input.history.length > 0
+    ? '【これまでの会話履歴】\n' +
+      input.history.map((msg) => {
+        const time = new Date(msg.ts).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Tokyo' });
+        const role = msg.role === 'user' ? 'ユーザー' : 'AI';
+        return `[${time}] ${role}: ${msg.text}`;
+      }).join('\n') +
+      '\n----------------------------\n'
+    : '';
+
+  const suffix = `${historyText}お客様からのメッセージ: ${input.queryText}`;
+  return { prefix, suffix };
+}
+
+export type GeminiUsage = {
+  promptTokenCount?: number;
+  cachedContentTokenCount?: number;
+  candidatesTokenCount?: number;
+  thoughtsTokenCount?: number;
+  totalTokenCount?: number;
+};
+
+const USAGE_LOG_KEY = 'furim:ai-chat:recent-usage';
+const USAGE_LOG_KEEP = 30;
+
+/** 直近の応答時間と使用量を KV に 30 件だけ残す（本番の確認用・wrangler kv key get で読める） */
+async function recordUsage(kv: KVNamespace | undefined, entry: Record<string, unknown>): Promise<void> {
+  console.log('[furim/ai-chat] usage', JSON.stringify(entry));
+  if (!kv) return;
+  try {
+    const prev = JSON.parse((await kv.get(USAGE_LOG_KEY)) ?? '[]') as unknown[];
+    await kv.put(USAGE_LOG_KEY, JSON.stringify([entry, ...prev].slice(0, USAGE_LOG_KEEP)));
+  } catch (e) {
+    console.warn('[furim/ai-chat] usage record failed:', e);
+  }
+}
+
+async function generateAIResponse(queryText: string, lineUserId: string, env: AIChatEnv): Promise<{ text: string; additionalMessages: unknown[] }> {
+  const [faqText, howto, history] = await Promise.all([
+    fetchSpecFiles(env.GITHUB_PAT),
+    loadHowtoText(env.FURIM_EXT_CACHE, env.DB),
+    getChatHistory(env.FIREBASE_DATABASE_URL, lineUserId),
+  ]);
+
+  if (!faqText && !howto.text) {
+    return { text: '申し訳ありません、関連する情報が見つかりませんでした。', additionalMessages: [] };
+  }
+
+  const { prefix, suffix } = buildAIChatPrompt({ howtoText: howto.text, faqText, history, queryText });
+
+  const startedAt = Date.now();
   const res = await callGeminiWithRetry(env.GEMINI_API_KEY, {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    contents: [{ role: 'user', parts: [{ text: prefix }, { text: suffix }] }],
   });
 
   if (!res.ok) {
@@ -131,8 +183,17 @@ ${contextText}
     return { text: 'AIからの応答中にエラーが発生しました。もう一度お試しください。', additionalMessages: [] };
   }
 
-  const json = await res.json() as { candidates?: Array<{ content: { parts: Array<{ text: string }> } }> };
+  const json = await res.json() as { candidates?: Array<{ content: { parts: Array<{ text: string }> } }>; usageMetadata?: GeminiUsage };
   let aiReply = json.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  await recordUsage(env.FURIM_EXT_CACHE, {
+    at: new Date(startedAt).toISOString(),
+    latencyMs: Date.now() - startedAt,
+    howto: howto.source,
+    howtoChars: howto.text.length,
+    faqChars: faqText.length,
+    historyCount: history.length,
+    ...(json.usageMetadata ?? {}),
+  });
   if (!aiReply) return { text: 'AIからの応答中にエラーが発生しました。もう一度お試しください。', additionalMessages: [] };
 
   // 履歴を保存
