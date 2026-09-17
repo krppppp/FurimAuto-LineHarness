@@ -8,6 +8,7 @@ import { fetchApi, getCsrfToken } from '@/lib/api'
 import {
   DISPLAY_NAME_COLUMN,
   ROW_ID_COLUMN,
+  listCellText,
   listColumnsOf,
   rowId,
   type AdminColumn,
@@ -211,17 +212,18 @@ function RelatedPanel({ table, row }: { table: AdminTableMeta; row: Row }) {
                         </td>
                         {cols.map((c) => {
                           const v = shown(x[c.name], c.datetime)
+                          const t = listCellText(r.table, x, c.name, v)
                           const linked = c.name === r.table.timeColumn || r.table.pkColumns.includes(c.name)
                           return (
-                            <td key={c.name} className="px-2 py-1.5 whitespace-nowrap max-w-[16rem] truncate text-gray-800" title={v}>
+                            <td key={c.name} className="px-2 py-1.5 whitespace-nowrap max-w-[16rem] truncate text-gray-800" title={t.title}>
                               {linked ? (
                                 <Link href={tableHref(r.table.name, { open: pk })} className="text-green-700 hover:underline">
                                   {v === '' ? '—' : v}
                                 </Link>
-                              ) : v === '' ? (
-                                <span className="text-gray-300">—</span>
+                              ) : t.empty ? (
+                                <span className="text-gray-300">{t.text}</span>
                               ) : (
-                                v
+                                t.text
                               )}
                             </td>
                           )
@@ -899,13 +901,14 @@ function DataTableInner() {
                     </td>
                     {cols.map((c) => {
                       const v = shown(r[c.name], c.datetime)
+                      const t = listCellText(table, r, c.name, v)
                       return (
                         <td
                           key={c.name}
                           className={`px-3 py-2 whitespace-nowrap max-w-xs truncate border-b border-gray-100 ${c.datetime ? 'text-gray-600' : 'text-gray-800'}`}
-                          title={v}
+                          title={t.title}
                         >
-                          {v === '' ? <span className="text-gray-300">—</span> : v}
+                          {t.empty ? <span className="text-gray-300">{t.text}</span> : t.text}
                         </td>
                       )
                     })}

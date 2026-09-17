@@ -111,6 +111,25 @@ describe('GET /api/furim/admin/tables', () => {
     expect(customers.columns.find((c) => c.name === 'key_code')!.editable).toBe(true);
   });
 
+  it('認証エラーと監視の記録: キーコードと端末判定文字列を一覧に出し、記録の種類と理由を日本語に、空欄の意味を持つ（2026-09-17）', async () => {
+    const { db } = makeDb();
+    const res = await req(db, 'GET', '/api/furim/admin/tables');
+    const body = (await res.json()) as {
+      data: Array<{ name: string; label: string; listColumns: string[]; valueLabels: Record<string, Record<string, string>> | null; emptyLabels: Record<string, { dependsOn?: string; byValue?: Record<string, string>; default: string }> | null; columns: Array<{ name: string; label: string; internal: boolean }> }>;
+    };
+    const t = body.data.find((x) => x.name === 'furim_ext_errors')!;
+    expect(t.label).toBe('認証エラーと監視の記録');
+    expect(t.listColumns.slice(0, 5)).toEqual(['created_at', 'method', 'error', 'key_code', 'discrimination_code']);
+    expect(t.columns.find((c) => c.name === 'line_user_id')!.internal).toBe(true);
+    expect(t.valueLabels!.method.getKeyCodeSet).toBe('キーコード認証');
+    expect(t.valueLabels!.method.stackExecutionData).toBe('処理履歴の送信');
+    expect(t.valueLabels!.method.botHandler).toBe('LINE bot の処理失敗（Worker）');
+    expect(t.valueLabels!.error['該当レコードなし']).toContain('キーコードが見つからない');
+    expect(t.emptyLabels!.discrimination_code.byValue!.getKeyCodeSet).toBe('（拡張から届いていない）');
+    expect(t.emptyLabels!.discrimination_code.default).toBe('—（キーコード認証の行だけに入る）');
+    expect(t.emptyLabels!.key_code.byValue!.collectSkip).toBe('—（Worker 側の記録）');
+  });
+
   it('071 のログ系テーブルは読み取り専用で入り、keys を持つ', async () => {
     const { db } = makeDb();
     const res = await req(db, 'GET', '/api/furim/admin/tables');
@@ -858,7 +877,8 @@ describe('#263 顧客マスター以外の ID 類は一覧から外しドロワ�
     affiliates: ['id', 'friend_id', 'name', 'commission_rate', 'is_active', '_line_user_id'],
     furim_coupons: ['coupon_id'],
     furim_execution_logs: ['id', 'line_user_id', 'key_code'],
-    furim_ext_errors: ['id', 'line_user_id', 'key_code', 'discrimination_code'],
+    // キーコードと端末判定文字列は 2026-09-17 くろさん OK で一覧に出す（#263 の例外）
+    furim_ext_errors: ['id', 'line_user_id'],
     furim_free_accounts: ['install_id', 'key_code'],
     furim_manual_copy_logs: ['id', 'install_id', 'key_code', 'line_user_id', 'item_id'],
     furim_shop_research_logs: ['id', 'install_id', 'key_code', 'line_user_id'],

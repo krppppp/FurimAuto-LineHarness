@@ -386,6 +386,8 @@ function serializeTable(table: AdminTable) {
     timeColumn: table.timeColumn ?? null,
     timeColumnLabel: table.timeColumn ? columnLabel(table, table.timeColumn) : null,
     listColumns: listColumnNames(table),
+    valueLabels: table.valueLabels ?? null,
+    emptyLabels: table.emptyLabels ?? null,
   };
 }
 

@@ -48,6 +48,23 @@ export type AdminTableMeta = {
   timeColumnLabel: string | null
   /** 一覧の列順（LINE 表示名の後ろ。基準日時 → 残り・内部 ID を除く） */
   listColumns: string[]
+  /** 一覧の表示だけで使う値の日本語ラベル（列 → 元の値 → 表示）。ドロワーと CSV は元の値 */
+  valueLabels?: Record<string, Record<string, string>> | null
+  /** 一覧で空欄のときに出す説明 */
+  emptyLabels?: Record<string, { dependsOn?: string; byValue?: Record<string, string>; default: string }> | null
+}
+
+/** 一覧のセルに出す文字（日本語ラベル・空欄の説明）。title は元の値を含める */
+export function listCellText(table: AdminTableMeta, row: Record<string, unknown>, column: string, shownValue: string): { text: string; empty: boolean; title: string } {
+  if (shownValue === '') {
+    const rule = table.emptyLabels?.[column]
+    if (!rule) return { text: '—', empty: true, title: '' }
+    const dep = rule.dependsOn ? row[rule.dependsOn] : undefined
+    const text = (typeof dep === 'string' && rule.byValue?.[dep]) || rule.default
+    return { text, empty: true, title: text }
+  }
+  const label = table.valueLabels?.[column]?.[shownValue]
+  return label ? { text: label, empty: false, title: `${label}（${shownValue}）` } : { text: shownValue, empty: false, title: shownValue }
 }
 
 export const DISPLAY_NAME_COLUMN = '_display_name'

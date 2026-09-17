@@ -1,3 +1,4 @@
+import { EXT_ERROR_METHOD_LABELS, EXT_ERROR_REASON_LABELS, WORKER_EXT_ERROR_METHODS } from './ext-error-labels.js';
 export type AdminColumnType = 'text' | 'integer' | 'real';
 
 export interface AdminColumn {
@@ -49,6 +50,10 @@ export interface AdminTable {
   virtualColumns?: AdminVirtualColumn[];
   listOrder?: string[];
   hidden?: string[];
+  /** 一覧の表示だけで使う値の日本語ラベル（列 → 元の値 → 表示）。行ドロワーと CSV は元の値のまま */
+  valueLabels?: Record<string, Record<string, string>>;
+  /** 一覧で空欄のときに出す説明。dependsOn の列の値ごとに出し分け、無ければ default */
+  emptyLabels?: Record<string, { dependsOn?: string; byValue?: Record<string, string>; default: string }>;
   /** CSV に furim_feature_flags を 1 機能 1 列（_flag_<feature_key>）で横持ちにして付ける。一覧では行ドロワーの「機能」で出す（Capsec #261・顧客のみ） */
   featureFlags?: boolean;
 }
@@ -668,14 +673,22 @@ export const ADMIN_TABLES: AdminTable[] = [
     keys: [k('line_user_id', 'line_user_id'), k('key_code', 'key_code')],
   },
   {
+    // 認証エラーと監視の記録（2026-09-17 くろさん OK）。キーコードと端末判定文字列は #263 の「ID 類はドロワーのみ」の例外として一覧に出す
     name: 'furim_ext_errors',
-    label: '拡張エラー',
+    label: '認証エラーと監視の記録',
     pk: 'id',
     orderBy: 'created_at DESC',
     touchUpdatedAt: false,
     timeColumn: 'created_at',
     internal: ['id'],
-    idColumns: ['line_user_id', 'key_code', 'discrimination_code'],
+    idColumns: ['line_user_id'],
+    listOrder: ['method', 'error', 'key_code', 'discrimination_code', 'mercari_url', 'client'],
+    labels: { method: '記録の種類', error: '理由', key_code: 'キーコード', discrimination_code: '端末判定文字列', mercari_url: 'メルカリURL', client: 'クライアント', created_at: '日時' },
+    valueLabels: { method: EXT_ERROR_METHOD_LABELS, error: EXT_ERROR_REASON_LABELS },
+    emptyLabels: {
+      discrimination_code: { dependsOn: 'method', byValue: { getKeyCodeSet: '（拡張から届いていない）' }, default: '—（キーコード認証の行だけに入る）' },
+      key_code: { dependsOn: 'method', byValue: Object.fromEntries([...WORKER_EXT_ERROR_METHODS].map((m) => [m, '—（Worker 側の記録）'])), default: '—' },
+    },
     columns: [
       ro('id'),
       ro('line_user_id', true),

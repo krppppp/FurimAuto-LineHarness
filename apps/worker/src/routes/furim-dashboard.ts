@@ -353,12 +353,14 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
       "SELECT COUNT(*) AS n, MIN(created_at) AS since FROM ad_conversion_logs WHERE status IN ('failed', 'pending')",
       [], 'yellow',
     );
-    await add(
-      'ext_errors', '拡張のエラー（直近 24 時間）', '/data/table?name=furim_ext_errors',
-      `SELECT COUNT(*) AS n, MIN(created_at) AS since FROM furim_ext_errors WHERE ${secOf('created_at')} >= ?`,
-      [jstHoursAgo(now, 24)],
-      'yellow',
-    );
+    // 認証エラーと監視の記録（直近 24 時間）を記録の種類で分ける（2026-09-17 くろさん OK）。
+    // 以前の「拡張のエラー」1 項目は何の記録か分からず、collectSkip を専用項目と二重に数えていた
+    {
+      const { summarizeExtErrors } = await import('../furim/ext-error-summary.js');
+      for (const item of await summarizeExtErrors(db, jstHoursAgo(now, 24))) {
+        items.push({ ...item, acked: null, isNew: false });
+      }
+    }
 
     // 未返信が 3 時間を超えたもの（Capsec #295）。判定はチャット画面の「未対応のみ」と同じ関数を使い、
     // 件数を必ず一致させる。会話の締めは件数から外すが、除外件数として出す
