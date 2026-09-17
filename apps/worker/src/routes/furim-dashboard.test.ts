@@ -98,6 +98,18 @@ describe('GET /api/furim/dashboard', () => {
     expect(q.binds.length).toBeGreaterThan(50);
   });
 
+  it('有料転換は最初の入金で数え、試用から始めた人（最初が subscription_cycle）も入れる。送信を諦めた広告 CV は数えない（Capsec #289）', async () => {
+    const { db, captured } = makeDb(baseCanned);
+    const res = await furimDashboard.request('/api/furim/dashboard', {}, { DB: db } as never);
+    const conv = captured.find((x) => /WITH first_paid AS/.test(x.sql))!;
+    expect(conv.sql).toContain("billing_reason IN ('subscription_create', 'subscription_cycle', 'subscription_update')");
+    expect(conv.sql).not.toContain("billing_reason = 'subscription_create'");
+    const cv = captured.find((x) => /FROM ad_conversion_logs/.test(x.sql))!;
+    expect(cv.sql).toContain("status IN ('failed', 'pending')");
+    const body = (await res.json()) as { sections: { anomalies: { items: Array<{ kind: string }> } } };
+    expect(body.sections.anomalies.items.some((i) => i.kind === 'first_paid_gap')).toBe(false);
+  });
+
   it('日時は T 区切りにそろえてから切り出す（datetime(now) は使わない）', async () => {
     const { db, captured } = makeDb(baseCanned);
     await furimDashboard.request('/api/furim/dashboard', {}, { DB: db } as never);

@@ -24,7 +24,7 @@ type Write = { sql: string; args: unknown[] };
  * - friends の display_name → opts.names
  * - batch / run は記録
  */
-function makeDb(opts: { customers?: unknown[]; openDiffs?: unknown[]; dueDiffs?: unknown[]; names?: unknown[]; flags?: unknown[] } = {}) {
+function makeDb(opts: { customers?: unknown[]; openDiffs?: unknown[]; dueDiffs?: unknown[]; names?: unknown[]; flags?: unknown[]; accepted?: unknown[] } = {}) {
   const writes: Write[] = [];
   const stmtFor = (sql: string, args: unknown[]) => ({
     sql,
@@ -35,6 +35,7 @@ function makeDb(opts: { customers?: unknown[]; openDiffs?: unknown[]; dueDiffs?:
       if (/FROM furim_feature_flags/.test(sql)) return { results: opts.flags ?? [] };
       if (/FROM furim_customers/.test(sql)) return { results: opts.customers ?? [] };
       if (/notified_at IS NULL AND first_seen_at/.test(sql)) return { results: opts.dueDiffs ?? [] };
+      if (/notified_at LIKE 'accepted:%'/.test(sql)) return { results: opts.accepted ?? [] };
       if (/FROM furim_sync_diffs WHERE resolved_at IS NULL/.test(sql)) return { results: opts.openDiffs ?? [] };
       if (/FROM friends/.test(sql)) return { results: opts.names ?? [] };
       return { results: [] };
@@ -214,6 +215,24 @@ describe('reconcileFurimCustomers', () => {
     ]);
     expect(lineClient.pushMessage).not.toHaveBeenCalled();
     expect(sendPushToAll).not.toHaveBeenCalled();
+  });
+
+  it('人がシート側の誤りとして受け入れた差分は、シートの値が同じなら数え直さない（Capsec #289）', async () => {
+    gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ 'LINE_ID': uid('9'), 'キーコード': '2weektrial_x' }), sheetRow({ 'Stripe顧客ID': 'cus_other' })] });
+    const { db, writes } = makeDb({
+      customers: [customer({ stripe_customer_id: null })],
+      accepted: [
+        { line_user_id: uid('9'), field: 'row_missing_in_d1', sheet_value: '2weektrial_x' },
+        { line_user_id: uid('1'), field: 'stripe_customer_id', sheet_value: 'cus_old' },
+      ],
+    });
+
+    const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
+
+    const inserts = writes.filter((w) => /INSERT INTO furim_sync_diffs/.test(w.sql));
+    // uid(9) の行なしは受け入れ済みで消える。uid(1) の Stripe 顧客 ID はシートの値が変わっている（cus_other）ので出る
+    expect(inserts.map((w) => [w.args[1], w.args[2], w.args[4]])).toEqual([[uid('1'), 'stripe_customer_id', 'cus_other']]);
+    expect(r.newDiffs).toBe(1);
   });
 
   it('継続中の diff は last_seen を更新し、消えた diff は resolved にする', async () => {

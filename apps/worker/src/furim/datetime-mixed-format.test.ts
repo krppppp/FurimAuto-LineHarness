@@ -71,8 +71,10 @@ describe('plan-change-watch: created_at の形式が混ざっても 30 分・3 �
       await watchPlanChangeIntents(wrapped, { pushMessage: vi.fn() } as never, {} as never);
       const expected = offsets.map((o, i) => (oldJudge(NOW - o) ? `PB-${i}` : null)).filter(Boolean);
       expect(picked, fmt.name).toEqual(expected);
-      expect(seen[0].sql).toContain("substr(replace(i.created_at, ' ', 'T'), 1, 19) < ?");
-      expect(seen[0].binds).toEqual(['2026-09-14T13:10:00', '2026-09-11T13:40:00']);
+      // 先頭の「開いている警告の見直し」（clearSupersededAlerts）の後に、取得の SQL が来る
+      const intentsQuery = seen.find((x) => x.sql.includes('plan_builder_intents i'))!;
+      expect(intentsQuery.sql).toContain("substr(replace(i.created_at, ' ', 'T'), 1, 19) < ?");
+      expect(intentsQuery.binds).toEqual(['2026-09-14T13:10:00', '2026-09-11T13:40:00']);
     }
   });
 });

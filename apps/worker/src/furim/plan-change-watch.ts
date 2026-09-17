@@ -44,6 +44,8 @@ export async function watchPlanChangeIntents(
 ): Promise<void> {
   // created_at は jstNow（ISO+09:00）。旧形式の "YYYY-MM-DD HH:MM:SS" が残っていても同じ判定になるよう、
   // 両辺を JST の "YYYY-MM-DDTHH:MM:SS"（先頭 19 文字）にそろえて比べる（Capsec #260）
+  await clearSupersededAlerts(db);
+
   const nowMs = Date.now();
   const graceCutoff = toJstString(new Date(nowMs - GRACE_MINUTES * 60_000)).slice(0, 19);
   const lookbackCutoff = toJstString(new Date(nowMs - LOOKBACK_DAYS * 24 * 60 * 60_000)).slice(0, 19);
@@ -131,6 +133,42 @@ export async function watchPlanChangeIntents(
       console.error('[plan-change-watch] check failed:', row.id, e);
     }
   }
+}
+
+/**
+ * すでに警告を出した intent のうち、あとから新しい完了済みの変更で上書きされたものの警告を外す。
+ *
+ * 上書きの検査（findSupersedingIntent）は notified_at が空の行しか通らない。PB-321DC7 は
+ * 9cead62（2026-09-16）より前の 9/15 08:15 に警告済みで、4 分後の PB-6E70D0 に上書きされているのに
+ * 警告が残り続けた（Capsec #288 の直しが効かなかった理由）。警告を出した後に上書きされる場合も同じなので、
+ * 毎回の見回りで開いている警告を見直す。stage は 'superseded:<新しいコード>' にし、notified_at は残す
+ */
+export async function clearSupersededAlerts(db: D1Database): Promise<number> {
+  const open = await db
+    .prepare(
+      `SELECT id, line_user_id, payload, used_at, stage, error, created_at, NULL AS display_name
+       FROM plan_builder_intents
+       WHERE stage LIKE 'watch:alert:%'
+       ORDER BY created_at
+       LIMIT 50`,
+    )
+    .all<IntentRow>();
+  let cleared = 0;
+  for (const row of open.results ?? []) {
+    try {
+      const superseded = await findSupersedingIntent(db, row);
+      if (!superseded) continue;
+      await db
+        .prepare("UPDATE plan_builder_intents SET stage = ?, updated_at = ? WHERE id = ? AND stage LIKE 'watch:alert:%'")
+        .bind(`superseded:${superseded}`, jstNow(), row.id)
+        .run();
+      cleared++;
+      console.log(`[plan-change-watch] ${row.id} の警告を外した（${superseded} に上書き済み）`);
+    } catch (e) {
+      console.error('[plan-change-watch] superseded check failed:', row.id, e);
+    }
+  }
+  return cleared;
 }
 
 /** 同じサブスクに対する、これより新しい used 済みの変更（あればそのコード） */

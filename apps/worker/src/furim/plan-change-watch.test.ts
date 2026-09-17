@@ -9,7 +9,7 @@ vi.mock('../routes/plan-builder.js', () => ({
   buildItemsFromSelection: vi.fn(() => [{ price: 'price_full', quantity: 1 }]),
 }));
 
-import { watchPlanChangeIntents } from './plan-change-watch.js';
+import { clearSupersededAlerts, watchPlanChangeIntents } from './plan-change-watch.js';
 import { sendPushToAll } from '../services/push-notify.js';
 import { stripeCall } from '../routes/plan-builder.js';
 
@@ -102,7 +102,7 @@ describe('watchPlanChangeIntents', () => {
   it('手で片づけた intent（stage が manual: で始まる）は取得対象から外す', async () => {
     const { db, queries } = makeDb([], []);
     await watchPlanChangeIntents(db, lineClient, env);
-    expect(queries[0]).toContain("i.stage NOT LIKE 'manual:%'");
+    expect(queries.find((q) => q.includes("json_extract(i.payload, '$.type') = 'change'"))).toContain("i.stage NOT LIKE 'manual:%'");
   });
 
   it('used 済みの upgrade は items に新プランの price が揃っていれば通知しない', async () => {
@@ -111,5 +111,23 @@ describe('watchPlanChangeIntents', () => {
     const { db } = makeDb([up], ['PB-TEST01']);
     await watchPlanChangeIntents(db, lineClient, env);
     expect(push).not.toHaveBeenCalled();
+  });
+
+  it('警告を出したあとで新しい完了済みの変更に上書きされた intent は、次の見回りで警告を外す（PB-321DC7・Capsec #288）', async () => {
+    const alerted = { ...base, id: 'PB-321DC7', used_at: '2026-09-15T07:41:26', stage: 'watch:alert:Stripe の items に新プランが無い（1件不足）' };
+    const { db, updates, queries } = makeDb([alerted], ['PB-321DC7'], 'PB-6E70D0');
+    const cleared = await clearSupersededAlerts(db);
+    expect(cleared).toBe(1);
+    expect(queries[0]).toContain("WHERE stage LIKE 'watch:alert:%'");
+    const u = updates.find((x) => String(x.binds[0]).startsWith('superseded:'));
+    expect(u?.binds[0]).toBe('superseded:PB-6E70D0');
+    expect(u?.sql).toContain("stage LIKE 'watch:alert:%'");
+  });
+
+  it('上書きが無い警告はそのまま残す', async () => {
+    const alerted = { ...base, stage: 'watch:alert:未処理（used_at なし）' };
+    const { db, updates } = makeDb([alerted], ['PB-TEST01'], null);
+    expect(await clearSupersededAlerts(db)).toBe(0);
+    expect(updates).toHaveLength(0);
   });
 });

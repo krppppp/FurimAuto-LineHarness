@@ -199,13 +199,17 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
       .bind(from, today, ...EXCLUDED)
       .all<{ t: string; invoices: number; payers: number; excl_tax: number; incl_tax: number; new_paid: number }>();
 
-    // 無料→有料の転換: その人にとって初めての課金が成立した日。1 人 1 回だけ数える
+    // 無料→有料の転換: その人にとって初めて入金があった日。1 人 1 回だけ数える。
+    // subscription_create だけで数えると、Stripe の無料試用で始めた人（最初の請求が 0 円で、
+    // 初めての入金が 1 週間後の subscription_cycle）が漏れる（2023〜2024 年の 12 人・Capsec #289 で確認）。
+    // manual（チケットの単発購入）は定期の契約ではないので除く
     const conv = await db
       .prepare(
         `WITH first_paid AS (
            SELECT line_user_id, MIN(${secOf('paid_at')}) AS first_at
            FROM furim_payments
-           WHERE line_user_id IS NOT NULL AND actual_paid_amount > 0 AND billing_reason = 'subscription_create'
+           WHERE line_user_id IS NOT NULL AND actual_paid_amount > 0
+             AND billing_reason IN ('subscription_create', 'subscription_cycle', 'subscription_update')
            GROUP BY line_user_id
          )
          SELECT substr(first_at, 1, ${KEY_LEN[g]}) AS t, COUNT(*) AS n
@@ -343,7 +347,8 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
     );
     await add(
       'ad_cv_failed', '広告 CV 送信の失敗', '/data/table?name=ad_conversion_logs',
-      "SELECT COUNT(*) AS n, MIN(created_at) AS since FROM ad_conversion_logs WHERE status <> 'sent'",
+      // 'abandoned' は送信を諦めたもの（テスト用の架空 gclid・期限切れ等。Capsec #289）。数えない
+      "SELECT COUNT(*) AS n, MIN(created_at) AS since FROM ad_conversion_logs WHERE status IN ('failed', 'pending')",
       [], 'yellow',
     );
     await add(
@@ -479,28 +484,6 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
         count: staleDays ?? 0,
         since: lastAd?.d ?? null,
         href: '/data/table?name=furim_ad_spend',
-        severity: 'yellow',
-        acked: null,
-        isNew: false,
-      });
-    }
-
-    // 初回課金の数え方のズレ（billing_reason が空の古い行の取りこぼしを黙って見逃さない）
-    const gap = await db
-      .prepare(
-        `SELECT
-           (SELECT COUNT(DISTINCT line_user_id) FROM furim_payments WHERE actual_paid_amount > 0 AND line_user_id IS NOT NULL) AS payers,
-           (SELECT COUNT(DISTINCT line_user_id) FROM furim_payments WHERE actual_paid_amount > 0 AND line_user_id IS NOT NULL AND billing_reason = 'subscription_create') AS created`,
-      )
-      .first<{ payers: number; created: number }>();
-    const diff = num(gap?.payers) - num(gap?.created);
-    if (diff > 0) {
-      items.push({
-        kind: 'first_paid_gap',
-        label: `初回課金を特定できない人が ${diff} 人（billing_reason が空の古い行）`,
-        count: diff,
-        since: null,
-        href: '/data/table?name=furim_payments',
         severity: 'yellow',
         acked: null,
         isNew: false,

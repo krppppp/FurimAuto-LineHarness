@@ -461,6 +461,21 @@ export async function reconcileFurimCustomers(
     if (!seenSheet.has(lineUserId)) observed.push({ lineUserId, field: 'row_missing_in_sheet', d1Value: d1.get(lineUserId)?.key_code ?? '(row)', sheetValue: null });
   }
 
+  // 「D1 が正しく、シート側の誤り」と人が判断して受け入れた差分（notified_at が 'accepted:' 始まり）は、
+  // シートの値が同じままなら数え直さない。シートは凍結で直せないため、解決済みにしても次の回で
+  // 新しい行として出直していた（2026-09-17 テストリセット後の行・他人の Stripe 顧客 ID・Capsec #289）。
+  // シートの値が変われば別の差分として出る
+  const acceptedRes = await db
+    .prepare("SELECT line_user_id, field, sheet_value FROM furim_sync_diffs WHERE resolved_at IS NOT NULL AND notified_at LIKE 'accepted:%'")
+    .all<{ line_user_id: string; field: string; sheet_value: string | null }>();
+  const accepted = new Set((acceptedRes.results ?? []).map((a) => `${a.line_user_id}|${a.field}|${a.sheet_value ?? ''}`));
+  if (accepted.size) {
+    for (let i = observed.length - 1; i >= 0; i--) {
+      const o = observed[i];
+      if (accepted.has(`${o.lineUserId}|${o.field}|${o.sheetValue ?? ''}`)) observed.splice(i, 1);
+    }
+  }
+
   // 未解決の diff と突き合わせ: 継続は last_seen 更新、新規は INSERT、消えたものは resolved
   const openRes = await db.prepare('SELECT * FROM furim_sync_diffs WHERE resolved_at IS NULL').all<DiffRow>();
   const open = new Map<string, DiffRow>();
