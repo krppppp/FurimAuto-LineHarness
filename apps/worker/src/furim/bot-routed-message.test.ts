@@ -47,7 +47,8 @@ describe('normalizeBotCommand（Capsec #298）', () => {
     expect(normalizeBotCommand('「バグ・エラー報告」')).toBe('【リッチメニュー】バグ・エラー報告');
     expect(normalizeBotCommand('【リッチメニュー】 キーコード発行')).toBe('【リッチメニュー】キーコード発行');
     expect(normalizeBotCommand('キーコード　リセット')).toBe('キーコードリセット');
-    expect(normalizeBotCommand('キーコード\nリセットお願いします')).toBe('キーコードリセットお願いします');
+    expect(normalizeBotCommand('「キーコード リセット」')).toBe('キーコードリセット');
+    expect(normalizeBotCommand('【キーワード】キーコード　リセット')).toBe('キーコードリセット');
   });
 
   it('正しい形と自由文は変えない', async () => {
@@ -59,6 +60,10 @@ describe('normalizeBotCommand（Capsec #298）', () => {
       'プラン確認したいです',
       'ホームページ見ました。料金はいくらですか？',
       'キーコード',
+      // 空白を詰めると「キーコードリセット」を含む質問は、リセットに回さない（統括指摘）
+      'キーコード リセットしたのに入れません',
+      'キーコード　リセットはどうやるんですか？',
+      'キーコード\nリセットお願いします',
     ]) {
       expect(normalizeBotCommand(t), t).toBe(t);
     }
@@ -67,6 +72,7 @@ describe('normalizeBotCommand（Capsec #298）', () => {
   it('表記ゆれの押下も未対応に数えない', () => {
     expect(isBotRoutedText('キーコード発行\n')).toBe(true);
     expect(isBotRoutedText('キーコード　リセット')).toBe(true);
+    expect(isBotRoutedText('キーコード リセットしたのに入れません')).toBe(false);
   });
 
   it('メニュー名の一覧は、リッチメニューとアクションの受け口と一致している', async () => {
