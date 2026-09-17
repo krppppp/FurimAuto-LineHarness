@@ -1212,9 +1212,10 @@ async function scheduled(
   // 旧経路の会員が 0 人になったら内部で何もしない（移行が終わったら自然に止まる）。デプロイは権限管理課
   if (event.cron === '0 */6 * * *' && env.GAS_DEPLOY_ID) {
     try {
-      const { syncExecutionLogsFromSheet } = await import('./furim/sheet-execution-sync.js');
+      const { syncExecutionLogsFromSheet, recordSheetSyncHeartbeat } = await import('./furim/sheet-execution-sync.js');
       const result = await syncExecutionLogsFromSheet(env.DB, env.GAS_DEPLOY_ID, { dryRun: false });
       console.log('[sheet-execution-sync]', JSON.stringify(result));
+      await recordSheetSyncHeartbeat(env.DB, result);
     } catch (e) {
       console.error('sheet-execution-sync error:', e);
     }

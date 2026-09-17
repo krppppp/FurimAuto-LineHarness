@@ -43,6 +43,14 @@ type RevenueSection = {
 type ChurnSection = { ok: true; series: Array<{ t: string; churned: number }>; blocked: number }
 type AdSpendSection = { ok: true; series: Array<{ t: string; cost: number; clicks: number; impressions: number }>; lastImportedAt: string | null }
 type TrialSection = { ok: true; active: number; endingSoon: number }
+type AutomationDay = { t: string; runs: number; people: number; unidentified: number }
+type AutomationSection = {
+  ok: true
+  series: AutomationDay[]
+  target: AutomationDay & { medianRuns: number | null; medianPeople: number | null; byService: Array<{ service: string; runs: number; people: number }> }
+  today: { t: string; asOf: string; runs: number; people: number; sameTimeAvg: number | null }
+  sheetSync: { lastRunAt: string | null; note: string | null }
+}
 type Anomaly = {
   kind: string
   label: string
@@ -66,11 +74,12 @@ type Dashboard = {
     churn: ChurnSection | Failed
     adSpend: AdSpendSection | Failed
     trial: TrialSection | Failed
+    automation?: AutomationSection | Failed
     anomalies: AnomaliesSection | Failed
   }
 }
 
-const COLORS = { friends: '#06C755', ads: '#2563eb', revenue: '#7c3aed', converted: '#f59e0b', churn: '#dc2626', cost: '#0ea5e9', cpa: '#ea580c' }
+const COLORS = { automation: '#0d9488', people: '#4f46e5', friends: '#06C755', ads: '#2563eb', revenue: '#7c3aed', converted: '#f59e0b', churn: '#dc2626', cost: '#0ea5e9', cpa: '#ea580c' }
 
 function SectionShell({
   title,
@@ -314,6 +323,7 @@ export default function DashboardPage() {
   const churn = s?.churn
   const adSpend = s?.adSpend
   const trial = s?.trial
+  const automation = s?.automation
   const anomalies = s?.anomalies
 
   const failOf = (sec: { ok: boolean; error?: string } | undefined) => (sec && !sec.ok ? (sec.error ?? '不明なエラー') : undefined)
@@ -341,6 +351,11 @@ export default function DashboardPage() {
     { key: 'cpa', label: '実 CPA（友だち 1 人あたり）', kind: 'line', color: COLORS.cpa, right: true, format: formatYen },
   ]
   const churnSeries: ChartSeries[] = [{ key: 'churned', label: '解約', kind: 'bar', color: COLORS.churn }]
+  const automationSeries: ChartSeries[] = [
+    { key: 'runs', label: '件数', kind: 'bar', color: COLORS.automation },
+    { key: 'people', label: '人数', kind: 'line', color: COLORS.people, right: true },
+  ]
+  const ratioText = (v: number, m: number | null) => (m && m > 0 ? `${Math.round((v / m) * 100)}%` : '—')
 
   return (
     <div>
@@ -407,6 +422,60 @@ export default function DashboardPage() {
                       </span>
                     ))}
                 </div>
+              </>
+            )}
+          </SectionShell>
+
+          {/* 自動化の日別件数と人数（Capsec #296）。粒度・期間の切り替えとは別に、直近 14 日の確定分だけを出す */}
+          <SectionShell
+            title="自動化の日別件数と人数"
+            note={
+              automation?.ok
+                ? `直近 14 日の確定分（${labelOf('day', automation.target.t, true)} まで）。件数は実行ログの行数、人数は LINE ID の数。社内・検証用は除く。シート取り込みの最終 ${automation.sheetSync.lastRunAt ? automation.sheetSync.lastRunAt.slice(0, 16).replace('T', ' ') : '記録なし'}`
+                : undefined
+            }
+            href="/data/table?name=furim_execution_logs"
+            linkLabel="実行ログ"
+            failed={failOf(automation)}
+          >
+            {automation?.ok && (
+              <>
+                <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <StatCard
+                    label={`${labelOf('day', automation.target.t)} の件数`}
+                    value={automation.target.runs}
+                    unit="件"
+                    hint={`直近 7 日の中央値 ${automation.target.medianRuns ?? '—'} 件の ${ratioText(automation.target.runs, automation.target.medianRuns)}`}
+                  />
+                  <StatCard
+                    label={`${labelOf('day', automation.target.t)} の人数`}
+                    value={automation.target.people}
+                    unit="人"
+                    hint={`直近 7 日の中央値 ${automation.target.medianPeople ?? '—'} 人の ${ratioText(automation.target.people, automation.target.medianPeople)}`}
+                  />
+                  <StatCard label="人を特定できない" value={automation.target.unidentified} unit="件" hint="LINE ID の無い行。件数にだけ入れている" />
+                  <StatCard
+                    label={`今日 ${automation.today.asOf} まで（参考）`}
+                    value={automation.today.runs}
+                    unit="件"
+                    hint={`直近 7 日の同じ時刻まで 平均 ${automation.today.sameTimeAvg ?? '—'} 件・${automation.today.people} 人。シート分は最大 6 時間遅れて入るので判定には使わない`}
+                  />
+                </div>
+                {asTable ? (
+                  <DataTable
+                    rows={automation.series as unknown as ChartPoint[]}
+                    columns={[{ key: 'runs', label: '件数' }, { key: 'people', label: '人数' }, { key: 'unidentified', label: '人を特定できない' }]}
+                    granularity="day"
+                  />
+                ) : (
+                  <TimeSeriesChart points={automation.series as unknown as ChartPoint[]} series={automationSeries} granularity="day" height={240} />
+                )}
+                {automation.target.byService.length > 0 && (
+                  <p className="mt-3 text-xs text-gray-500">
+                    {labelOf('day', automation.target.t)} の販路別:{' '}
+                    {automation.target.byService.map((b) => `${b.service} ${formatNumber(b.runs)} 件・${formatNumber(b.people)} 人`).join(' / ')}
+                  </p>
+                )}
               </>
             )}
           </SectionShell>

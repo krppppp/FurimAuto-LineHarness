@@ -68,7 +68,7 @@ describe('GET /api/furim/dashboard', () => {
     const body = (await res.json()) as { range: { granularity: string; period: string }; sections: Record<string, { ok: boolean }> };
     expect(body.range.granularity).toBe('month');
     expect(body.range.period).toBe('1y');
-    expect(Object.keys(body.sections).sort()).toEqual(['adSpend', 'anomalies', 'churn', 'friends', 'revenue', 'trial']);
+    expect(Object.keys(body.sections).sort()).toEqual(['adSpend', 'anomalies', 'automation', 'churn', 'friends', 'revenue', 'trial']);
     for (const [name, s] of Object.entries(body.sections)) expect(s.ok, name).toBe(true);
   });
 

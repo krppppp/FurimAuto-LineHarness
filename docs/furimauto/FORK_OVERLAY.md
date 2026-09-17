@@ -16,7 +16,7 @@
 > （`scripts/merge-upstream.sh` はこの `- ` 行からパスを抽出してコンフリクト判定に使う）
 
 ### worker
-- apps/worker/src/index.ts — cron に `watchPlanChangeIntents`（furim/plan-change-watch.ts・2026-09-13 #240）。furim/messages/entry-routes/furim-coupons/furim-chats の import & `app.route` 追加。`processKaisetsuDeliveries`・`processPendingCouponNotifications`（クーポン付与LINE通知）を cron に。毎時0分 GAS `sendStepMessages`（セグメント判定の心臓）。Env Bindings に GAS_DEPLOY_ID / FIREBASE_DATABASE_URL / STRIPE_SECRET_KEY / GEMINI_API_KEY / GITHUB_PAT / RICHMENU_* 追加 | upstream index.ts に同フックを再注入。理想は furim/mount.ts に集約し1〜2行で差し込む
+- apps/worker/src/index.ts — cron に `watchPlanChangeIntents`（furim/plan-change-watch.ts・2026-09-13 #240）。furim/messages/entry-routes/furim-coupons/furim-chats の import & `app.route` 追加。`processKaisetsuDeliveries`・`processPendingCouponNotifications`（クーポン付与LINE通知）を cron に。毎時0分 GAS `sendStepMessages`（セグメント判定の心臓）。6 時間ごとの `syncExecutionLogsFromSheet` のあとに `recordSheetSyncHeartbeat`（furim_health_heartbeat の id=sheet_execution_sync・2026-09-17 #296）。Env Bindings に GAS_DEPLOY_ID / FIREBASE_DATABASE_URL / STRIPE_SECRET_KEY / GEMINI_API_KEY / GITHUB_PAT / RICHMENU_* 追加 | upstream index.ts に同フックを再注入。理想は furim/mount.ts に集約し1〜2行で差し込む
 - apps/worker/src/routes/webhook.ts — 【プラン変更】の dispatch は `runHandlerSafely` で包む（2026-09-13 #240）。follow/unfollow で `fireEvent`。メッセージ振り分け（【ボタン】【キーワード】・リッチメニュー切替・AIチャット・Furimanクーポン・解説見た）。handler は全て furim/ 側。WebhookEnv 型。チャットを未読にしない判定（リッチメニュー・autoKeywords・配信時間コマンド）は furim/bot-routed-message.ts の定数を使う（2026-09-17 #295） | upstream の follow/message ハンドラに furim handler 呼び出しを再注入
 - apps/worker/src/services/unanswered-inbox.ts — 未対応の判定で、webhook が bot に回す入力（リッチメニュー・ボタン・キーワード・プラン変更/申し込み等。furim/bot-routed-message.ts の `isBotRoutedIncoming`）を人の返事待ちから外す。import 1 行＋ループ内 1 行（2026-09-17 #295）。チャット画面の「未対応のみ」・/api/inbox・トップの未返信警告が同じ関数なので件数は揃う | 2 行を再注入。upstream が判定を変えたら furim 側の条件が効いているか unanswered-inbox.test.ts の #295 ブロックで確認
 - apps/worker/src/services/event-bus.ts — 独自アクション: call_gas / call_gas_post / call_gas_get / send_messages / create_stripe_customer / add_tag_by_name / remove_tag_by_name / complete_active_scenarios / code_managed。条件演算子 not_empty/empty/equals/not_equals/falsy。resolveGasArgs（{{line_user_id}}/{{display_name}}/{{stripe_customer_id}}/{{now_jst}}/{{trial_end_jst}}）。ActionEnv で env を action へ | upstream の executeAction switch に独自 case を追加
@@ -34,7 +34,7 @@
 - apps/web/src/components/app-shell.tsx — upstream の `UpdateBanner`(改造検知) を furim の `UpstreamUpdateBanner`(フォーク元更新通知のみ) に差し替え（import + タグの2行） | upstream UpdateBanner は無改変で残す。差し替え2行を再適用
 - apps/web/src/components/layout/sidebar.tsx — メインセクションに `/tags`「タグ管理」項目を1行追加（FurimAuto独自ページ）。加えて2026-07-16: upstream の `/notifications`「未対応」メニュー項目を**削除**し、バッジを「個別チャット(/chats)」に移設＝意味を「未対応(messages_log計算)」→「未読(chats.status='unread')」に変更。カウント取得を `api.inbox.unanswered.count()`→`api.furimChats.unreadCount()` に差し替え、ポーリング 5分→60秒 | メニュー配列の /tags 1行再追加＋/notifications 削除＋バッジの href='/chats'・unreadCount 化を再適用。upstream が /notifications を残す場合は本フォークでは非表示のまま
 - apps/web/next.config.ts — `typescript.ignoreBuildErrors:true` ・ `eslint.ignoreDuringBuilds:true`（upstream管理UIの型strict起因のビルド停止を回避する暫定） | 暫定措置。upstream側の型が直れば外す
-- apps/web/src/app/page.tsx — 管理画面トップを全面差し替え（Capsec #282 段階2 / #285・2026-09-16）。upstream の 6 枚のカードとデモバナーと Claude 用プロンプトは全部消し、D1 だけを読む 6 区画（異常・友だち追加と流入別・月次課金実績・広告費と実CPA・解約・試用中）に作り替えた。中身がフォーク元と完全に別物なので upstream の変更は取り込まない（ours 固定） | 衝突したら常に ours を採用する（`git checkout --ours apps/web/src/app/page.tsx`）。upstream 側に必要な変更があるかは git diff で読んでから個別に入れる
+- apps/web/src/app/page.tsx — 管理画面トップを全面差し替え（Capsec #282 段階2 / #285・2026-09-16）。upstream の 6 枚のカードとデモバナーと Claude 用プロンプトは全部消し、D1 だけを読む区画（異常・友だち追加と流入別・自動化の日別件数と人数（#296・2026-09-17 追加）・月次課金実績・広告費と実CPA・解約・試用中）に作り替えた。中身がフォーク元と完全に別物なので upstream の変更は取り込まない（ours 固定） | 衝突したら常に ours を採用する（`git checkout --ours apps/web/src/app/page.tsx`）。upstream 側に必要な変更があるかは git diff で読んでから個別に入れる
 - apps/web/src/app/chats/page.tsx — モバイルUX一式（2026-07-14〜: タイトル削除・全画面固定・5s/15sポーリング・LINE準拠描画・入力欄・pull-to-refresh）。upstream改修が入ると競合大 | 差分が大きいのでマージ時は git diff で当該コミット群を個別再適用
 - apps/web/src/components/friends/friend-list-table.tsx — 展開パネル内に `<CouponManager>`（Stripeクーポン付与）を1ブロック追加。実体は components/friends/coupon-manager.tsx（fork独自） | import + JSX 1ブロックを再適用
 - apps/web/src/components/friends/friend-list-row.tsx — ボタンラベル「タグ編集」→「タグ・クーポン」（1語） | 1行再適用
@@ -49,7 +49,7 @@
 ## マージ後チェックリスト
 - [ ] worker ビルド: `pnpm --filter './packages/*' run build && pnpm --filter worker run build`
 - [ ] web ビルド: `NEXT_PUBLIC_API_URL=… pnpm --filter web run build`
-- [ ] トップ（apps/web/src/app/page.tsx）がフォーク版のままか確認（6 区画のダッシュボード。upstream のカード群に戻っていないこと）
+- [ ] トップ（apps/web/src/app/page.tsx）がフォーク版のままか確認（7 区画のダッシュボード。upstream のカード群に戻っていないこと）
 - [ ] 上記レジストリの各フックが残っているか grep 確認（fireEvent / furim import / 独自action case / ADMIN_ORIGIN）
 - [ ] 型エラー境界（completeFriendActiveScenarios→completeFriendScenario / getScenarioByName→getScenarioById 等、reapply-analysis C節）
 - [ ] `apps/web/src/components/furim/upstream-update-banner.tsx` のベースライン(APP_VERSION=package.json version)が新upstream版に追従しているか

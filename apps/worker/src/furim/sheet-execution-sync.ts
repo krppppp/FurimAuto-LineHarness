@@ -67,6 +67,20 @@ export async function lastImportedSheetRow(db: D1Database): Promise<string | nul
   return row?.last ?? null;
 }
 
+/**
+ * 取り込みが完走した印を心拍の表に残す（Capsec #296）。トップが「7 時間止まったら黄」に使う。
+ * 移行完了で何もしなかった回も「動いた」として書く（止まったのではないので）
+ */
+export async function recordSheetSyncHeartbeat(db: D1Database, result: ExecutionSyncResult, nowJst: string = toJstString(new Date())): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO furim_health_heartbeat (id, last_run_at, mode, note) VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET last_run_at = excluded.last_run_at, mode = excluded.mode, note = excluded.note`,
+    )
+    .bind('sheet_execution_sync', nowJst, result.stopped ? 'stopped' : 'sync', JSON.stringify(result).slice(0, 500))
+    .run();
+}
+
 /** 処理日時が since 以降の行だけ残す（処理日時が読めない行は安全側で残す。重複は dedupe_key が防ぐ） */
 export function filterRecentRows(rows: SheetRow[], since: string): SheetRow[] {
   return rows.filter((r) => {

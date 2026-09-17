@@ -7,7 +7,7 @@ import { EXCLUDED_LINE_IDS } from '../furim/segments.js';
  * 管理画面トップのダッシュボード API（Capsec #282 段階2 / #285）。
  *
  * - GET /api/furim/dashboard?granularity=day|month|year&period=3m|6m|1y|all
- *   6 区画（友だち追加・月次課金実績・解約・広告費・試用中・異常）を 1 往復で返す。
+ *   7 区画（友だち追加・月次課金実績・解約・広告費・試用中・自動化の日別件数と人数・異常）を 1 往復で返す。
  *   区画ごとに ok を持たせ、1 つが落ちても他は出す（取得失敗と 0 件を画面で区別するため）。
  * - POST /api/furim/ad-spend/import
  *   Google 広告 API から取った日次の費用を upsert する（GoogleAds/ad_spend_to_d1.py が叩く）。
@@ -297,6 +297,12 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
     return { active: num(row?.active), endingSoon: num(row?.ending) };
   });
 
+  // 自動化の日別件数と人数（Capsec #296）。粒度・期間の切り替えとは独立に、直近 14 日の確定分を出す
+  const automation = await section('automation', async () => {
+    const { summarizeAutomationDaily } = await import('../furim/automation-daily.js');
+    return summarizeAutomationDaily(db, now);
+  });
+
   const anomalies = await section('anomalies', async () => {
     const items: AnomalyItem[] = [];
     const add = async (
@@ -426,6 +432,41 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
       console.log('[dashboard] heartbeat check skipped:', e);
     }
 
+    // 自動化の件数・人数の減少と、シート取り込みの停止（Capsec #296）
+    if (automation.ok) {
+      const { judgeAutomationDrop, sheetSyncStaleHours, addDays, CONFIRM_AFTER_HHMM, SHEET_SYNC_STALE_HOURS } = await import('../furim/automation-daily.js');
+      const tg = automation.target;
+      const drop = judgeAutomationDrop(tg, tg.medianRuns, tg.medianPeople);
+      if (drop) {
+        const pct = (r: number | null) => (r === null ? '—' : `${Math.round(r * 100)}%`);
+        items.push({
+          kind: 'automation_drop',
+          label: `自動化が減った（${tg.t.slice(5).replace('-', '/')}: ${tg.runs} 件・${tg.people} 人）`,
+          count: drop.depthPercent,
+          since: `${addDays(tg.t, 1)}T${CONFIRM_AFTER_HHMM}:00`,
+          href: '/data/table?name=furim_execution_logs',
+          severity: drop.severity,
+          acked: null,
+          isNew: false,
+          note: `直近 7 日の中央値（${tg.medianRuns ?? '—'} 件・${tg.medianPeople ?? '—'} 人）に対して、件数 ${pct(drop.runsRatio)}・人数 ${pct(drop.peopleRatio)}。85% 未満で黄・70% 未満で赤`,
+        });
+      }
+      const staleHours = sheetSyncStaleHours(automation.sheetSync.lastRunAt, now);
+      if (staleHours !== null && staleHours >= SHEET_SYNC_STALE_HOURS) {
+        items.push({
+          kind: 'sheet_sync_stale',
+          label: `シートからの実行ログ取り込みが ${staleHours} 時間止まっている`,
+          count: staleHours,
+          since: automation.sheetSync.lastRunAt,
+          href: '/data/table?name=furim_health_heartbeat',
+          severity: 'yellow',
+          acked: null,
+          isNew: false,
+          note: '6 時間ごとに動くはずの取り込み。止まっている間は旧版の会員の実行が数に入らない',
+        });
+      }
+    }
+
     // 広告費の取り込みが止まっていないか（自動実行が死んでも気づけるように）
     const lastAd = await db.prepare('SELECT MAX(date) AS d FROM furim_ad_spend').first<{ d: string | null }>();
     const staleDays = lastAd?.d
@@ -470,7 +511,7 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
     return { items };
   });
 
-  return c.json({ success: true, range, sections: { friends, revenue, churn, adSpend, trial, anomalies } });
+  return c.json({ success: true, range, sections: { friends, revenue, churn, adSpend, trial, automation, anomalies } });
 });
 
 // POST /api/furim/dashboard/anomalies/ack — 異常を「確認済み」にする（Capsec #289）。
