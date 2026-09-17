@@ -625,3 +625,68 @@ describe('auto_reply マッチ除外', () => {
     expect(ids.size).toBe(1);
   });
 });
+
+describe('FurimAuto: bot に回る押下は未対応にしない（Capsec #295）', () => {
+  const baseRow = (overrides: Partial<InboxRow>): InboxRow => ({
+    friend_id: 'f1',
+    display_name: 'A',
+    picture_url: null,
+    line_account_id: 'a1',
+    account_name: 'L ①',
+    last_incoming: '2026-05-08T10:00:00+09:00',
+    last_manual: null,
+    last_machine: null,
+    last_incoming_type: 'text',
+    last_incoming_content: 'msg',
+    ...overrides,
+  });
+
+  test('リッチメニューの押下だけの会話は除外される', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f_tap', last_incoming_content: '【リッチメニュー】キーコード発行' })],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(0);
+    expect((await countUnanswered(db)).total).toBe(0);
+  });
+
+  test('押下のあとに顧客が書いた質問は対象に残る', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f1', last_incoming: '2026-05-08T10:05:00+09:00' })],
+      recentIncomings: [
+        { friend_id: 'f1', message_type: 'text', content: 'キーコードが認証されません', created_at: '2026-05-08T10:05:00+09:00' },
+        { friend_id: 'f1', message_type: 'text', content: '【リッチメニュー】キーコード発行', created_at: '2026-05-08T10:00:00+09:00' },
+      ],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+    expect(result.rows[0].lastIncomingContent).toBe('キーコードが認証されません');
+  });
+
+  test('質問のあとに押下が続いても、プレビューは質問になる', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f1', last_incoming: '2026-05-08T10:05:00+09:00' })],
+      recentIncomings: [
+        { friend_id: 'f1', message_type: 'text', content: '【ボタン】コピー出品チケット30枚GET', created_at: '2026-05-08T10:05:00+09:00' },
+        { friend_id: 'f1', message_type: 'text', content: 'スマホ対応してますか？', created_at: '2026-05-08T10:00:00+09:00' },
+      ],
+    });
+
+    const { getUnansweredFriendIds } = await import('./unanswered-inbox.js');
+    const result = await computeUnansweredInbox(db);
+    expect(result.rows[0].lastIncomingContent).toBe('スマホ対応してますか？');
+    expect(result.rows[0].lastIncomingAt).toBe('2026-05-08T10:00:00+09:00');
+    expect((await getUnansweredFriendIds(db)).has('f1')).toBe(true);
+  });
+
+  test('「追加サポート」ボタンは担当者対応を約束しているので対象に残る', async () => {
+    const db = stubDB({
+      rows: [baseRow({ friend_id: 'f_support', last_incoming_content: '【ボタン】追加サポート' })],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    expect(result.total).toBe(1);
+  });
+});

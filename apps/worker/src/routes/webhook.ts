@@ -19,6 +19,7 @@ import { handleFurimAction, actionFurimanCoupon, actionExtendTrial } from '../fu
 import type { FurimActionsEnv } from '../furim/actions.js';
 import { handleButtonAction } from '../furim/button-actions.js';
 import { handleKeywordAction } from '../furim/keyword-actions.js';
+import { AUTO_KEYWORDS, RICHMENU_MESSAGE_PREFIX, TIME_COMMAND_PATTERN } from '../furim/bot-routed-message.js';
 import { FRIEND_TRIAL_DAYS, formatJstIso, generateTrialKeyCode, getFurimCustomer, upsertFurimCustomer, type FurimCustomerPatch } from '../furim/customer-store.js';
 
 // X口コミクーポン申請の通知先（くろさん）。申請URLと付与コマンドをpushする
@@ -644,10 +645,10 @@ async function handleEvent(
 
     // チャットを作成/更新（ユーザーの自発的メッセージのみ unread にする）
     // ボタンタップ等の自動応答キーワードは除外
-    const autoKeywords = ['料金', '機能', 'API', 'フォーム', 'ヘルプ', 'UUID', 'UUID連携について教えて', 'UUID連携を確認', '配信時間', '導入支援を希望します', 'アカウント連携を見る', '体験を完了する', 'BAN対策を見る', '連携確認'];
-    const isRichMenuMessage = incomingText.startsWith('【リッチメニュー】');
-    const isAutoKeyword = autoKeywords.some(k => incomingText === k);
-    const isTimeCommand = /(?:配信時間|配信|届けて|通知)[はを]?\s*\d{1,2}\s*時/.test(incomingText);
+    // 条件は furim/bot-routed-message.ts と共通（未対応の判定と揃える・Capsec #295）
+    const isRichMenuMessage = incomingText.startsWith(RICHMENU_MESSAGE_PREFIX);
+    const isAutoKeyword = AUTO_KEYWORDS.includes(incomingText);
+    const isTimeCommand = TIME_COMMAND_PATTERN.test(incomingText);
     if (!isAutoKeyword && !isTimeCommand && !isRichMenuMessage) {
       await upsertChatOnMessage(db, friend.id);
       if (env) {

@@ -1,3 +1,5 @@
+import { isBotRoutedIncoming } from '../furim/bot-routed-message.js';
+
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 2000;
 
@@ -290,6 +292,8 @@ async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
     for (const i of incomings) {
       if (consumeAutoReplyEvidence(i.created_at, remainingOutgoings)) continue;
       if (matchesAnyKeyword(i.content, i.message_type, activeRules)) continue;
+      // FurimAuto: リッチメニュー・ボタン等は webhook の bot が返すので人の返事待ちにしない（Capsec #295）
+      if (isBotRoutedIncoming(i.message_type, i.content)) continue;
       // この incoming は人間対応必要 → preview として採用 (最新の非マッチ)
       nonMatching = i;
       break;
