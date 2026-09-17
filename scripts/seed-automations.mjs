@@ -88,7 +88,7 @@ const TOKUTEN_FLEX = JSON.stringify({
   hero: { type: 'image', url: 'https://furimauto.com/service/images/special_offer.png', size: 'full', aspectRatio: '1:1', aspectMode: 'cover' },
   body: { type: 'box', layout: 'vertical', spacing: 'md', contents: [
     { type: 'text', text: '🎁 無料期間中に15大特典をGETしよう！', weight: 'bold', size: 'lg', wrap: true, color: '#FF6B35' },
-    { type: 'text', text: '友達登録から1週間の無料試用期間中に、段階的に15種類の特典をプレゼントします！', size: 'sm', color: '#555555', wrap: true, margin: 'sm' },
+    { type: 'text', text: '友達登録から2週間の無料試用期間中に、段階的に15種類の特典をプレゼントします！', size: 'sm', color: '#555555', wrap: true, margin: 'sm' },
     { type: 'separator', margin: 'md' },
     { type: 'box', layout: 'vertical', margin: 'md', spacing: 'xs', contents: [
       { type: 'text', text: '📦 今すぐもらえる特典', weight: 'bold', size: 'sm', color: '#333333' },
@@ -118,7 +118,7 @@ const SURVEY_FLEX = JSON.stringify({
 
 // キーコードは自動で送らない（くろさん方針2026-07-08: リッチメニューの発行ボタンを
 // ユーザー自身に押させることがエンゲージメントのきっかけになるため）。トライアル全機能化の訴求のみ反映
-const WELCOME_TEXT = '/／\n🗣 友達登録ありがとうございます！\n\\＼\n╭△━━━━━━━━━━━━━━━╮\nたった今から、\n全機能が使い放題の\n1週間無料試用期間が\n開始となります！🎉\n╰━━━━━━━━━━━━━━━━╯\n\nFurimAuto(フリマート)は\nメルカリを中心に、\nそのフリマサイト上で自動化を実現する\nChrome拡張機能型ツールです！💻\n\n---------------------------------------------------\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢\n\n👆どんな使い方をするのか、\n👆サクッと基本を知るには\n👆上の動画\n\n👇1週間の無料期間での\n👇ベストな使い方を知るには\n👇下の動画\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢';
+const WELCOME_TEXT = '/／\n🗣 友達登録ありがとうございます！\n\\＼\n╭△━━━━━━━━━━━━━━━╮\nたった今から、\n全機能が使い放題の\n2週間無料試用期間が\n開始となります！🎉\n╰━━━━━━━━━━━━━━━━╯\n\nFurimAuto(フリマート)は\nメルカリを中心に、\nそのフリマサイト上で自動化を実現する\nChrome拡張機能型ツールです！💻\n\n---------------------------------------------------\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢\n\n👆どんな使い方をするのか、\n👆サクッと基本を知るには\n👆上の動画\n\n👇2週間の無料期間での\n👇ベストな使い方を知るには\n👇下の動画\n\n◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢◤◢';
 
 // 解約理由アンケート（1タップ回答→button-actions.tsの「解約理由:」ハンドラが受ける）
 const CANCEL_SURVEY_FLEX = JSON.stringify({
@@ -169,7 +169,7 @@ if (friendAddId) {
   // step2: 無料試用期間中タグ付与
   insertAction({ automationId: friendAddId, stepOrder: 2, actionType: 'add_tag_by_name', label: '無料試用期間中タグ付与', conditionJson: { isNewUser: true }, params: { tagName: '無料試用期間中' } });
   // ※キーコードの自動お届けは実施しない（くろさん方針2026-07-08: 発行ボタンをユーザーに
-  //   押させる）。トライアル全機能化はプラン一覧「友達登録1週間トライアルプラン」行の
+  //   押させる）。トライアル全機能化はプラン一覧「友達登録2週間トライアルプラン」行の
   //   全機能化（実施済み）によりsetCustomerData内のsetKeyCode転写で実現される
 
   insertAction({ automationId: friendAddId, stepOrder: 7, actionType: 'send_messages', label: 'ウェルカム5通送信', conditionJson: { isNewUser: true }, params: { messages: [
