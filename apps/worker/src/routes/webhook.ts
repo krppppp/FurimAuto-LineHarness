@@ -19,7 +19,7 @@ import { handleFurimAction, actionFurimanCoupon, actionExtendTrial } from '../fu
 import type { FurimActionsEnv } from '../furim/actions.js';
 import { handleButtonAction } from '../furim/button-actions.js';
 import { handleKeywordAction } from '../furim/keyword-actions.js';
-import { AUTO_KEYWORDS, RICHMENU_MESSAGE_PREFIX, TIME_COMMAND_PATTERN } from '../furim/bot-routed-message.js';
+import { AUTO_KEYWORDS, RICHMENU_MESSAGE_PREFIX, TIME_COMMAND_PATTERN, normalizeBotCommand } from '../furim/bot-routed-message.js';
 import { FRIEND_TRIAL_DAYS, formatJstIso, generateTrialKeyCode, getFurimCustomer, upsertFurimCustomer, type FurimCustomerPatch } from '../furim/customer-store.js';
 
 // X口コミクーポン申請の通知先（くろさん）。申請URLと付与コマンドをpushする
@@ -477,7 +477,8 @@ async function handleEvent(
     // furim系ハンドラーのreply/push送信をチャット履歴(messages_log)に残す
     const loggingClient = withOutgoingLog(lineClient, db, friend.id);
 
-    const incomingText = textMessage.text;
+    // 振り分けは表記ゆれをそろえた文で行い、履歴には受け取ったままの文を残す（Capsec #298）
+    const incomingText = normalizeBotCommand(textMessage.text);
     const now = jstNow();
     const logId = crypto.randomUUID();
 
@@ -487,7 +488,7 @@ async function handleEvent(
         `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, quote_token, created_at)
          VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, ?, ?)`,
       )
-      .bind(logId, friend.id, incomingText, textMessage.quoteToken ?? null, now)
+      .bind(logId, friend.id, textMessage.text, textMessage.quoteToken ?? null, now)
       .run();
 
     // 【プラン変更】PB-XXXXXX: 既存契約者のLIFF申込。新規Checkoutではなく

@@ -21,7 +21,39 @@ export const TIME_COMMAND_PATTERN = /(?:配信時間|配信|届けて|通知)[�
 
 const HUMAN_FOLLOWUP_BUTTONS = ['【ボタン】追加サポート'];
 
-export function isBotRoutedText(text: string): boolean {
+/**
+ * リッチメニューが送る「【リッチメニュー】<名前>」の名前。
+ * rich-menu.ts の handleRichMenuSwitch（tab）と actions.ts の handleFurimAction（case）が受け付けるもの。
+ * 足し忘れは bot-routed-message.test.ts が両ファイルとの突き合わせで検知する
+ */
+export const RICHMENU_COMMANDS: readonly string[] = [
+  'ホームタブ', 'ガイドタブ', 'Q&Aタブ', 'AIチャットボットを終了する',
+  'キーコード発行', 'チケット注文', '月額会員ページ', '限定特典GET', '利用方法説明書', 'アンバサダー制度',
+  'Meet予約', '簡単解説1分動画', 'Youtube動画講座', 'クーポンGET', 'ホームページ', 'メルカリ物販Lab',
+  'バグ・エラー報告', '開発者について', 'プラン診断', 'プラン確認', 'アップデート情報',
+];
+
+const KEYCODE_RESET = 'キーコードリセット';
+
+/**
+ * 手入力の表記ゆれを、bot が受け付ける形にそろえる（Capsec #298・2026-09-17）。
+ * 本番で「キーコード発行」（接頭辞なし・改行付き）や「キーコード　リセット」（全角スペース）に返信が出ていなかった。
+ *
+ * - 空白（半角・全角・改行）とかぎ括弧を除いた結果がメニュー名と一致すれば「【リッチメニュー】<名前>」にする
+ * - 空白を除くと「キーコードリセット」を含むなら、空白を除いた文にする（既存の含む判定に乗せる）
+ * - それ以外は受け取ったまま返す（自由文には触らない）
+ */
+export function normalizeBotCommand(text: string): string {
+  const compact = text.replace(/[\s　]/g, '');
+  const unquoted = compact.replace(/^[「『"“]+/, '').replace(/[」』"”]+$/, '');
+  const name = unquoted.startsWith(RICHMENU_MESSAGE_PREFIX) ? unquoted.slice(RICHMENU_MESSAGE_PREFIX.length) : unquoted;
+  if (RICHMENU_COMMANDS.includes(name)) return `${RICHMENU_MESSAGE_PREFIX}${name}`;
+  if (!text.includes(KEYCODE_RESET) && compact.includes(KEYCODE_RESET)) return compact;
+  return text;
+}
+
+export function isBotRoutedText(raw: string): boolean {
+  const text = normalizeBotCommand(raw);
   if (HUMAN_FOLLOWUP_BUTTONS.some((b) => text.includes(b))) return false;
   const trimmed = text.trim();
   if (text.startsWith('【プラン変更】') || text.startsWith('【プラン申し込み】')) return true;
