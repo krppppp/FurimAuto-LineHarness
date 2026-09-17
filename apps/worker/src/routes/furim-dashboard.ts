@@ -90,6 +90,15 @@ export type AnomalyItem = {
 const ACK_FRESH_HOURS = 24;
 
 /**
+ * JST の現在時刻（ISO+09:00）から N 時間前を、JST の 'YYYY-MM-DDTHH:MM:SS' で返す。
+ * new Date(...).toISOString() は UTC になるので、JST の created_at と比べると 9 時間ずれる（2026-09-17 修正）
+ */
+export function jstHoursAgo(nowIso: string, hours: number): string {
+  const ms = Date.parse(nowIso.slice(0, 19) + '+09:00') - hours * 3600_000;
+  return new Date(ms + 9 * 3600_000).toISOString().slice(0, 19);
+}
+
+/**
  * 確認済みの反映（Capsec #289）。
  * 件数が確認時より増えたか、いったん解消してから再発した（初回検知が確認時より新しい）ときは、
  * 確認済みを無効にしてまた出す。放置の言い訳にしないため。
@@ -100,7 +109,7 @@ export async function applyAcks(db: D1Database, items: AnomalyItem[], nowIso: st
     .prepare('SELECT kind, ack_key, acked_at, acked_by, count_at_ack, first_seen_at_ack, note FROM furim_anomaly_acks')
     .all<{ kind: string; ack_key: string; acked_at: string; acked_by: string; count_at_ack: number; first_seen_at_ack: string | null; note: string | null }>();
   const acks = new Map((rows.results ?? []).map((r) => [`${r.kind}:${r.ack_key}`, r]));
-  const freshFrom = new Date(Date.parse(nowIso.slice(0, 19) + '+09:00') - ACK_FRESH_HOURS * 3600_000).toISOString().slice(0, 19);
+  const freshFrom = jstHoursAgo(nowIso, ACK_FRESH_HOURS);
 
   for (const item of items) {
     const sinceSec = (item.since ?? '').replace(' ', 'T').slice(0, 19);
@@ -334,7 +343,7 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
     await add(
       'ext_errors', '拡張のエラー（直近 24 時間）', '/data/table?name=furim_ext_errors',
       `SELECT COUNT(*) AS n, MIN(created_at) AS since FROM furim_ext_errors WHERE ${secOf('created_at')} >= ?`,
-      [new Date(Date.parse(now.slice(0, 19) + '+09:00') - 86400_000).toISOString().slice(0, 19)],
+      [jstHoursAgo(now, 24)],
       'yellow',
     );
 
@@ -369,13 +378,30 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
     }
 
     // 巡回キューの取りこぼし（Capsec #294）。直近 24 時間に絞って「今日のできごと」側に出す。
-    // 拡張が collect-skip を送ってきた分だけ数える（送られない限り 0 件のまま）
-    await add(
-      'collect_skip', '巡回キューの取りこぼし（直近 24 時間）', '/data/table?name=furim_ext_errors',
-      `SELECT COUNT(*) AS n, MIN(created_at) AS since FROM furim_ext_errors
-       WHERE method = 'collectSkip' AND ${secOf('created_at')} >= ?`,
-      [new Date(Date.parse(now.slice(0, 19) + '+09:00') - 86400_000).toISOString().slice(0, 19)],
-    );
+    // 数えるのは timeout_skipped（本当の取りこぼし）と、同じキーコードで続く no_owner だけ。
+    // not_mine は直した仕組みが効いた正常な印なので異常に数えず、件数だけ補足に出す
+    {
+      const { summarizeCollectSkips } = await import('../furim/collect-skip-stats.js');
+      const st = await summarizeCollectSkips(db, jstHoursAgo(now, 24));
+      const count = st.timeoutSkipped + st.noOwnerPersistent;
+      if (count > 0) {
+        const parts = [
+          st.timeoutSkipped ? `打ち切り ${st.timeoutSkipped} 件` : '',
+          st.noOwnerPersistent ? `担当の控えなしが続く ${st.noOwnerPersistentUsers} 人（${st.noOwnerPersistent} 件）` : '',
+        ].filter(Boolean);
+        items.push({
+          kind: 'collect_skip',
+          label: `巡回キューの取りこぼし（直近 24 時間）: ${parts.join('・')}`,
+          count,
+          since: st.since,
+          href: '/data/table?name=furim_ext_errors',
+          severity: 'red',
+          acked: null,
+          isNew: false,
+          note: st.notMine > 0 ? `直した仕組みが効いた（not_mine）${st.notMine} 件は数えていない` : undefined,
+        });
+      }
+    }
 
     // 日次ヘルス巡回が止まっていないか（Capsec #292）。テーブルが未作成でも区画ごと落とさない
     try {

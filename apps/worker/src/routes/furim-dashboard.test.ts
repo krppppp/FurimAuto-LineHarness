@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyAcks, furimDashboard, parseGranularity, parsePeriod, rangeStart, type AnomalyItem } from './furim-dashboard.js';
+import { applyAcks, furimDashboard, jstHoursAgo, parseGranularity, parsePeriod, rangeStart, type AnomalyItem } from './furim-dashboard.js';
 
 type Canned = { match: RegExp; all?: unknown[]; first?: unknown; throws?: string };
 
@@ -137,6 +137,25 @@ describe('異常の確認済み（Capsec #289）', () => {
     await applyAcks(db, items, '2026-09-16T22:00:00.000+09:00');
     expect(items[0].isNew).toBe(false);
     expect(items[1].isNew).toBe(true);
+  });
+});
+
+describe('JST の N 時間前（2026-09-17 の窓のずれの修正）', () => {
+  it('JST のまま N 時間前を返す（UTC にしない）', () => {
+    expect(jstHoursAgo('2026-09-17T12:00:00.000+09:00', 24)).toBe('2026-09-16T12:00:00');
+    expect(jstHoursAgo('2026-09-17T08:00:00.000+09:00', 9)).toBe('2026-09-16T23:00:00');
+  });
+
+  it('「今日のできごと」は直近 24 時間ちょうどで区切る（23 時間前は含み、25 時間前は含まない）', async () => {
+    const { db } = makeDb([{ match: /FROM furim_anomaly_acks/, all: [] }]);
+    const base = { label: 'x', count: 1, href: '/x', severity: 'red' as const, acked: null, isNew: false };
+    const items: AnomalyItem[] = [
+      { ...base, kind: 'a', since: '2026-09-16T13:00:00.000+09:00' },
+      { ...base, kind: 'b', since: '2026-09-16T11:00:00.000+09:00' },
+    ];
+    await applyAcks(db, items, '2026-09-17T12:00:00.000+09:00');
+    expect(items[0].isNew).toBe(true);
+    expect(items[1].isNew).toBe(false);
   });
 });
 
