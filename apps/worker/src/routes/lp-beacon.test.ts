@@ -37,6 +37,9 @@ describe('lp-beacon の allowedPage', () => {
       '/contact/',
       '/search/',
       '/search/?q=%E5%86%8D%E5%87%BA%E5%93%81',
+      // トップ（#311 のキャンペーン枠と 10 大特典の帯。クエリ付きでも落とさない）
+      '/',
+      '/?utm_source=x&utm_content=top_campaign',
     ]) {
       expect(allowedPage(page), page).toBe(true);
     }
@@ -57,7 +60,8 @@ describe('lp-beacon の allowedPage', () => {
       '/contactus/',
       '/search',
       '/searching/',
-      '/',
+      '/index.html',
+      '//evil.example.com/',
       '/wp-admin/',
       '/admin/data/',
       '/api/lp-beacon',

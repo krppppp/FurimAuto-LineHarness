@@ -56,6 +56,8 @@ const SLUG = '[A-Za-z0-9%_-]{1,120}';
  * 前方一致にすると無関係なパスまで通るので、1 本ずつ形を決める（Capsec #316）。
  */
 const MEDIA_PAGE_PATTERNS: RegExp[] = [
+  // トップ（FV のキャンペーン枠と全ページ共通の 10 大特典の帯がここに乗る・#311）。/xxx に広がらないよう / だけ
+  /^\/(\?.*)?$/,
   new RegExp(`^/articles/${SLUG}/$`),
   /^\/category\/(start|listing|automation|channels|operation)\/$/,
   /^\/news\/$/,
