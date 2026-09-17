@@ -48,13 +48,32 @@ function clampDetail(v: unknown): string | null {
   return str.slice(0, MAX_DETAIL);
 }
 
-function allowedPage(page: string): boolean {
+/** メディアサイトの slug（英数字・ハイフン・アンダースコア。日本語は percent-encode されたまま届く） */
+const SLUG = '[A-Za-z0-9%_-]{1,120}';
+
+/**
+ * 新メディアサイト「メルカリ物販Lab」（Astro＋Workers・記事の URL は /articles/<slug>/・Capsec #310 くろさん承認）のページ。
+ * 前方一致にすると無関係なパスまで通るので、1 本ずつ形を決める（Capsec #316）。
+ */
+const MEDIA_PAGE_PATTERNS: RegExp[] = [
+  new RegExp(`^/articles/${SLUG}/$`),
+  /^\/category\/(start|listing|automation|channels|operation)\/$/,
+  /^\/news\/$/,
+  new RegExp(`^/author/${SLUG}/$`),
+  /^\/about\/$/,
+  /^\/contact\/$/,
+  /^\/search\/(\?.*)?$/, // 検索は ?q= が付くことがある
+];
+
+/** 計測を受け付けるページか（テストで許可するパスと許可しないパスを固定する） */
+export function allowedPage(page: string): boolean {
   // /r/ は友だち追加の中継ページ（LINEアプリを開かせるワンクッション）。
   // /welcome/ は拡張インストール直後に開くオンボーディング（Capsec #187）。
   // /YYYY/MM/DD/slug/ は WordPress 記事。StaticHP の Worker が lp-metrics.js を差し込む（Capsec #248）。
-  //   日本語 slug は percent-encode されたまま届く。
+  //   日本語 slug は percent-encode されたまま届く。旧記事が 301 になるまで残す（Capsec #316）。
   return page.startsWith('/lp/') || page.startsWith('/service/') || page.startsWith('/r/') || page.startsWith('/welcome/')
-    || /^\/20\d\d\/\d\d\/\d\d\//.test(page);
+    || /^\/20\d\d\/\d\d\/\d\d\//.test(page)
+    || MEDIA_PAGE_PATTERNS.some((re) => re.test(page));
 }
 
 function clampStr(v: unknown): string | null {
