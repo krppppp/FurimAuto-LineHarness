@@ -114,3 +114,28 @@ describe('bot の処理の証拠と失敗の記録（Capsec #300）', () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+describe('キーコードリセットの依頼とみなす文（Capsec #298・統括決定）', () => {
+  it('30 字以下の依頼はリセットに回す', async () => {
+    const { isKeycodeResetRequest } = await import('./bot-routed-message.js');
+    for (const t of ['キーコードリセット', '「【キーワード】キーコードリセット」', 'キーコードリセットしたい', '【pb_2ketnafp】キーコードリセット']) {
+      expect(isKeycodeResetRequest(t), t).toBe(true);
+    }
+  });
+
+  it('認証エラー文の貼り付け（8/4 の形）とバグ報告のひな形（9/13 の形）はリセットしない', async () => {
+    const { isKeycodeResetRequest, isBotRoutedText } = await import('./bot-routed-message.js');
+    const pasted = '✕ 認証できませんでした\n理由：このキーコードは別の端末で既に使用されているか、紐付けが処理中です。\nLINE で「キーコードリセット」と送信してから、もう一度入力してください。';
+    const bugReport = '【バグ・エラー報告フォーマット】\nバージョン：4.3.0\n発生したページ：拡張機能のコード入力ページ\nバグ・エラー内容：キーコードリセット';
+    expect(isKeycodeResetRequest(pasted)).toBe(false);
+    expect(isKeycodeResetRequest(bugReport)).toBe(false);
+    // bot に回さないので未返信に残り、人が判断する
+    expect(isBotRoutedText(pasted)).toBe(false);
+    expect(isBotRoutedText(bugReport)).toBe(false);
+  });
+
+  it('30 字を超える依頼文もリセットせず人に回す', async () => {
+    const { isKeycodeResetRequest } = await import('./bot-routed-message.js');
+    expect(isKeycodeResetRequest('遅くなりました。 當間浩輝です。 キーコードリセットお願いいたします')).toBe(false);
+  });
+});

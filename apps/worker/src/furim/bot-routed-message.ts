@@ -36,6 +36,25 @@ export const RICHMENU_COMMANDS: readonly string[] = [
 ];
 
 const KEYCODE_RESET = 'キーコードリセット';
+
+/** 「キーコードリセット」を含む文をリセットの依頼とみなす長さの上限（統括決定 2026-09-17） */
+export const KEYCODE_RESET_MAX_CHARS = 30;
+const BUG_REPORT_PREFIX = '【バグ・エラー報告フォーマット】';
+
+/**
+ * 「キーコードリセット」を含む文を、リセットの依頼として扱ってよいか（Capsec #298）。
+ * 以前は含むだけでリセットしていたため、拡張の認証エラー文の貼り付け（8/4・198 字）や
+ * バグ報告のひな形（9/13）でも、本人の意図と関係なく端末の紐付けが外れていた。
+ * - 30 字以下に限る
+ * - 【バグ・エラー報告フォーマット】で始まる文は長さに関係なく除く
+ * 外れた文はリセットせず、bot にも回さないので未返信に残り、人が判断する
+ */
+export function isKeycodeResetRequest(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.includes(KEYCODE_RESET)) return false;
+  if (trimmed.startsWith(BUG_REPORT_PREFIX)) return false;
+  return trimmed.length <= KEYCODE_RESET_MAX_CHARS;
+}
 const KEYWORD_MESSAGE_PREFIX = '【キーワード】';
 
 /**
@@ -67,7 +86,8 @@ export function isBotRoutedText(raw: string): boolean {
   if (text.startsWith('【プラン変更】') || text.startsWith('【プラン申し込み】')) return true;
   if (text.includes('【ボタン】')) return true;
   if (text.startsWith(RICHMENU_MESSAGE_PREFIX)) return true;
-  if (text.includes('【キーワード】') || text.includes('キーコードリセット')) return true;
+  if (text.includes('【キーワード】') && !text.includes(KEYCODE_RESET)) return true;
+  if (isKeycodeResetRequest(text)) return true;
   if (text.includes('furimanです') || text.includes('Furimanです')) return true;
   if (trimmed === '解説見た' || trimmed === '解説みた') return true;
   if (AUTO_KEYWORDS.includes(text)) return true;

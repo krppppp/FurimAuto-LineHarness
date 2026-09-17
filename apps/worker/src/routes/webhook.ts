@@ -19,7 +19,7 @@ import { handleFurimAction, actionFurimanCoupon, actionExtendTrial } from '../fu
 import type { FurimActionsEnv } from '../furim/actions.js';
 import { handleButtonAction } from '../furim/button-actions.js';
 import { handleKeywordAction } from '../furim/keyword-actions.js';
-import { AUTO_KEYWORDS, RICHMENU_MESSAGE_PREFIX, TIME_COMMAND_PATTERN, normalizeBotCommand, recordBotHandlerError } from '../furim/bot-routed-message.js';
+import { AUTO_KEYWORDS, RICHMENU_MESSAGE_PREFIX, TIME_COMMAND_PATTERN, isKeycodeResetRequest, normalizeBotCommand, recordBotHandlerError } from '../furim/bot-routed-message.js';
 import { FRIEND_TRIAL_DAYS, formatJstIso, generateTrialKeyCode, getFurimCustomer, upsertFurimCustomer, type FurimCustomerPatch } from '../furim/customer-store.js';
 
 // X口コミクーポン申請の通知先（くろさん）。申請URLと付与コマンドをpushする
@@ -565,8 +565,12 @@ async function handleEvent(
     }
 
     // 【キーワード】アクション（"キーコードリセット"のみプレフィックスなしの単体文字列でも動く特別対応）
-    if ((incomingText.includes('【キーワード】') || incomingText.includes('キーコードリセット')) && env?.GAS_DEPLOY_ID) {
-      const retryHint = incomingText.includes('キーコードリセット')
+    // リセットの依頼は 30 字以下・バグ報告のひな形以外に限る（isKeycodeResetRequest・Capsec #298）。
+    // 長い文に「キーコードリセット」が含まれても、ここに入れず未返信に残して人が判断する
+    const keycodeReset = isKeycodeResetRequest(incomingText);
+    const keywordOnly = incomingText.includes('【キーワード】') && !incomingText.includes('キーコードリセット');
+    if ((keywordOnly || keycodeReset) && env?.GAS_DEPLOY_ID) {
+      const retryHint = keycodeReset
         ? 'もう一度「キーコードリセット」と送信してください'
         : 'もう一度お試しください';
       const gasDeployId = env.GAS_DEPLOY_ID;

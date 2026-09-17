@@ -17,6 +17,7 @@ import {
   markRewardApplied,
 } from './referral-store.js';
 import { getFriendByLineUserId, getFriendById, getAffiliateByCode, completeFriendActiveScenarios, getScenarioByName, enrollFriendInScenario, jstNow } from '@line-crm/db';
+import { isKeycodeResetRequest } from './bot-routed-message.js';
 
 // seed-furimauto-all-scenarios.mjs v2 の命名と一致させること（旧統合7本命名だと見つからず切替が空振りする）
 const REFERRAL_SCENARIO_NAME = 'FurimAuto 紹介 ステップ配信（セグメント1: アンケート未回答）';
@@ -79,7 +80,8 @@ export async function handleKeywordAction(
   db?: D1Database,
 ): Promise<boolean> {
   // "キーコードリセット"のみ【キーワード】プレフィックスなしの単体文字列でも動く特別対応
-  if (rawText.includes('キーコードリセット')) {
+  // 30 字以下・バグ報告のひな形以外に限る（isKeycodeResetRequest・Capsec #298）
+  if (isKeycodeResetRequest(rawText)) {
     // 段階2.5（Capsec #250）: リセットの実体（端末判定文字列のクリア）は D1 furim_customers で完結し、GAS は待たない。
     // 拡張の認証は D1（KV は 60 秒の写しなので消す）。シートへは返信後に setCustomerFields で鏡写し（旧拡張は GAS 経路で読む）
     console.log('[furim] キーコードリセット: D1 で端末判定を解除', lineUserId);
