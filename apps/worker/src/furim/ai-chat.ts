@@ -36,7 +36,7 @@ export const FALLBACK_TEXT =
 const FALLBACK_MARKER = 'AIでのご案内は難しい内容のようです';
 const GEMINI_ERROR_TEXT = 'AIからの応答中にエラーが発生しました。少し時間をおいて、もう一度お試しください。';
 
-const SPEC_FILE_PATHS = ['.claude-company/projects/furim-auto/specs/faq.md'];
+const SPEC_FILE_PATHS = ['faq.md'];
 
 /** base64 → UTF-8 の文字列。atob だけだと日本語が 1 バイト 1 文字の文字化けのまま AI に渡っていた（2026-09-17 まで） */
 export function decodeBase64Utf8(b64: string): string {
@@ -49,7 +49,7 @@ async function fetchSpecFiles(githubPat: string): Promise<string> {
   const results = await Promise.all(
     SPEC_FILE_PATHS.map(async (filePath) => {
       // GitHub APIはUser-Agent必須（無いと403。Workersのfetchは自動付与しない）
-      const res = await fetch(`https://api.github.com/repos/krppppp/T4ClaudeCompany/contents/${filePath}`, {
+      const res = await fetch(`https://api.github.com/repos/krppppp/furimauto-faq/contents/${filePath}`, {
         headers: { Authorization: `Bearer ${githubPat}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'line-harness-worker' },
       });
       if (!res.ok) {

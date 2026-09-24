@@ -74,4 +74,15 @@ describe('handleAIChat（Capsec #307）', () => {
     expect(runs.some((r) => r.sql.includes("'botHandler'"))).toBe(true);
     expect(runs.find((r) => r.sql.includes('UPDATE furim_ai_chat_logs'))!.binds[5]).toBe('failed');
   });
+
+  it('faq.md は furimauto-faq のルートから取る（#329 で T4ClaudeCompany から移した）', async () => {
+    stubFetch('【AIチャットボット】\n料金は月額です。');
+    const { db } = makeDb();
+    const client = { replyMessage: vi.fn(async () => ({})), pushMessage: vi.fn(async () => ({})) };
+
+    await handleAIChat(client as never, 'Uabc', 'rt', '料金は？', env(db));
+
+    const urls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
+    expect(urls).toContain('https://api.github.com/repos/krppppp/furimauto-faq/contents/faq.md');
+  });
 });
