@@ -216,6 +216,23 @@ export type PlanCheckoutEnv = {
   FURIM_EXT_CACHE?: KVNamespace;
 };
 
+/**
+ * パッケージに含まれる機能キーの集合（Capsec #334）。
+ * マスタの features 列（CSV）が正で、'AutoMultiChannel=メルカリ/ラクマ' のような値つきは '=' の前で切る
+ * （expandFeatureSet と同じ規則）。画面側の重複除去もこの関数の結果と同じキーで行う
+ */
+export function includedFeatureKeys(pkgs: Array<{ features?: string }>): Set<string> {
+  return new Set(
+    pkgs.flatMap((p) =>
+      String(p.features ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => (s.includes('=') ? s.slice(0, s.indexOf('=')) : s)),
+    ),
+  );
+}
+
 // 選択内容を検証して価格情報つきで展開する（checkout / intent 共用）
 export async function resolvePlanSelection(db: D1Database | undefined, body: PlanSelectionInput) {
   const master = await loadPlanBuilderMaster(db);
@@ -226,12 +243,22 @@ export async function resolvePlanSelection(db: D1Database | undefined, body: Pla
     if (!pkgByKey[k]) throw new Error(`unknown package: ${k}`);
     return pkgByKey[k];
   });
-  const feats = (body.features ?? []).map((k) => {
+  const requested = (body.features ?? []).map((k) => {
     const f = featByKey[k];
     if (!f) throw new Error(`unknown feature: ${k}`);
     if (f.billing_type !== 'subscription') throw new Error(`not subscribable: ${k}`);
     return f;
   });
+  // パッケージに含まれる機能は追加機能から外す（Capsec #334）。外さないと同じ機能がパッケージ代と
+  // 追加機能代で二重に課金される（2026-09-24 中村航さん 12,420円/月・正しくは 8,980円）。
+  // 包含は expandFeatureSet と同じ「マスタの features 列」を正とし、'AutoMultiChannel=…' のように
+  // 値つきの項目は '=' の前で切って突き合わせる
+  const includedInPkgs = includedFeatureKeys(pkgs);
+  const excludedFeatureKeys = requested.filter((f) => includedInPkgs.has(f.feature_key)).map((f) => f.feature_key);
+  const feats = requested.filter((f) => !includedInPkgs.has(f.feature_key));
+  if (excludedFeatureKeys.length > 0) {
+    console.log('[plan-builder] パッケージ包含の機能を追加機能から除外', JSON.stringify({ packages: pkgs.map((p) => p.package_key), excluded: excludedFeatureKeys }));
+  }
   if (pkgs.length === 0 && feats.length === 0) throw new Error('nothing selected');
 
   const mcSites = (body.multiChannelSites ?? []).filter((s) => MULTI_CHANNEL_SITES.includes(s));
@@ -277,7 +304,7 @@ export async function resolvePlanSelection(db: D1Database | undefined, body: Pla
   summaryLines.push(...ungrouped);
   if (comboAmount > 0) summaryLines.push(`・複数サイト併用割引 -${comboAmount.toLocaleString('ja-JP')}円`);
 
-  return { pkgs, feats, mcSites, nFull, nSemi, comboAmount, subtotal, total, summaryLines };
+  return { pkgs, feats, mcSites, nFull, nSemi, comboAmount, subtotal, total, summaryLines, excludedFeatureKeys };
 }
 
 // Stripe Checkout Session を発行する（ルート / webhook(plan-apply) 共用）。
@@ -848,6 +875,19 @@ for (const p of PACKAGES) { (pkgBySite[p.site] = pkgBySite[p.site] || []).push(p
 const invFeature = featByKey['InventorySheet'];
 const mcFeature = featByKey['AutoMultiChannel'];
 const premiumPkg = PACKAGES.find(p => p.package_key === 'premium');
+// パッケージに含まれる機能キー（Capsec #334）。サーバの includedFeatureKeys と同じ規則で、
+// 'AutoMultiChannel=メルカリ/…' のような値つきは '=' の前で切る。
+// これで追加機能から外さないと、同じ機能がパッケージ代と追加機能代で二重に課金される
+function pkgIncludedKeys(pkgKey) {
+  const pkg = PACKAGES.find(p => p.package_key === pkgKey);
+  if (!pkg) return new Set();
+  return new Set(String(pkg.features || '').split(',').map(s => s.trim()).filter(Boolean).map(s => s.includes('=') ? s.slice(0, s.indexOf('=')) : s));
+}
+/** その枠の追加機能のうち、選択中パッケージに含まれないものだけ */
+function addonKeys(siteId) {
+  const included = pkgIncludedKeys(state.plan[siteId]);
+  return [...(state.addon[siteId] || new Set())].filter(k => !included.has(k));
+}
 // プレミアム=3サービス横断の最上位プラン: 01全機能 + コピー出品チケット200枚/月 + 03在庫管理シート基本のみ込み。
 // 巡回オプション(AutoMultiChannel)はプレミアムでも別途追加購入（チケット付与自体はWebhook側で処理）
 const PREMIUM_TICKET_BONUS = { count: 200, worth: 3000 };
@@ -891,6 +931,9 @@ async function loadCurrentPlan() {
       if (!f) continue;
       if (!state.sites.includes(f.site)) state.sites.push(f.site);
       if (state.plan[f.site] && state.plan[f.site] !== 'buffet') {
+        // 現契約のパッケージに含まれる機能は追加機能に入れない（Capsec #334）。
+        // 入れてしまうと、パッケージを切り替えたあとも残って二重課金になる
+        if (pkgIncludedKeys(state.plan[f.site]).has(key)) continue;
         (state.addon[f.site] = state.addon[f.site] || new Set()).add(key);
       } else {
         state.plan[f.site] = 'buffet';
@@ -958,7 +1001,7 @@ function calc() {
       pkgCount++;
       if (pkg.plan_type === 'full') nFull++;
       if (pkg.plan_type === 'semi') nSemi++;
-      const addons = [...(state.addon[siteId] || [])];
+      const addons = addonKeys(siteId); // パッケージ包含ぶんは金額に出さない（#334）
       if (addons.length && (pkg.plan_type === 'semi' || pkg.plan_type === 'basic')) {
         const sum = addons.reduce((s, k) => s + Number(featByKey[k].monthly_price), 0);
         auto.parts.push(name + '追加ビュッフェ: ' + addons.map(k => featByKey[k].display_name + '(' + yen(Number(featByKey[k].monthly_price)) + ')').join(' + ') + ' = ' + yen(sum));
@@ -1006,7 +1049,7 @@ function selectionPayload() {
       (state.buffet[siteId] || new Set()).forEach(k => features.add(k));
     } else {
       packages.push(sel);
-      (state.addon[siteId] || new Set()).forEach(k => features.add(k));
+      addonKeys(siteId).forEach(k => features.add(k)); // パッケージ包含ぶんは送らない（#334）
     }
   }
   if (state.inventory) features.add('InventorySheet');
