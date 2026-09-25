@@ -1163,6 +1163,33 @@ async function scheduled(
       })
       .catch((err) => console.error('[cron] seminar survey error:', err)),
   );
+  // 同・日曜 17:00 の集計と告知＋開催 30 分前のリマインド（Capsec #332）
+  jobs.push(
+    import('./furim/seminar.js')
+      .then(async ({ announceSeminar, countNoFitVotes }) => {
+        const r = await announceSeminar(env.DB, defaultLineClient, env, { nowMs: event.scheduledTime });
+        if (r.sent) {
+          const noFit = await countNoFitVotes(env.DB, r.weekId);
+          const { notifyStaff } = await import('./furim/staff-notify.js');
+          const lines = r.chosen.map((c, i) => `${i + 1}. ${c.starts_at.slice(0, 16)} … ${c.votes} 票`).join('\n');
+          await notifyStaff(env.DB, defaultLineClient, env, { title: `今週のセミナー日程が決まりました（${r.weekId}）`, body: `${lines}\n「どれも合わない」${noFit} 人。告知を配信しました。` }, 'furim/seminar');
+        } else if (r.reason === 'noVotes' || r.reason === 'noStreamUrl') {
+          // 5 分ごとに鳴らさないよう :00 の tick だけ通知する
+          if (isJstMinuteWindow(event.scheduledTime, 0)) {
+            const { notifyStaff } = await import('./furim/staff-notify.js');
+            const body = r.reason === 'noVotes' ? `${r.note ?? ''}。今週は開催なしとして、告知は送っていません。` : '配信 URL（YouTube の /live）が未登録のため告知を送れません。';
+            await notifyStaff(env.DB, defaultLineClient, env, { title: `セミナーの告知を送れませんでした（${r.weekId}）`, body }, 'furim/seminar');
+          }
+        }
+      })
+      .catch((err) => console.error('[cron] seminar announce error:', err)),
+  );
+  jobs.push(
+    import('./furim/seminar.js')
+      .then(({ remindSeminarSlots }) => remindSeminarSlots(env.DB, defaultLineClient, env, { nowMs: event.scheduledTime }))
+      .then((r) => { if (r.reminded.length > 0) console.log('[cron] seminar reminder', JSON.stringify(r)); })
+      .catch((err) => console.error('[cron] seminar reminder error:', err)),
+  );
   if (event.cron !== '0 */6 * * *' && env.FURIM_EXT_CACHE) {
     const kv = env.FURIM_EXT_CACHE;
     jobs.push(

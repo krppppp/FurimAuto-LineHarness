@@ -184,7 +184,10 @@ export async function checkMessageQuota(channelAccessToken: string, needed: numb
 }
 
 type SendEnv = { LINE_CHANNEL_ACCESS_TOKEN: string };
-type LineClientLike = { pushMessage(to: string, messages: unknown[]): Promise<unknown> };
+type LineClientLike = {
+  pushMessage(to: string, messages: unknown[]): Promise<unknown>;
+  multicast?(to: string[], messages: unknown[]): Promise<unknown>;
+};
 
 export type SurveySendResult =
   | { sent: false; reason: 'notSunday' | 'notNineOclock' | 'alreadySent' | 'noSlots' | 'quota'; note?: string }
@@ -268,4 +271,193 @@ export async function sendSeminarSurvey(
     broadcastIds.push(created.id);
   }
   return { sent: true, weekId, slots: slots.length, broadcastIds };
+}
+
+// ここから下は日曜 17:00 以降ぶん（Capsec #332）: 集計 → 上位2枠の決定 → 告知 → 30分前リマインド
+
+export type VoteCount = { slot_id: string; starts_at: string; votes: number };
+
+/** 枠ごとの得票（「どれも合わない」は除く）。多い順・同数なら早い日時が先 */
+export async function countSeminarVotes(db: D1Database, weekId: string): Promise<VoteCount[]> {
+  const r = await db
+    .prepare(
+      `SELECT s.slot_id AS slot_id, s.starts_at AS starts_at, COUNT(v.id) AS votes
+         FROM furim_seminar_slots s
+         LEFT JOIN furim_seminar_votes v ON v.week_id = s.week_id AND v.slot_id = s.slot_id
+        WHERE s.week_id = ?
+        GROUP BY s.slot_id, s.starts_at
+        ORDER BY votes DESC, s.starts_at ASC`,
+    )
+    .bind(weekId)
+    .all<VoteCount>();
+  return (r.results ?? []).map((row) => ({ ...row, votes: Number(row.votes ?? 0) }));
+}
+
+/** 「どれも都合が合わない」の数 */
+export async function countNoFitVotes(db: D1Database, weekId: string): Promise<number> {
+  const r = await db
+    .prepare('SELECT COUNT(*) AS n FROM furim_seminar_votes WHERE week_id = ? AND slot_id = ?')
+    .bind(weekId, NO_FIT_SLOT_ID)
+    .first<{ n: number }>();
+  return Number(r?.n ?? 0);
+}
+
+/** 上位2枠を選ぶ。0 票の枠は開催しない（同数は早い日時が先＝countSeminarVotes の並び） */
+export function pickTopSlots(counts: VoteCount[], take = 2): VoteCount[] {
+  return counts.filter((c) => c.votes > 0).slice(0, take);
+}
+
+export type AnnounceResult =
+  | { sent: false; reason: 'notSunday' | 'notFiveOclock' | 'alreadyAnnounced' | 'noVotes' | 'noStreamUrl'; weekId: string; note?: string }
+  | { sent: true; weekId: string; chosen: VoteCount[]; broadcastId: string; trackedLinkId: string };
+
+/**
+ * 日曜 17:00 の集計と告知。5 分 cron から呼ぶ。
+ * 入口は週ごとの計測リンク（/t/<short_code>）を通してから配信 URL へ飛ばす。押した人は link_clicks に残る。
+ */
+export async function announceSeminar(
+  db: D1Database,
+  lineClient: LineClientLike | null,
+  env: SendEnv & { WORKER_URL?: string },
+  opts: { nowMs?: number } = {},
+): Promise<AnnounceResult> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const weekId = weekIdOf(nowMs);
+  const jst = new Date(nowMs + 9 * 60 * 60_000);
+  if (jst.getUTCDay() !== 0) return { sent: false, reason: 'notSunday', weekId };
+  if (jstHourOf(nowMs) !== 17) return { sent: false, reason: 'notFiveOclock', weekId };
+
+  const week = await getSeminarWeek(db, weekId);
+  if (!week?.stream_url) return { sent: false, reason: 'noStreamUrl', weekId };
+
+  // 枠取り（cron の二重発火対策）。集計結果が空でも announced_at は立てたままにして、
+  // 「0 票だったのに 5 分後にまた集計して告知する」を防ぐ
+  const claim = await db
+    .prepare('UPDATE furim_seminar_weeks SET announced_at = ? WHERE week_id = ? AND announced_at IS NULL')
+    .bind(formatJstIso(nowMs), weekId)
+    .run();
+  if ((claim.meta?.changes ?? 0) === 0) return { sent: false, reason: 'alreadyAnnounced', weekId };
+
+  const counts = await countSeminarVotes(db, weekId);
+  const chosen = pickTopSlots(counts);
+  await db.prepare('UPDATE furim_seminar_weeks SET decided_at = ? WHERE week_id = ?').bind(formatJstIso(nowMs), weekId).run();
+  if (chosen.length === 0) return { sent: false, reason: 'noVotes', weekId, note: `候補 ${counts.length} 枠すべて 0 票` };
+
+  for (const c of chosen) {
+    await db.prepare('UPDATE furim_seminar_slots SET is_chosen = 1 WHERE week_id = ? AND slot_id = ?').bind(weekId, c.slot_id).run();
+  }
+
+  // 週ごとに 1 本だけ計測リンクを作る（クリック＝参加見込みとして link_clicks で数える）
+  const { createTrackedLink } = await import('@line-crm/db');
+  const { resolveTrackedLinkBaseUrl } = await import('../lib/link-base-url.js');
+  const link = await createTrackedLink(db, { name: `seminar_${weekId}`, originalUrl: week.stream_url });
+  const linkBase = await resolveTrackedLinkBaseUrl(db, env.WORKER_URL ?? '');
+  const entryUrl = `${linkBase}/t/${link.short_code ?? link.id}?openExternalBrowser=1`;
+
+  const flex = {
+    type: 'bubble',
+    size: 'mega',
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      contents: [
+        { type: 'text', text: '今週のセミナー日程が決まりました', weight: 'bold', size: 'lg', wrap: true },
+        ...chosen.map((c, i) => ({ type: 'text', text: `${i === 0 ? '①' : '②'} ${slotLabel(c.starts_at)}〜`, size: 'md', margin: 'md', wrap: true })),
+        { type: 'text', text: '開始時間になったら、下のボタンからそのまま見られます。途中からの参加・途中退出も自由です。', size: 'sm', wrap: true, margin: 'lg' },
+      ],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      contents: [{ type: 'button', style: 'primary', action: { type: 'uri', label: 'セミナーを見る', uri: entryUrl } }],
+    },
+  };
+  const altText = `今週のセミナー日程（${chosen.map((c) => slotLabel(c.starts_at)).join('・')}）`;
+
+  const { createBroadcast } = await import('@line-crm/db');
+  const created = await createBroadcast(db, {
+    title: `[SEMINAR] ${weekId} 開催日程の告知`,
+    messageType: 'flex',
+    messageContent: JSON.stringify(flex),
+    targetType: 'all',
+    trackLinks: false, // 計測リンクは自分で作って入れてあるので、自動短縮に二重に包ませない
+  });
+  await db
+    .prepare('UPDATE broadcasts SET status = ?, batch_offset = 0, alt_text = ?, segment_conditions = ? WHERE id = ?')
+    .bind('sending', altText, JSON.stringify({ operator: 'AND', rules: [{ type: 'is_following', value: true }] }), created.id)
+    .run();
+
+  return { sent: true, weekId, chosen, broadcastId: created.id, trackedLinkId: link.id };
+}
+
+export type ReminderResult = { reminded: Array<{ slotId: string; recipients: number }> };
+
+/**
+ * 開催 30 分前のリマインド（その枠に投票した人だけ）。5 分 cron から呼ぶ。
+ * reminded_at の条件付き UPDATE で枠を取った実行だけが送る。
+ */
+export async function remindSeminarSlots(
+  db: D1Database,
+  lineClient: LineClientLike | null,
+  env: SendEnv & { WORKER_URL?: string },
+  opts: { nowMs?: number } = {},
+): Promise<ReminderResult> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const weekId = weekIdOf(nowMs);
+  const week = await getSeminarWeek(db, weekId);
+  const reminded: Array<{ slotId: string; recipients: number }> = [];
+  if (!week?.stream_url) return { reminded };
+
+  const due = await db
+    .prepare('SELECT slot_id, starts_at FROM furim_seminar_slots WHERE week_id = ? AND is_chosen = 1 AND reminded_at IS NULL')
+    .bind(weekId)
+    .all<SeminarSlot>();
+  for (const slot of due.results ?? []) {
+    const startsMs = Date.parse(slot.starts_at);
+    if (Number.isNaN(startsMs)) continue;
+    // 30 分前〜開始までの間だけ送る（過ぎた枠に後から送らない）
+    if (!(nowMs >= startsMs - 30 * 60_000 && nowMs < startsMs)) continue;
+    const claim = await db
+      .prepare('UPDATE furim_seminar_slots SET reminded_at = ? WHERE week_id = ? AND slot_id = ? AND reminded_at IS NULL')
+      .bind(formatJstIso(nowMs), weekId, slot.slot_id)
+      .run();
+    if ((claim.meta?.changes ?? 0) === 0) continue;
+
+    const voters = await db
+      .prepare(
+        `SELECT f.line_user_id AS line_user_id
+           FROM furim_seminar_votes v JOIN friends f ON f.id = v.friend_id
+          WHERE v.week_id = ? AND v.slot_id = ? AND f.is_following = 1`,
+      )
+      .bind(weekId, slot.slot_id)
+      .all<{ line_user_id: string }>();
+    const ids = (voters.results ?? []).map((v) => v.line_user_id).filter(Boolean);
+    reminded.push({ slotId: slot.slot_id, recipients: ids.length });
+    if (ids.length === 0 || !lineClient) continue;
+
+    const { resolveTrackedLinkBaseUrl } = await import('../lib/link-base-url.js');
+    const linkBase = await resolveTrackedLinkBaseUrl(db, env.WORKER_URL ?? '');
+    const existing = await db
+      .prepare('SELECT id, short_code FROM tracked_links WHERE name = ? ORDER BY created_at DESC LIMIT 1')
+      .bind(`seminar_${weekId}`)
+      .first<{ id: string; short_code: string | null }>();
+    const entryUrl = existing ? `${linkBase}/t/${existing.short_code ?? existing.id}?openExternalBrowser=1` : week.stream_url;
+    const messages = [
+      {
+        type: 'flex',
+        altText: `まもなく ${slotLabel(slot.starts_at)} からセミナーを始めます`,
+        contents: {
+          type: 'bubble',
+          body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: `まもなく ${slotLabel(slot.starts_at)} からセミナーを始めます。下のボタンから見られます。`, wrap: true, size: 'md' }] },
+          footer: { type: 'box', layout: 'vertical', contents: [{ type: 'button', style: 'primary', action: { type: 'uri', label: 'セミナーを見る', uri: entryUrl } }] },
+        },
+      },
+    ];
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      if (lineClient.multicast) await lineClient.multicast(chunk, messages);
+      else for (const id of chunk) await lineClient.pushMessage(id, messages);
+    }
+  }
+  return { reminded };
 }

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { NO_FIT_SLOT_ID, parseSeminarVoteData, recordSeminarVote, seminarSurveyFlex, slotLabel, voteReplyText, weekIdOf } from './seminar.js';
+import { NO_FIT_SLOT_ID, parseSeminarVoteData, pickTopSlots, recordSeminarVote, seminarSurveyFlex, slotLabel, voteReplyText, weekIdOf } from './seminar.js';
 
 const NOW = Date.parse('2026-09-27T09:02:00+09:00'); // 日曜 9:02（アンケート送信の窓）
 
@@ -110,5 +110,26 @@ describe('投票の記録（Capsec #331）', () => {
     expect(r.status).toBe('unknownSlot');
     expect(runs).toHaveLength(0);
     expect(voteReplyText(r)).toContain('締め切りました');
+  });
+});
+
+describe('得票の集計と上位2枠（Capsec #332）', () => {
+  const counts = [
+    { slot_id: 's2', starts_at: '2026-09-29T10:00:00+09:00', votes: 5 },
+    { slot_id: 's1', starts_at: '2026-09-27T18:00:00+09:00', votes: 5 },
+    { slot_id: 's3', starts_at: '2026-09-30T21:00:00+09:00', votes: 2 },
+    { slot_id: 's4', starts_at: '2026-10-01T10:00:00+09:00', votes: 0 },
+  ];
+
+  it('上位2枠を取る（並びは SQL 側で votes DESC, starts_at ASC）', () => {
+    expect(pickTopSlots(counts).map((c) => c.slot_id)).toEqual(['s2', 's1']);
+  });
+
+  it('0 票の枠は開催しない', () => {
+    expect(pickTopSlots([{ slot_id: 's4', starts_at: '2026-10-01T10:00:00+09:00', votes: 0 }])).toEqual([]);
+  });
+
+  it('得票のある枠が1つだけなら1枠で開催する', () => {
+    expect(pickTopSlots(counts.slice(2)).map((c) => c.slot_id)).toEqual(['s3']);
   });
 });
