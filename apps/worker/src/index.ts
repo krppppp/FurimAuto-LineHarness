@@ -1148,6 +1148,21 @@ async function scheduled(
       })
       .catch((err) => console.error('[cron] furim customer-sync error:', err)),
   );
+  // 週1セミナーの日程アンケート（Capsec #331）。日曜 9:00 JST に有料/未課金の2種を送る。
+  // 曜日・時刻の判定と二重送信の枠取りは sendSeminarSurvey の中で行う
+  jobs.push(
+    import('./furim/seminar.js')
+      .then(({ sendSeminarSurvey }) => sendSeminarSurvey(env.DB, defaultLineClient, env, { nowMs: event.scheduledTime }))
+      .then(async (r) => {
+        if (r.sent || r.reason === 'quota' || r.reason === 'noSlots') console.log('[cron] seminar survey', JSON.stringify(r));
+        // 送信量が確かめられない・足りないときは送らずにくろさんへ1行（仕様: weekly-seminar-funnel.md）
+        if (!r.sent && r.reason === 'quota') {
+          const { notifyStaff } = await import('./furim/staff-notify.js');
+          await notifyStaff(env.DB, defaultLineClient, env, { title: 'セミナーのアンケートを送れませんでした', body: `LINE の送信量を確認できませんでした（${r.note ?? ''}）。プランの確認をお願いします。` }, 'furim/seminar');
+        }
+      })
+      .catch((err) => console.error('[cron] seminar survey error:', err)),
+  );
   if (event.cron !== '0 */6 * * *' && env.FURIM_EXT_CACHE) {
     const kv = env.FURIM_EXT_CACHE;
     jobs.push(

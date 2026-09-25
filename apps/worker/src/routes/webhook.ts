@@ -337,6 +337,20 @@ async function handleEvent(
 
     const postbackData = (event as unknown as { postback: { data: string } }).postback.data;
 
+    // セミナー日程アンケートの投票（Capsec #331）。auto_replies のマッチより前に処理する
+    // （auto_replies は contains マッチもあるので、後ろに置くと取り違える）
+    const { parseSeminarVoteData, recordSeminarVote, voteReplyText } = await import('../furim/seminar.js');
+    const vote = parseSeminarVoteData(postbackData);
+    if (vote) {
+      try {
+        const result = await recordSeminarVote(db, { weekId: vote.weekId, slotId: vote.slotId, friendId: friend.id, lineUserId: userId });
+        await lineClient.replyMessage(event.replyToken, [{ type: 'text', text: voteReplyText(result) }]);
+      } catch (err) {
+        console.error('[furim/seminar] vote failed', err);
+      }
+      return;
+    }
+
     // Match postback data against auto_replies (exact match on keyword)
     const autoReplyQuery = lineAccountId
       ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC`
