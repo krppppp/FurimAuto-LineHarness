@@ -15,6 +15,26 @@ export const SEMINAR_VOTE_PREFIX = 'seminar_vote:';
 /** 「どれも都合が合わない」の slot_id */
 export const NO_FIT_SLOT_ID = 'none';
 
+/** 初回開催の week_id。この週だけ「はじめます」の文面とバナーを使い、翌週から通常版に戻る */
+export const FIRST_WEEK_ID = '2026-09-27';
+
+/** アンケート（日曜 9:00）の Flex に載せるバナー。R2 に置いた固定画像を毎週使い回す */
+const SURVEY_BANNER_FIRST = 'https://line-harness-prod.furimuato.workers.dev/images/f0fac4c6-6354-48af-89ad-68fbacc5721c.png';
+const SURVEY_BANNER_WEEKLY = 'https://line-harness-prod.furimuato.workers.dev/images/1dacfb8b-4a7d-4b02-b085-314c035dd806.png';
+/** 開催日程の告知（日曜 17:00）と 30 分前リマインドに載せるバナー */
+const ANNOUNCE_BANNER_FIRST = 'https://line-harness-prod.furimuato.workers.dev/images/6d4d2fac-8304-4a5d-8bdc-f73d71680743.png';
+const ANNOUNCE_BANNER_WEEKLY = 'https://line-harness-prod.furimuato.workers.dev/images/7dfd2b8d-d70c-40d8-b555-d8b050d71c29.png';
+
+const BANNER_ASPECT_RATIO = '1040:585';
+
+export function isFirstWeek(weekId: string): boolean {
+  return weekId === FIRST_WEEK_ID;
+}
+
+function bannerHero(url: string): FlexBubble {
+  return { type: 'image', url, size: 'full', aspectRatio: BANNER_ASPECT_RATIO, aspectMode: 'cover' };
+}
+
 export type SeminarSlot = { slot_id: string; starts_at: string; is_chosen?: number };
 export type SeminarWeek = { week_id: string; stream_url: string | null; survey_sent_at: string | null };
 
@@ -67,11 +87,22 @@ export function seminarSurveyFlex(
   variant: 'paid' | 'free',
 ): { altText: string; contents: FlexBubble } {
   const hasSameDay = slots.some((s) => s.starts_at.slice(0, 10) === weekId);
+  const first = isFirstWeek(weekId);
   const lead =
     variant === 'paid'
-      ? 'いつも FurimAuto をご利用いただきありがとうございます。今週の生配信では、会員さんの使い方の実例と、売上をもう一段伸ばす設定をお見せします。'
-      : '今週、くろ（FurimAuto 代表）が生配信で「メルカリ物販を自動化して、作業時間を減らしながら売上を伸ばすやり方」を実演します。';
-  const title = variant === 'paid' ? '会員向け｜今週の生配信セミナー日程アンケート' : 'FurimAuto 無料セミナーの日程アンケート';
+      ? first
+        ? 'いつも FurimAuto をご利用いただきありがとうございます。今週から、会員さんの使い方の実例と、売上をもう一段伸ばす設定を生配信でお見せする会を始めます。第 1 回の日時は、みなさんの都合に合わせて決めます。'
+        : 'いつも FurimAuto をご利用いただきありがとうございます。今週の生配信では、会員さんの使い方の実例と、売上をもう一段伸ばす設定をお見せします。'
+      : first
+        ? '今週から、くろ（FurimAuto 代表）が生配信で「メルカリ物販を自動化して、作業時間を減らしながら売上を伸ばすやり方」を実演する会を始めます。第 1 回の日時は、みなさんの都合に合わせて決めます。'
+        : '今週、くろ（FurimAuto 代表）が生配信で「メルカリ物販を自動化して、作業時間を減らしながら売上を伸ばすやり方」を実演します。';
+  const title = variant === 'paid'
+    ? first
+      ? '会員向け｜FurimAuto 初のライブセミナーを開きます'
+      : '会員向け｜今週の生配信セミナー日程アンケート'
+    : first
+      ? 'FurimAuto 初のライブセミナーを開きます'
+      : 'FurimAuto 無料セミナーの日程アンケート';
   const body: FlexBubble[] = [
     { type: 'text', text: title, weight: 'bold', size: 'lg', wrap: true },
     { type: 'text', text: lead, size: 'sm', wrap: true, margin: 'md' },
@@ -96,6 +127,7 @@ export function seminarSurveyFlex(
     contents: {
       type: 'bubble',
       size: 'mega',
+      hero: bannerHero(first ? SURVEY_BANNER_FIRST : SURVEY_BANNER_WEEKLY),
       body: { type: 'box', layout: 'vertical', contents: body },
       footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: buttons },
     },
@@ -357,11 +389,12 @@ export async function announceSeminar(
   const flex = {
     type: 'bubble',
     size: 'mega',
+    hero: bannerHero(isFirstWeek(weekId) ? ANNOUNCE_BANNER_FIRST : ANNOUNCE_BANNER_WEEKLY),
     body: {
       type: 'box',
       layout: 'vertical',
       contents: [
-        { type: 'text', text: '今週のセミナー日程が決まりました', weight: 'bold', size: 'lg', wrap: true },
+        { type: 'text', text: isFirstWeek(weekId) ? '第 1 回のセミナー日程が決まりました' : '今週のセミナー日程が決まりました', weight: 'bold', size: 'lg', wrap: true },
         ...chosen.map((c, i) => ({ type: 'text', text: `${i === 0 ? '①' : '②'} ${slotLabel(c.starts_at)}〜`, size: 'md', margin: 'md', wrap: true })),
         { type: 'text', text: '開始時間になったら、下のボタンからそのまま見られます。途中からの参加・途中退出も自由です。', size: 'sm', wrap: true, margin: 'lg' },
       ],
@@ -372,7 +405,7 @@ export async function announceSeminar(
       contents: [{ type: 'button', style: 'primary', action: { type: 'uri', label: 'セミナーを見る', uri: entryUrl } }],
     },
   };
-  const altText = `今週のセミナー日程（${chosen.map((c) => slotLabel(c.starts_at)).join('・')}）`;
+  const altText = `${isFirstWeek(weekId) ? '第 1 回' : '今週'}のセミナー日程（${chosen.map((c) => slotLabel(c.starts_at)).join('・')}）`;
 
   const { createBroadcast } = await import('@line-crm/db');
   const created = await createBroadcast(db, {
@@ -448,6 +481,7 @@ export async function remindSeminarSlots(
         altText: `まもなく ${slotLabel(slot.starts_at)} からセミナーを始めます`,
         contents: {
           type: 'bubble',
+          hero: bannerHero(isFirstWeek(weekId) ? ANNOUNCE_BANNER_FIRST : ANNOUNCE_BANNER_WEEKLY),
           body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: `まもなく ${slotLabel(slot.starts_at)} からセミナーを始めます。下のボタンから見られます。`, wrap: true, size: 'md' }] },
           footer: { type: 'box', layout: 'vertical', contents: [{ type: 'button', style: 'primary', action: { type: 'uri', label: 'セミナーを見る', uri: entryUrl } }] },
         },
