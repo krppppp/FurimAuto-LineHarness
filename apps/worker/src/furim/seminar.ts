@@ -91,11 +91,11 @@ export function seminarSurveyFlex(
   const lead =
     variant === 'paid'
       ? first
-        ? 'いつも FurimAuto をご利用いただきありがとうございます。今週から、会員さんの使い方の実例と、売上をもう一段伸ばす設定を生配信でお見せする会を始めます。第 1 回の日時は、みなさんの都合に合わせて決めます。'
-        : 'いつも FurimAuto をご利用いただきありがとうございます。今週の生配信では、会員さんの使い方の実例と、売上をもう一段伸ばす設定をお見せします。'
+        ? 'いつも FurimAuto をご利用いただき、ありがとうございます。今週から、会員のみなさんの使い方の実例と、売上をもう一段伸ばすための設定を、生配信でお見せする会を始めます。記念すべき第 1 回は、みなさんのご都合に合わせて日時を決めたいと思っています。'
+        : 'いつも FurimAuto をご利用いただき、ありがとうございます。今週の生配信でも、会員のみなさんの使い方の実例と、売上をもう一段伸ばすための設定をお見せします。'
       : first
-        ? '今週から、FurimAuto を運営する法人代表の黒岩が、生配信で「メルカリ物販を自動化して、作業時間を減らしながら売上を伸ばすやり方」を実演する会を始めます。第 1 回の日時は、みなさんの都合に合わせて決めます。'
-        : '今週、FurimAuto を運営する法人代表の黒岩が、生配信で「メルカリ物販を自動化して、作業時間を減らしながら売上を伸ばすやり方」を実演します。';
+        ? 'いつも FurimAuto をご覧いただき、ありがとうございます。今週から、FurimAuto を運営する法人代表の黒岩が、生配信で「メルカリ物販を自動化して、作業時間を減らしながら売上を伸ばすやり方」を実演する会を始めます。記念すべき第 1 回は、みなさんのご都合に合わせて日時を決めたいと思っています。'
+        : 'いつも FurimAuto をご覧いただき、ありがとうございます。今週も、FurimAuto を運営する法人代表の黒岩が、生配信で「メルカリ物販を自動化して、作業時間を減らしながら売上を伸ばすやり方」を実演します。';
   const title = variant === 'paid'
     ? first
       ? '会員向け｜FurimAuto 初のライブセミナーを開きます'
@@ -106,8 +106,8 @@ export function seminarSurveyFlex(
   const body: FlexBubble[] = [
     { type: 'text', text: title, weight: 'bold', size: 'lg', wrap: true },
     { type: 'text', text: lead, size: 'sm', wrap: true, margin: 'md' },
-    { type: 'text', text: '見られそうな日時を押してください（いくつでも押せます）。票の多い 2 つの日時で開催します。', size: 'sm', wrap: true, margin: 'md' },
-    { type: 'text', text: '本日 17:00 に締め切り、開催日時をこの LINE でお知らせします。', size: 'sm', wrap: true, margin: 'md' },
+    { type: 'text', text: 'ご覧になれそうな日時を、下のボタンからいくつでも押してください。いちばん多く票が集まった 2 つの日時で開催します。', size: 'sm', wrap: true, margin: 'md' },
+    { type: 'text', text: '本日 17:00 に締め切って、決まった日時をこの LINE でお知らせします。お気軽にのぞいてみてくださいね。どうぞよろしくお願いします。', size: 'sm', wrap: true, margin: 'md' },
   ];
   if (hasSameDay) body.push({ type: 'text', text: '※本日 18:00 開催になる場合があります', size: 'xs', wrap: true, margin: 'md', color: '#888888' });
 
@@ -178,14 +178,14 @@ export function parseSeminarVoteData(data: string): { weekId: string; slotId: st
 /** 受付返信の本文 */
 export function voteReplyText(result: VoteResult): string {
   if (result.status !== 'counted' && result.status !== 'duplicate') {
-    return 'このアンケートは締め切りました。次回の日程アンケートをお待ちください。';
+    return '申し訳ありません、このアンケートは締め切らせていただきました。次回の日程アンケートもお送りしますので、お待ちいただけると嬉しいです。';
   }
   if (result.slotId === NO_FIT_SLOT_ID) {
-    return '「どれも都合が合わない」で受け付けました。次回の候補日程もお送りしますので、ぜひご参加ください。';
+    return '「どれも都合が合わない」で承りました。ご回答いただきありがとうございます。次回の候補日程もお送りしますので、ぜひご参加ください。';
   }
   return result.status === 'counted'
-    ? `${result.label} で受け付けました。ほかに見られる日時があれば、続けて押してください。`
-    : `${result.label} はすでに受け付けています。`;
+    ? `${result.label} で承りました。ありがとうございます。ほかにもご覧になれる日時があれば、続けて押してくださいね。`
+    : `${result.label} はすでに承っております。ありがとうございます。`;
 }
 
 type QuotaResult = { ok: boolean; limit: number | null; used: number | null; note: string };
@@ -395,8 +395,10 @@ export async function announceSeminar(
       layout: 'vertical',
       contents: [
         { type: 'text', text: isFirstWeek(weekId) ? '第 1 回のセミナー日程が決まりました' : '今週のセミナー日程が決まりました', weight: 'bold', size: 'lg', wrap: true },
+        { type: 'text', text: 'たくさんのご回答をいただき、ありがとうございました。', size: 'sm', wrap: true, margin: 'md' },
         ...chosen.map((c, i) => ({ type: 'text', text: `${i === 0 ? '①' : '②'} ${slotLabel(c.starts_at)}〜`, size: 'md', margin: 'md', wrap: true })),
-        { type: 'text', text: '開始時間になったら、下のボタンからそのまま見られます。途中からの参加・途中退出も自由です。', size: 'sm', wrap: true, margin: 'lg' },
+        { type: 'text', text: '開始のお時間になりましたら、下のボタンからそのままご覧いただけます。途中からのご参加も、途中の退出も自由です。', size: 'sm', wrap: true, margin: 'lg' },
+        { type: 'text', text: '当日お会いできるのを楽しみにしています。どうぞよろしくお願いします。', size: 'sm', wrap: true, margin: 'md' },
       ],
     },
     footer: {
@@ -482,7 +484,7 @@ export async function remindSeminarSlots(
         contents: {
           type: 'bubble',
           hero: bannerHero(isFirstWeek(weekId) ? ANNOUNCE_BANNER_FIRST : ANNOUNCE_BANNER_WEEKLY),
-          body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: `まもなく ${slotLabel(slot.starts_at)} からセミナーを始めます。下のボタンから見られます。`, wrap: true, size: 'md' }] },
+          body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: `まもなく ${slotLabel(slot.starts_at)} からセミナーを始めます。下のボタンからご覧いただけます。お待ちしています。`, wrap: true, size: 'md' }] },
           footer: { type: 'box', layout: 'vertical', contents: [{ type: 'button', style: 'primary', action: { type: 'uri', label: 'セミナーを見る', uri: entryUrl } }] },
         },
       },

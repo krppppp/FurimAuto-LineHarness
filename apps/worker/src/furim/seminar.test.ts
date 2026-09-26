@@ -62,7 +62,7 @@ describe('アンケートの Flex（Capsec #331）', () => {
   });
 
   it('有料会員と未課金で文面が違う', () => {
-    expect(JSON.stringify(seminarSurveyFlex('2026-09-27', slots, 'paid').contents)).toContain('会員さんの使い方の実例');
+    expect(JSON.stringify(seminarSurveyFlex('2026-09-27', slots, 'paid').contents)).toContain('会員のみなさんの使い方の実例');
     expect(JSON.stringify(seminarSurveyFlex('2026-09-27', slots, 'free').contents)).toContain('FurimAuto を運営する法人代表の黒岩');
   });
 });
@@ -83,7 +83,7 @@ describe('投票の記録（Capsec #331）', () => {
     expect(r).toMatchObject({ status: 'counted', label: '9/27(日)18:00' });
     expect(runs[0].sql).toContain('INSERT OR IGNORE INTO furim_seminar_votes');
     expect(runs[0].binds.slice(1, 5)).toEqual(['2026-09-27', 's1', 'f1', 'U1']);
-    expect(voteReplyText(r)).toContain('9/27(日)18:00 で受け付けました');
+    expect(voteReplyText(r)).toContain('9/27(日)18:00 で承りました');
   });
 
   it('同じ枠の二重押しは 1 票のまま（changes 0 は duplicate）', async () => {
@@ -91,7 +91,7 @@ describe('投票の記録（Capsec #331）', () => {
     const r = await recordSeminarVote(db, { weekId: '2026-09-27', slotId: 's1', friendId: 'f1', nowMs: NOW });
 
     expect(r.status).toBe('duplicate');
-    expect(voteReplyText(r)).toContain('すでに受け付けています');
+    expect(voteReplyText(r)).toContain('すでに承っております');
   });
 
   it('「どれも合わない」は枠を引かずに数える', async () => {
@@ -109,7 +109,7 @@ describe('投票の記録（Capsec #331）', () => {
 
     expect(r.status).toBe('unknownSlot');
     expect(runs).toHaveLength(0);
-    expect(voteReplyText(r)).toContain('締め切りました');
+    expect(voteReplyText(r)).toContain('締め切らせていただきました');
   });
 });
 
