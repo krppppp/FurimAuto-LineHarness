@@ -63,7 +63,7 @@ describe('アンケートの Flex（Capsec #331）', () => {
 
   it('有料会員と未課金で文面が違う', () => {
     expect(JSON.stringify(seminarSurveyFlex('2026-09-27', slots, 'paid').contents)).toContain('会員さんの使い方の実例');
-    expect(JSON.stringify(seminarSurveyFlex('2026-09-27', slots, 'free').contents)).toContain('くろ（FurimAuto 代表）が生配信');
+    expect(JSON.stringify(seminarSurveyFlex('2026-09-27', slots, 'free').contents)).toContain('FurimAuto を運営する法人代表の黒岩');
   });
 });
 
