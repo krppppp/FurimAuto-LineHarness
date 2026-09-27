@@ -24,13 +24,13 @@ type Write = { sql: string; args: unknown[] };
  * - friends の display_name → opts.names
  * - batch / run は記録
  */
-function makeDb(opts: { customers?: unknown[]; openDiffs?: unknown[]; dueDiffs?: unknown[]; names?: unknown[]; flags?: unknown[]; accepted?: unknown[] } = {}) {
+function makeDb(opts: { customers?: unknown[]; openDiffs?: unknown[]; dueDiffs?: unknown[]; names?: unknown[]; flags?: unknown[]; accepted?: unknown[]; keyCode?: string } = {}) {
   const writes: Write[] = [];
   const stmtFor = (sql: string, args: unknown[]) => ({
     sql,
     args,
     run: async () => { writes.push({ sql, args }); return { meta: { changes: 1 } }; },
-    first: async () => null,
+    first: async () => (/SELECT key_code FROM furim_customers/.test(sql) && opts.keyCode ? { key_code: opts.keyCode } : null),
     all: async () => {
       if (/FROM furim_feature_flags/.test(sql)) return { results: opts.flags ?? [] };
       if (/FROM furim_customers/.test(sql)) return { results: opts.customers ?? [] };
@@ -404,6 +404,20 @@ describe('reconcileFurimCustomers（段階3）', () => {
     expect(flagWrites.map((w) => w.args.slice(1, 3))).toEqual([['mBackup', '1']]);
   });
 
+  it('TB-415 試用プラン（2weektrial_）の顧客は機能フラグをシートから取り込まない', async () => {
+    gasGet.mockResolvedValueOnce({
+      success: true,
+      rows: [sheetRow({ 'キーコード': '2weektrial_abc12345', 'メルカリ売上CSV機能\n(mSoldCSV)': false })],
+    });
+    const { db, writes } = makeDb({
+      customers: [customer({ key_code: '2weektrial_abc12345' })],
+      flags: [{ line_user_id: uid('1'), feature_key: 'mSoldCSV', value: '1' }],
+    });
+    const r = await reconcileFurimCustomers(db, lineClient as never, env, { force: true });
+    expect(r.flagsPulled).toBe(0);
+    expect(writes.some((w) => /INSERT INTO furim_feature_flags/.test(w.sql))).toBe(false);
+  });
+
   it('#261 案 A: 固定だけが違う顧客は取り込み件数に数えない', async () => {
     gasGet.mockResolvedValueOnce({ success: true, rows: [sheetRow({ 'メルカリ値下げ機能\n(mChangePrice)': false })] });
     const { db, writes } = makeDb({ customers: [customer()], flags: [{ line_user_id: uid('1'), feature_key: 'mChangePrice', value: '1', locked: 1 }] });
@@ -466,6 +480,13 @@ describe('pullFeatureFlagsFromSheet', () => {
     await pullFeatureFlagsFromSheet(db, 'dep-1', uid('1'));
     const upsert = writes.find((w) => /INSERT INTO furim_feature_flags/.test(w.sql));
     expect(upsert?.sql.replace(/\s+/g, ' ')).toMatch(/ON CONFLICT\(line_user_id, feature_key\) DO UPDATE SET value = excluded\.value, source = excluded\.source, updated_at = excluded\.updated_at WHERE furim_feature_flags\.locked = 0$/);
+  });
+
+  it('TB-415 試用プラン（2weektrial_）の顧客は GAS も叩かず取り込まない', async () => {
+    const { db, writes } = makeDb({ keyCode: '2weektrial_abc12345' });
+    expect(await pullFeatureFlagsFromSheet(db, 'dep-1', uid('1'))).toBe(false);
+    expect(gasGet).not.toHaveBeenCalled();
+    expect(writes).toHaveLength(0);
   });
 
   it('GAS が落ちても投げず false（cron が取り込む）。deploy ID / lineUserId が無ければ何もしない', async () => {

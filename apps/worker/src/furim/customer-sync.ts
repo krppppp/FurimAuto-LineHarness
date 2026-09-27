@@ -9,7 +9,7 @@
 import { jstNow } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import { gasGet, getGasErrorFromResponse } from './gas-client.js';
-import { buildUpsertStatement, formatJstIso, parseJstDateTime, type FurimCustomer, type FurimCustomerPatch } from './customer-store.js';
+import { buildUpsertStatement, formatJstIso, parseJstDateTime, TRIAL_KEYCODE_PREFIX, type FurimCustomer, type FurimCustomerPatch } from './customer-store.js';
 import { notifyStaff } from './staff-notify.js';
 import { isJstMinuteWindow } from './cron-window.js';
 import type { PushEnv } from '../services/push-notify.js';
@@ -144,6 +144,10 @@ const FLAG_PULL_TIMEOUT_MS = 8_000;
 export async function pullFeatureFlagsFromSheet(db: D1Database, gasDeployId: string | undefined, lineUserId: string | null | undefined): Promise<boolean> {
   if (!gasDeployId || !lineUserId) return false;
   try {
+    // 試用プランは D1 のプランマスタが正（TB-300 が friend add で書く）。シート「プラン一覧」の試用プラン行は
+    // mSoldCSV / rSoldCSV が FALSE のままなので、setKeyCode 直後のここで取り込むと書いたばかりの true を潰す（TB-415）
+    const cur = await db.prepare('SELECT key_code FROM furim_customers WHERE line_user_id = ?').bind(lineUserId).first<{ key_code: string | null }>();
+    if ((cur?.key_code ?? '').startsWith(TRIAL_KEYCODE_PREFIX)) return false;
     const res = await gasGet(
       gasDeployId,
       { method: 'getData', sheet: MASTER_SHEET, headerRow: '3', filterCol: 'LINE_ID', filterVal: lineUserId },
@@ -445,8 +449,11 @@ export async function reconcileFurimCustomers(
       }
     }
     // 1'. 機能フラグ: 旧プラン（プラン一覧ベース）の顧客は GAS setKeyCode がシートにしか書かないので変化分を取り込む（段階3・Capsec #245）。
-    //     plan-builder 契約の顧客は Worker が D1 に先に書く（段階2.5・feature-flags.ts）ので、鏡写しの遅れで巻き戻さないよう取り込まない
-    if (cur.subscription_source !== 'plan-builder') {
+    //     plan-builder 契約の顧客は Worker が D1 に先に書く（段階2.5・feature-flags.ts）ので、鏡写しの遅れで巻き戻さないよう取り込まない。
+    //     試用プランも同じ理由で取り込まない（TB-415・2026-09-28）。friend add で Worker が D1 のプランマスタから
+    //     書く（TB-300）ようになり D1 が正になった。シート「プラン一覧」の試用プラン行は mSoldCSV / rSoldCSV が
+    //     FALSE のままで、取り込むと 30 分毎に D1 の true を FALSE へ引き戻す。スプシは畳む方針なので直さない
+    if (cur.subscription_source !== 'plan-builder' && !(cur.key_code ?? '').startsWith(TRIAL_KEYCODE_PREFIX)) {
       const sheetFlags = sheetRowToFeatureFlags(row);
       const d1Flags = flagsByUser.get(lineUserId) ?? {};
       const changed: Record<string, string> = {};
