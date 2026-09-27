@@ -43,6 +43,7 @@ describe('Google への CV 送信内容を取り消しの照合用に残す（Ca
     const record = JSON.parse(googleConversionRecord(ev));
     expect(record).toEqual({
       api: 'datamanager.events:ingest',
+      transactionId: null,
       conversionActionId: '7123456789',
       customerId: '8394293197',
       loginCustomerId: '4654620160',
@@ -111,12 +112,14 @@ describe('Google braid offline CV (TB-363)', () => {
       const [, init] = (fetchMock.mock.calls as unknown as [string, RequestInit][])[0];
       const event = JSON.parse(String(init.body)).events[0];
       expect(event.adIdentifiers).toEqual({ [type]: value });
+      expect(event.transactionId).toBe('f-braid:line_friend_add');
       expect(event).not.toHaveProperty('userData');
       expect(event).not.toHaveProperty('userIdentifiers');
       expect(event).not.toHaveProperty('customVariables');
       const logged = logAdConversion.mock.calls[0][1];
       expect(logged).toMatchObject({ eventName: 'line_friend_add', clickId: value, clickIdType: type, status: 'sent' });
       expect(JSON.parse(logged.requestBody)[type]).toBe(value);
+      expect(JSON.parse(logged.requestBody).transactionId).toBe(event.transactionId);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -147,5 +150,44 @@ describe('Google braid offline CV (TB-363)', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+
+describe('Google transactionId (TB-367)', () => {
+  const config = { customer_id: 'test-customer', conversion_action_id: 'test-action' };
+  const now = new Date('2026-09-27T12:00:00.000Z');
+  const build = (friendId?: string | null, eventName = 'line_friend_add', date = now) =>
+    buildGoogleConversionEvent(config, { gclid: 'GC_TEST' }, undefined, date, { friendId, eventName });
+
+  it('is stable across retries and timestamps, and distinct for friends and events', () => {
+    const id = build('friend-1').body.events[0].transactionId;
+    expect(id).toBe('friend-1:line_friend_add');
+    expect(build('friend-1', 'line_friend_add', new Date('2026-09-28')).body.events[0].transactionId).toBe(id);
+    expect(build('friend-2').body.events[0].transactionId).not.toBe(id);
+    expect(build('friend-1', 'purchase').body.events[0].transactionId).not.toBe(id);
+  });
+
+  it.each([undefined, null, ''])('omits the key without a friend ID: %s', (friendId) => {
+    expect(build(friendId).body.events[0]).not.toHaveProperty('transactionId');
+    expect(JSON.parse(googleConversionRecord(build(friendId))).transactionId).toBeNull();
+  });
+
+  it('accepts 64 characters but rejects overflow and ambiguous or unsafe components', () => {
+    expect(String(build('f'.repeat(48)).body.events[0].transactionId)).toHaveLength(64);
+    expect(() => build('f'.repeat(49))).toThrow('transactionId');
+    expect(() => build('friend:1')).toThrow('transactionId');
+    expect(() => build('friend-1', 'event:name')).toThrow('transactionId');
+    expect(() => build('friend 1')).toThrow('transactionId');
+  });
+
+  it('adds only transactionId to the existing record allowlist', () => {
+    const ev = build('friend-1');
+    ev.body.events[0].userData = { email: 'private@example.com' };
+    ev.body.events[0].futureField = 'private';
+    expect(JSON.parse(googleConversionRecord(ev))).toEqual({
+      ...JSON.parse(googleConversionRecord(build())),
+      transactionId: 'friend-1:line_friend_add',
+    });
   });
 });

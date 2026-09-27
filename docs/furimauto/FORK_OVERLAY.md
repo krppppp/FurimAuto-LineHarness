@@ -57,3 +57,5 @@
 - [ ] `apps/web/src/components/furim/upstream-update-banner.tsx` のベースライン(APP_VERSION=package.json version)が新upstream版に追従しているか
 
 - TB-363 (2026-09-27): `index.ts` / `routes/liff.ts` / `client/main.ts` のクリック ID 引き継ぎ、`packages/db/src/entry-routes.ts` の保存・取得、`services/ad-conversion.ts` の Google payload・ログ・catch-up に gbraid / wbraid を追加。Google は gclid > gbraid > wbraid の 1 個のみ。migration 086 と合わせて保持する。
+
+- TB-367 (2026-09-27): `services/ad-conversion.ts` の Google builder に friendId/eventName を渡し、決定的な transactionId を送信・request_body 許可リストへ追加。braid/gclid 共通で保持する。

@@ -72,7 +72,7 @@ export async function sendAdConversions(
         case 'google':
           if (googleClickId) {
             // 取り消し（調整）のときに照合できるよう、送った eventTimestamp 等を request_body に残す（Capsec #305）
-            const googleEvent = buildGoogleConversionEvent(config, ref, eventValue);
+            const googleEvent = buildGoogleConversionEvent(config, ref, eventValue, new Date(), { friendId, eventName });
             googleRecord = googleConversionRecord(googleEvent);
             await sendGoogleConversion(config, googleEvent);
             await logAdConversion(db, {
@@ -270,6 +270,7 @@ export function buildGoogleConversionEvent(
   ref: GoogleClickIds,
   eventValue?: number,
   now: Date = new Date(),
+  identity?: { friendId?: string | null; eventName: string },
 ): GoogleConversionEvent {
   const clickId = selectGoogleClickId(ref);
   if (!clickId) throw new Error('Google conversion requires a click identifier');
@@ -293,6 +294,16 @@ export function buildGoogleConversionEvent(
     // 友だち追加は自社サービス上の明示アクション。同意ありで送る
     consent: { adUserData: 'CONSENT_GRANTED', adPersonalization: 'CONSENT_GRANTED' },
   };
+  if (identity?.friendId) {
+    // Keep the separator unambiguous; never sanitize/truncate into a colliding key.
+    const transactionId = `${identity.friendId}:${identity.eventName}`;
+    if (!/^[A-Za-z0-9_-]+$/.test(identity.friendId)
+      || !/^[A-Za-z0-9_-]+$/.test(identity.eventName)
+      || transactionId.length > 64) {
+      throw new Error('Google conversion transactionId requires safe components and at most 64 characters');
+    }
+    event.transactionId = transactionId;
+  }
   if (eventValue) {
     event.conversionValue = eventValue;
     event.currency = 'JPY';
@@ -302,7 +313,7 @@ export function buildGoogleConversionEvent(
 
 /**
  * ad_conversion_logs.request_body に残す内容（Capsec #305）。
- * 取り消し（調整）の照合に要る項目だけを許可リストで取り出す: gclid / gbraid / wbraid・CV アクション・アカウント・eventTimestamp・値と通貨。
+ * 取り消し（調整）の照合に要る項目だけを許可リストで取り出す: transactionId・gclid / gbraid / wbraid・CV アクション・アカウント・eventTimestamp・値と通貨。
  * 本文に userData（メール・電話などのハッシュ）や住所などが将来足されても、ここで拾わないので保存されない
  */
 export function googleConversionRecord(ev: GoogleConversionEvent): string {
@@ -310,6 +321,7 @@ export function googleConversionRecord(ev: GoogleConversionEvent): string {
   const e = ev.body.events[0] ?? {};
   const record = {
     api: 'datamanager.events:ingest',
+    transactionId: e.transactionId ?? null,
     conversionActionId: d.productDestinationId ?? null,
     customerId: (d.operatingAccount as { accountId?: string } | undefined)?.accountId ?? null,
     loginCustomerId: (d.loginAccount as { accountId?: string } | undefined)?.accountId ?? null,
