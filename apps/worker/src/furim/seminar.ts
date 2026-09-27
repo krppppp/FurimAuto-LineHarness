@@ -216,6 +216,24 @@ export async function checkMessageQuota(channelAccessToken: string, needed: numb
 }
 
 type SendEnv = { LINE_CHANNEL_ACCESS_TOKEN: string };
+/** 計測リンクの入口を作るのに使う環境変数。本番 cron の env には WORKER_URL が無く WORKER_PUBLIC_URL が入っている */
+type LinkEnv = { WORKER_URL?: string; WORKER_PUBLIC_URL?: string };
+
+/**
+ * 告知・リマインドのボタンに載せる入口 URL。計測リンク /t/<code> を通してから配信 URL へ飛ばす。
+ * base が絶対 URL にならないときは計測を捨てて配信 URL をそのまま返す。相対 URL の入った flex は
+ * LINE が弾くため、1 通も届かないまま cron が再送を繰り返す（2026-09-27 の初回告知がこれで 0 件）
+ */
+export function seminarEntryUrl(base: string, code: string, streamUrl: string): string {
+  const trimmed = (base ?? '').replace(/\/$/, '');
+  if (!/^https:\/\//i.test(trimmed)) return streamUrl;
+  return `${trimmed}/t/${code}?openExternalBrowser=1`;
+}
+
+async function resolveSeminarLinkBase(db: D1Database, env: LinkEnv): Promise<string> {
+  const { resolveTrackedLinkBaseUrl } = await import('../lib/link-base-url.js');
+  return await resolveTrackedLinkBaseUrl(db, env.WORKER_PUBLIC_URL ?? env.WORKER_URL ?? '');
+}
 type LineClientLike = {
   pushMessage(to: string, messages: unknown[]): Promise<unknown>;
   multicast?(to: string[], messages: unknown[]): Promise<unknown>;
@@ -350,7 +368,7 @@ export type AnnounceResult =
 export async function announceSeminar(
   db: D1Database,
   lineClient: LineClientLike | null,
-  env: SendEnv & { WORKER_URL?: string },
+  env: SendEnv & LinkEnv,
   opts: { nowMs?: number } = {},
 ): Promise<AnnounceResult> {
   const nowMs = opts.nowMs ?? Date.now();
@@ -381,10 +399,9 @@ export async function announceSeminar(
 
   // 週ごとに 1 本だけ計測リンクを作る（クリック＝参加見込みとして link_clicks で数える）
   const { createTrackedLink } = await import('@line-crm/db');
-  const { resolveTrackedLinkBaseUrl } = await import('../lib/link-base-url.js');
   const link = await createTrackedLink(db, { name: `seminar_${weekId}`, originalUrl: week.stream_url });
-  const linkBase = await resolveTrackedLinkBaseUrl(db, env.WORKER_URL ?? '');
-  const entryUrl = `${linkBase}/t/${link.short_code ?? link.id}?openExternalBrowser=1`;
+  const linkBase = await resolveSeminarLinkBase(db, env);
+  const entryUrl = seminarEntryUrl(linkBase, link.short_code ?? link.id, week.stream_url);
 
   const flex = {
     type: 'bubble',
@@ -434,7 +451,7 @@ export type ReminderResult = { reminded: Array<{ slotId: string; recipients: num
 export async function remindSeminarSlots(
   db: D1Database,
   lineClient: LineClientLike | null,
-  env: SendEnv & { WORKER_URL?: string },
+  env: SendEnv & LinkEnv,
   opts: { nowMs?: number } = {},
 ): Promise<ReminderResult> {
   const nowMs = opts.nowMs ?? Date.now();
@@ -470,13 +487,14 @@ export async function remindSeminarSlots(
     reminded.push({ slotId: slot.slot_id, recipients: ids.length });
     if (ids.length === 0 || !lineClient) continue;
 
-    const { resolveTrackedLinkBaseUrl } = await import('../lib/link-base-url.js');
-    const linkBase = await resolveTrackedLinkBaseUrl(db, env.WORKER_URL ?? '');
+    const linkBase = await resolveSeminarLinkBase(db, env);
     const existing = await db
       .prepare('SELECT id, short_code FROM tracked_links WHERE name = ? ORDER BY created_at DESC LIMIT 1')
       .bind(`seminar_${weekId}`)
       .first<{ id: string; short_code: string | null }>();
-    const entryUrl = existing ? `${linkBase}/t/${existing.short_code ?? existing.id}?openExternalBrowser=1` : week.stream_url;
+    const entryUrl = existing
+      ? seminarEntryUrl(linkBase, existing.short_code ?? existing.id, week.stream_url)
+      : week.stream_url;
     const messages = [
       {
         type: 'flex',
@@ -489,10 +507,21 @@ export async function remindSeminarSlots(
         },
       },
     ];
-    for (let i = 0; i < ids.length; i += 500) {
-      const chunk = ids.slice(i, i + 500);
-      if (lineClient.multicast) await lineClient.multicast(chunk, messages);
-      else for (const id of chunk) await lineClient.pushMessage(id, messages);
+    // 1 通も送れないまま失敗したときは枠取りを戻す。reminded_at を立てたままにすると、
+    // まだ 30 分前の窓の中でも次の tick が拾わず、そのままリマインドが消える
+    let sentAny = false;
+    try {
+      for (let i = 0; i < ids.length; i += 500) {
+        const chunk = ids.slice(i, i + 500);
+        if (lineClient.multicast) await lineClient.multicast(chunk, messages);
+        else for (const id of chunk) await lineClient.pushMessage(id, messages);
+        sentAny = true;
+      }
+    } catch (err) {
+      if (!sentAny) {
+        await db.prepare('UPDATE furim_seminar_slots SET reminded_at = NULL WHERE week_id = ? AND slot_id = ?').bind(weekId, slot.slot_id).run();
+      }
+      throw err;
     }
   }
   return { reminded };

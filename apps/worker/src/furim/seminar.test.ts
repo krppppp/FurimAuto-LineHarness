@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { NO_FIT_SLOT_ID, parseSeminarVoteData, pickTopSlots, recordSeminarVote, seminarSurveyFlex, slotLabel, voteReplyText, weekIdOf } from './seminar.js';
+import { NO_FIT_SLOT_ID, parseSeminarVoteData, pickTopSlots, recordSeminarVote, seminarEntryUrl, seminarSurveyFlex, slotLabel, voteReplyText, weekIdOf } from './seminar.js';
 
 const NOW = Date.parse('2026-09-27T09:02:00+09:00'); // 日曜 9:02（アンケート送信の窓）
 
@@ -131,5 +131,18 @@ describe('得票の集計と上位2枠（Capsec #332）', () => {
 
   it('得票のある枠が1つだけなら1枠で開催する', () => {
     expect(pickTopSlots(counts.slice(2)).map((c) => c.slot_id)).toEqual(['s3']);
+  });
+});
+
+describe('入口 URL（Capsec #332）', () => {
+  const stream = 'https://www.youtube.com/@FurimAuto/live';
+
+  it('絶対 URL の base なら計測リンクを通す', () => {
+    expect(seminarEntryUrl('https://line-harness-prod.furimuato.workers.dev', 'abc123', stream))
+      .toBe('https://line-harness-prod.furimuato.workers.dev/t/abc123?openExternalBrowser=1');
+  });
+
+  it('base が空なら計測を捨てて配信 URL をそのまま使う（相対 URL は LINE が弾く）', () => {
+    expect(seminarEntryUrl('', 'abc123', stream)).toBe(stream);
   });
 });
