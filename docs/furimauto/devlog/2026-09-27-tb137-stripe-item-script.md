@@ -146,3 +146,20 @@ node scripts/stripe-fix-duplicate-items.mjs --apply
 9/28 時点の D1 は 12,420 / 6,960 のままで未実行。次回請求は中村航さん 2026-10-07 20:00 JST・
 あおいさん 2026-10-14 13:51 JST。中村さんの境目を越えると 3,440 円の過大請求がもう 1 か月分乗る。
 TB-137 は blocked（解除条件: くろさんの `--apply`）にした。
+
+## 追記（2026-09-28・unblock 要求を受けた裏取り）
+
+board から unblock 要求が来たが、残りは Stripe live の書き込み（会員の請求変更）1 手だけで、
+規程どおり AI 社員は実行できない。実行が空振りしないための裏取りだけ済ませた。
+
+- **price ID の照合**: スクリプトは price ID を直書きしているので、マスタが動いていると `--apply` が
+  ガードで中止してくろさんの 1 回が無駄になる。本番 `furim_master` の現在値と突き合わせて 6 本すべて一致
+  （m_full 8,980 / m_semi 5,980 / mRelist 1,980 / mDeleteProduct 980 / mSoldCSV 480 / mAttributeCheckbox 980）
+- **本番 D1 は未実行のまま**（12,420 / 6,960）。次回請求は 2026-10-07 20:00 JST・2026-10-14 13:51 JST
+- **迂回路の確認**: `~/.config/furimauto/prod.env` は今も `LINE_HARNESS_API_KEY` の 1 行だけ・`stripe` CLI 無し
+  （TB-234 未完）。worker は prod secret に鍵を持つが、**サブスクの item を読む／消す admin エンドポイントは無い**
+  （`backfill-stripe-invoices` は invoice の読み取りと D1 書き込み専用）。読み取り用の口を新設しても
+  除去は書き込みなので、くろさんの承認と実行は省けない
+- **TB-423 を作成**（critical・くろさん宛・10/5 まで）。TB-137 はこれを blocker にして blocked。
+  `unblockDescriptor` に他人を owner として書くことは API 側で拒否されるので（agent は自分しか指定できない）、
+  子タスクを blocker にする形にした
