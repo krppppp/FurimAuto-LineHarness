@@ -54,7 +54,7 @@ function exclude(col: string): string {
   return `AND (${col} IS NULL OR ${col} NOT IN (${EXCLUDED.map(() => '?').join(',')}))`;
 }
 
-const CLICK_ID_COND = '(r.gclid IS NOT NULL OR r.fbclid IS NOT NULL OR r.twclid IS NOT NULL OR r.ttclid IS NOT NULL)';
+const CLICK_ID_COND = '(r.gclid IS NOT NULL OR r.gbraid IS NOT NULL OR r.wbraid IS NOT NULL OR r.fbclid IS NOT NULL OR r.twclid IS NOT NULL OR r.ttclid IS NOT NULL)';
 
 type Section<T> = { ok: true } & T;
 type Failed = { ok: false; error: string };
