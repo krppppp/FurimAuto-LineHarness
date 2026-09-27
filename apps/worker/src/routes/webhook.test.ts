@@ -723,14 +723,27 @@ describe('POST /webhook — follow（新規）で試用期間を D1 に先に書
   const NOW_MS = Date.parse('2026-09-14T12:34:56.789+09:00');
   const DAY_MS = 24 * 60 * 60_000;
 
-  function followDb(existing: Partial<FurimCustomer> | null) {
+  const TRIAL_PLAN_PAYLOAD = JSON.stringify({
+    'プラン名': '友達登録2週間トライアルプラン',
+    'キーコード接頭語': '2weektrial_',
+    features: { mChangePrice: true, mSoldCSV: false, mCopyRakumaListing: false, AutoMultiChannel: 'メルカリ/ラクマ' },
+  });
+
+  function followDb(existing: Partial<FurimCustomer> | null, opts: { plan?: string | null } = {}) {
     const upserts: Array<{ sql: string; args: unknown[] }> = [];
+    const flagUpserts: Array<{ sql: string; args: unknown[] }> = [];
+    const plan = opts.plan === undefined ? TRIAL_PLAN_PAYLOAD : opts.plan;
     const db = {
       prepare: vi.fn((sql: string) => {
         const stmt = {
+          sql,
           args: [] as unknown[],
           bind: (...a: unknown[]) => { stmt.args = a; return stmt; },
-          first: vi.fn(async () => (sql.startsWith('SELECT * FROM furim_customers') ? existing : null)),
+          first: vi.fn(async () => {
+            if (sql.startsWith('SELECT * FROM furim_customers')) return existing;
+            if (sql.includes('FROM furim_master')) return plan ? { payload: plan } : null;
+            return null;
+          }),
           run: vi.fn(async () => {
             if (sql.startsWith('INSERT INTO furim_customers')) upserts.push({ sql, args: stmt.args });
             return {};
@@ -739,13 +752,22 @@ describe('POST /webhook — follow（新規）で試用期間を D1 に先に書
         };
         return stmt;
       }),
+      batch: vi.fn(async (stmts: Array<{ sql: string; args: unknown[] }>) => {
+        for (const s of stmts) if (s.sql.includes('INSERT INTO furim_feature_flags')) flagUpserts.push({ sql: s.sql, args: s.args });
+        return stmts.map(() => ({ meta: { changes: 1 } }));
+      }),
     } as unknown as D1Database;
-    return { db, upserts };
+    return { db, upserts, flagUpserts };
   }
 
-  async function follow(db: D1Database) {
+  function flagValues(rows: Array<{ args: unknown[] }>): Record<string, { value: unknown; source: unknown }> {
+    // buildFeatureFlagUpserts の bind 順: line_user_id, feature_key, value, source, updated_at
+    return Object.fromEntries(rows.map((r) => [String(r.args[1]), { value: r.args[2], source: r.args[3] }]));
+  }
+
+  async function follow(db: D1Database, existingFriend: Awaited<ReturnType<typeof getFriendByLineUserId>> = null) {
     vi.mocked(verifySignature).mockResolvedValue(true);
-    vi.mocked(getFriendByLineUserId).mockResolvedValue(null);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue(existingFriend);
     vi.mocked(jstNow).mockReturnValue('2026-09-14T12:34:56.789+09:00');
     lineClientMocks.getProfile.mockResolvedValue({ userId: 'U-new', displayName: 'New Friend' });
     vi.mocked(upsertFriend).mockResolvedValue({
@@ -794,6 +816,36 @@ describe('POST /webhook — follow（新規）で試用期間を D1 に先に書
     expect(row.subscription_start_at).toBe('2026-09-14T12:34:56.789+09:00');
     expect(row.subscription_end_at).toBe('2026-09-28T12:34:56.789+09:00');
     expect(fireEvent).toHaveBeenCalledWith(db, 'friend_add', expect.objectContaining({ eventData: expect.objectContaining({ isNewUser: true }) }), expect.anything(), null, expect.anything());
+  });
+
+  test('試用プランの機能フラグを follow 直後に source=plan で D1 へ書く（TB-300）', async () => {
+    const { db, upserts, flagUpserts } = followDb(null);
+    await follow(db);
+    const row = upsertedColumns(upserts[0]);
+    const flags = flagValues(flagUpserts);
+    // プラン payload の true/false がそのまま・コピー出品は常時 1（planFeaturesToFlags と同値）
+    expect(flags.mChangePrice).toEqual({ value: '1', source: 'plan' });
+    expect(flags.mSoldCSV).toEqual({ value: '0', source: 'plan' });
+    expect(flags.mCopyRakumaListing).toEqual({ value: '1', source: 'plan' });
+    expect(new Set(flagUpserts.map((f) => f.args[0]))).toEqual(new Set(['U-new']));
+    expect(String(row.key_code)).toMatch(/^2weektrial_[0-9a-z]{8}$/);
+  });
+
+  test('再フォロー（isNewUser=false）では機能フラグを書かない（TB-300）', async () => {
+    const { db, upserts, flagUpserts } = followDb(null);
+    await follow(db, {
+      id: 'friend-old', line_user_id: 'U-new', display_name: 'Old Friend', picture_url: null, status_message: null, is_following: 0,
+      user_id: null, line_account_id: null, metadata: '{}', first_tracked_link_id: null,
+      created_at: '2026-01-01T00:00:00.000+09:00', updated_at: '2026-01-01T00:00:00.000+09:00',
+    } as Awaited<ReturnType<typeof getFriendByLineUserId>>);
+    expect(upserts).toHaveLength(0);
+    expect(flagUpserts).toHaveLength(0);
+  });
+
+  test('試用プランが furim_master に無ければ機能フラグは書かない（TB-300）', async () => {
+    const { db, flagUpserts } = followDb(null, { plan: null });
+    await follow(db);
+    expect(flagUpserts).toHaveLength(0);
   });
 
   test('期限が入っている行（有料・再追加）は日時を上書きせず、キーコードが無ければキーコードだけ書く', async () => {

@@ -21,6 +21,9 @@ import { handleButtonAction } from '../furim/button-actions.js';
 import { handleKeywordAction } from '../furim/keyword-actions.js';
 import { AUTO_KEYWORDS, RICHMENU_MESSAGE_PREFIX, TIME_COMMAND_PATTERN, isKeycodeResetRequest, normalizeBotCommand, recordBotHandlerError } from '../furim/bot-routed-message.js';
 import { FRIEND_TRIAL_DAYS, formatJstIso, generateTrialKeyCode, getFurimCustomer, upsertFurimCustomer, type FurimCustomerPatch } from '../furim/customer-store.js';
+import { loadPlanPayload, planFeaturesToFlags, TRIAL_PLAN_NAME } from '../furim/legacy-keywords.js';
+import { upsertFeatureFlags } from '../furim/customer-sync.js';
+import { invalidateExtCache } from '../furim/ext-auth.js';
 
 // X口コミクーポン申請の通知先（くろさん）。申請URLと付与コマンドをpushする
 const X_REVIEW_STAFF_LINE_USER_ID = 'U5d35c3e6b2be0a6ec699b2a1de2aba93';
@@ -279,15 +282,25 @@ async function handleEvent(
     // 「キーコード発行」タップは D1 から即返せる。再フォロー・生成済みなら触らない
     if (isNewUser) {
       try {
+        const nowMs = Date.now();
         const existingCustomer = await getFurimCustomer(db, userId);
         const patch: FurimCustomerPatch = {};
         if (!existingCustomer?.key_code) patch.key_code = generateTrialKeyCode();
         if (!existingCustomer?.subscription_end_at) {
-          const nowMs = Date.now();
           patch.subscription_start_at = formatJstIso(nowMs);
           patch.subscription_end_at = formatJstIso(nowMs + FRIEND_TRIAL_DAYS * 24 * 60 * 60_000);
         }
         if (Object.keys(patch).length) await upsertFurimCustomer(db, userId, patch);
+        // 試用プランの機能フラグも Worker が先に D1 へ書く（TB-300）。GAS→シート→30 分毎の差分 cron を
+        // 待つと最初の 5〜47 分だけショップ調査が無料枠のままで「友だち追加すれば無制限」とズレる。
+        // キーワード経路（legacy-keywords.applyTrialCampaign）と同じ 4 行・同じ source='plan'
+        if (patch.key_code) {
+          const plan = await loadPlanPayload(db, TRIAL_PLAN_NAME);
+          if (plan?.features) {
+            await upsertFeatureFlags(db, userId, planFeaturesToFlags(plan.features, nowMs), 'plan');
+            await invalidateExtCache(env?.FURIM_EXT_CACHE, patch.key_code);
+          }
+        }
       } catch (err) {
         console.error('[webhook] trial keycode/period write failed:', userId, err);
       }
