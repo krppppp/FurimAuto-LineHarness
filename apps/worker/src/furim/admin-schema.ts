@@ -64,11 +64,12 @@ export const DISPLAY_NAME_COLUMN = '_display_name';
 export const FRIEND_CREATED_AT_COLUMN = '_friend_created_at';
 export const FEATURE_FLAG_PREFIX = '_flag_';
 
-/** シート「顧客情報-サブスク情報-キーコード」（ヘッダー 3 行目）の機能列の並び（2026-09-14 本番シートを getData で読んだ順）。ここに無い機能はマスタの順で後ろに付ける */
+/** シート「顧客情報-サブスク情報-キーコード」（ヘッダー 3 行目）の機能列の並び（2026-09-14 本番シートを getData で読んだ順）。ここに無い機能はマスタの順で後ろに付ける。
+ * シートより後に増えた機能は、同じサイトの群の最後に手で足す（mDraftScheduledListing は 2026-09-15 追加・TB-413） */
 export const FEATURE_FLAG_ORDER = [
   'mChangePrice', 'mSetBottomPrice', 'mComment', 'mDeleteComment', 'mBackup', 'mRelist', 'mAuction', 'mDeleteProduct', 'mAttributeCheckbox',
   'mLoadAdditionalInfo', 'mTimeReservation', 'mAutoComment', 'mAutoTransaction', 'mProfileOptions', 'mSoldCSV',
-  'mCopyMShopsListing', 'mCopyRakumaListing', 'mCopyYahooAuctionListing', 'mCopyYahooFleamarketListing',
+  'mCopyMShopsListing', 'mCopyRakumaListing', 'mCopyYahooAuctionListing', 'mCopyYahooFleamarketListing', 'mDraftScheduledListing',
   'msChangePrice', 'msSetBottomPrice', 'msDeleteProduct', 'msAttributeCheckbox', 'msListingModification', 'msTimeReservation', 'msRelist',
   'rChangePrice', 'rSetBottomPrice', 'rComment', 'rDeleteComment', 'rRelist', 'rDeleteProduct', 'rAttributeCheckbox', 'rListingModification',
   'rTimeReservation', 'rAutoComment', 'rAutoTransaction', 'rSoldCSV',
