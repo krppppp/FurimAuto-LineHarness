@@ -73,3 +73,30 @@ UPDATE furim_customers SET subscription_price = 5980, features = '',
 ```
 
 GAS の顧客シートは admin 経由の編集では同期されないので、シート側は次回請求の webhook で揃う。
+
+## 追記（同日・B事業のリーダーの依頼を受けた前提の再確認）
+
+「前提が変わっていないか」を読み取りだけで確かめた。3 点すべて 9/25 のままで変化なし。
+
+1. **会員への通知**: キーコード再発行 push は `stripe-processor.ts:240`
+   `billingReason === 'subscription_cycle' || billingReason === 'subscription_update'` のときだけ。
+   `proration_behavior=none` は即時請求書を立てないので、item を外した時点では何も飛ばない
+2. **plan-change-watch の誤検知**: `plan_builder_intents` の 9/25 以降の新規は PB-F6967A（9/27 12:49）1 件のみ。
+   パッケージ無しの単機能（mSetBottomPrice・1,980 円）なので包含の除外対象外。中村航さんの PB-BDDC28 は notified_at 済み
+3. **被害は本当に 2 名だけか**: 本番 D1 の packages と features が両方入っている契約 15 件を全件突き合わせ
+   （パッケージの features 列・`=` の前で切る）。重複は中村航さん（mRelist・mDeleteProduct・mSoldCSV）と
+   あおいさん（mAttributeCheckbox）の 2 件のみ。他の 13 件は m_semi+mDraftScheduledListing・
+   m_full+InventorySheet/AutoMultiChannel・premium+AutoMultiChannel のようにパッケージに含まれない機能だけで、
+   正しく別課金。D1 は鏡写しなので最終確定は Stripe 側（鍵が要る）だが、洗い出しの範囲としてはこれで足りる
+
+## 実行後の確認手順（くろさんが流したあと）
+
+- **Stripe 側**: 同じスクリプトを引数なしで再実行する。両方が「外す対象の item が無い（既に修正済み）」で
+  スキップされ、合計が 8,980 / 5,980 と出れば完了
+- **D1 側**（読み取り）: 次回請求までは古い値のままなのが正常
+
+```sql
+SELECT subscription_id, subscription_price, packages, features, plan_label
+  FROM furim_customers
+ WHERE subscription_id IN ('sub_1NOIaAF2C7KcCkFfgwQUHq2t','sub_1UF5NbF2C7KcCkFf9FysLUR1');
+```
