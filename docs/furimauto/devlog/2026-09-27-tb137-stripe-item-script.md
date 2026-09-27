@@ -100,3 +100,30 @@ SELECT subscription_id, subscription_price, packages, features, plan_label
   FROM furim_customers
  WHERE subscription_id IN ('sub_1NOIaAF2C7KcCkFfgwQUHq2t','sub_1UF5NbF2C7KcCkFf9FysLUR1');
 ```
+
+## 追記（同日・秘書の決定を受けた振り分け）
+
+秘書が質問カードの 2 問目（本番 D1 の表示）を `permission_dept` に決めた。担当（決済・顧客マスター）が
+本番 D1 に UPDATE を打つのは規程で禁止なので、権限管理課／Desktop セッションに回す。
+ただし今夜は TB-346（セミナー初回告知）で埋まっているため回さない。**10/5(日) までに実行**。
+
+- 子タスク **TB-348** を作成（くろさんの Desktop 宛）。前提（Stripe の item 除去が先）・UPDATE の SQL・
+  確認 SELECT・`--remote` 必須・`packages` は触らないことを本文に入れた
+- 1 問目（スクリプトの実行）はカードのまま。下読み（引数なし）は GET だけなので Desktop セッションで
+  先に流して差分をくろさんに見せ、Yes をもらってから `--apply` の順でよい
+
+### 期限の訂正（本番 D1 の読み取り）
+
+秘書のコメントは「中村さんの次回請求 10/6」としているが、本番 D1 の `subscription_end_at` は
+**中村さん 2026-10-07 20:00 JST**・**あおいさん 2026-10-14 13:51 JST**。
+過大請求がもう 1 か月乗る境目は 10/7 20:00（JST）。狙いは 10/5 のままでよいが、
+D1 は鏡写しなので最終確定は Stripe 側の current_period_end。
+
+### 現況（読み取り・9/27 時点で未実行）
+
+```
+sub_1NOIaAF2C7KcCkFfgwQUHq2t  12,420  m_full   mRelist,mDeleteProduct,mSoldCSV
+sub_1UF5NbF2C7KcCkFf9FysLUR1   6,960  m_semi   mAttributeCheckbox
+```
+
+値が 9/27 午前から変わっていないので、スクリプトはまだ流されていない。
