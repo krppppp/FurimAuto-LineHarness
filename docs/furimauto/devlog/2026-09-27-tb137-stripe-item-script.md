@@ -127,3 +127,22 @@ sub_1UF5NbF2C7KcCkFf9FysLUR1   6,960  m_semi   mAttributeCheckbox
 ```
 
 値が 9/27 午前から変わっていないので、スクリプトはまだ流されていない。
+
+## 追記（2026-09-28・実行回数の訂正）
+
+質問カードの回答は 1 問目「まだやっていない」／2 問目「権限管理課に回す」（TB-348 で発行済み）。
+
+秘書の段取り（① Desktop で下読み → ② 差分を見せる → ③ くろさんの Yes で `--apply`）は **鍵の入力が 2 回になる**。
+下読みも Stripe の読み取りなので鍵が要り、`~/.config/furimauto/prod.env` は 9/28 時点でも `LINE_HARNESS_API_KEY` の
+1 行だけ（TB-234 未完）なので、誰が流しても手入力になる。
+
+`--apply` は最初に現況を読んで表示し、`APPLY` と打つまで何も変えないので **最初から `--apply` の 1 回で足りる**。
+
+```
+cd ~/github/FurimAuto/LineHarness
+node scripts/stripe-fix-duplicate-items.mjs --apply
+```
+
+9/28 時点の D1 は 12,420 / 6,960 のままで未実行。次回請求は中村航さん 2026-10-07 20:00 JST・
+あおいさん 2026-10-14 13:51 JST。中村さんの境目を越えると 3,440 円の過大請求がもう 1 か月分乗る。
+TB-137 は blocked（解除条件: くろさんの `--apply`）にした。
