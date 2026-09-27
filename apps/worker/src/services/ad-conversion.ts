@@ -32,6 +32,7 @@ export async function sendAdConversions(
   }
 
   const platforms = await getActiveAdPlatforms(db);
+  const googleClickId = selectGoogleClickId(ref);
 
   for (const platform of platforms) {
     const config: AdPlatformConfig = JSON.parse(platform.config);
@@ -69,14 +70,14 @@ export async function sendAdConversions(
           }
           break;
         case 'google':
-          if (ref.gclid) {
+          if (googleClickId) {
             // 取り消し（調整）のときに照合できるよう、送った eventTimestamp 等を request_body に残す（Capsec #305）
             const googleEvent = buildGoogleConversionEvent(config, ref, eventValue);
             googleRecord = googleConversionRecord(googleEvent);
             await sendGoogleConversion(config, googleEvent);
             await logAdConversion(db, {
               platformId: platform.id, friendId, eventName,
-              clickId: ref.gclid, clickIdType: 'gclid', status: 'sent',
+              clickId: googleClickId.value, clickIdType: googleClickId.type, status: 'sent',
               requestBody: googleRecord,
             });
           }
@@ -96,8 +97,8 @@ export async function sendAdConversions(
         platformId: platform.id,
         friendId,
         eventName,
-        clickId: ref.fbclid || ref.twclid || ref.gclid || ref.ttclid || '',
-        clickIdType: platform.name,
+        clickId: platform.name === 'google' ? googleClickId?.value ?? '' : ref.fbclid || ref.twclid || ref.gclid || ref.ttclid || '',
+        clickIdType: platform.name === 'google' ? googleClickId?.type ?? 'google' : platform.name,
         status: 'failed',
         errorMessage: String(error),
         requestBody: googleRecord,
@@ -119,7 +120,7 @@ export async function retryMissedAdConversions(db: D1Database): Promise<void> {
       `SELECT DISTINCT rt.friend_id AS friend_id
        FROM ref_tracking rt
        JOIN friends f ON f.id = rt.friend_id
-       WHERE (rt.gclid IS NOT NULL OR rt.fbclid IS NOT NULL OR rt.twclid IS NOT NULL OR rt.ttclid IS NOT NULL)
+       WHERE (rt.gclid IS NOT NULL OR rt.gbraid IS NOT NULL OR rt.wbraid IS NOT NULL OR rt.fbclid IS NOT NULL OR rt.twclid IS NOT NULL OR rt.ttclid IS NOT NULL)
          AND substr(replace(f.created_at, ' ', 'T'), 1, 19) >= ?
          AND NOT EXISTS (
            SELECT 1 FROM ad_conversion_logs l
@@ -253,13 +254,26 @@ async function getGoogleAccessToken(config: AdPlatformConfig): Promise<string> {
 // developer-token / login-customer-id ヘッダーは不要。
 type GoogleConversionEvent = { body: { destinations: Array<Record<string, unknown>>; events: Array<Record<string, unknown>>; validateOnly: boolean } };
 
+type GoogleClickIds = Partial<Pick<RefTracking, 'gclid' | 'gbraid' | 'wbraid'>>;
+
+function selectGoogleClickId(ref: GoogleClickIds) {
+  for (const type of ['gclid', 'gbraid', 'wbraid'] as const) {
+    const value = ref[type];
+    if (value) return { type, value };
+  }
+  return null;
+}
+
 /** Data Manager API に送る本文を作る（送信と記録で同じものを使うため分けた） */
 export function buildGoogleConversionEvent(
   config: AdPlatformConfig,
-  ref: Pick<RefTracking, 'gclid'>,
+  ref: GoogleClickIds,
   eventValue?: number,
   now: Date = new Date(),
 ): GoogleConversionEvent {
+  const clickId = selectGoogleClickId(ref);
+  if (!clickId) throw new Error('Google conversion requires a click identifier');
+
   const destination: Record<string, unknown> = {
     reference: 'd1',
     operatingAccount: { product: 'GOOGLE_ADS', accountId: config.customer_id },
@@ -274,7 +288,8 @@ export function buildGoogleConversionEvent(
     destinationReferences: ['d1'],
     eventSource: 'WEB', // 友だち追加はLP→LINEのWeb由来（Data Manager API必須フィールド）
     eventTimestamp: now.toISOString(), // RFC3339 Z-normalized
-    adIdentifiers: { gclid: ref.gclid },
+    // Click-ID only: do not add enhanced-conversion userData for braid events.
+    adIdentifiers: { [clickId.type]: clickId.value },
     // 友だち追加は自社サービス上の明示アクション。同意ありで送る
     consent: { adUserData: 'CONSENT_GRANTED', adPersonalization: 'CONSENT_GRANTED' },
   };
@@ -287,7 +302,7 @@ export function buildGoogleConversionEvent(
 
 /**
  * ad_conversion_logs.request_body に残す内容（Capsec #305）。
- * 取り消し（調整）の照合に要る項目だけを許可リストで取り出す: gclid・CV アクション・アカウント・eventTimestamp・値と通貨。
+ * 取り消し（調整）の照合に要る項目だけを許可リストで取り出す: gclid / gbraid / wbraid・CV アクション・アカウント・eventTimestamp・値と通貨。
  * 本文に userData（メール・電話などのハッシュ）や住所などが将来足されても、ここで拾わないので保存されない
  */
 export function googleConversionRecord(ev: GoogleConversionEvent): string {
@@ -298,7 +313,9 @@ export function googleConversionRecord(ev: GoogleConversionEvent): string {
     conversionActionId: d.productDestinationId ?? null,
     customerId: (d.operatingAccount as { accountId?: string } | undefined)?.accountId ?? null,
     loginCustomerId: (d.loginAccount as { accountId?: string } | undefined)?.accountId ?? null,
-    gclid: (e.adIdentifiers as { gclid?: string } | undefined)?.gclid ?? null,
+    gclid: (e.adIdentifiers as GoogleClickIds | undefined)?.gclid ?? null,
+    gbraid: (e.adIdentifiers as GoogleClickIds | undefined)?.gbraid ?? null,
+    wbraid: (e.adIdentifiers as GoogleClickIds | undefined)?.wbraid ?? null,
     eventTimestamp: e.eventTimestamp ?? null,
     eventSource: e.eventSource ?? null,
     conversionValue: e.conversionValue ?? null,

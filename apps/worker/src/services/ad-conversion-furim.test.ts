@@ -47,6 +47,8 @@ describe('Google への CV 送信内容を取り消しの照合用に残す（Ca
       customerId: '8394293197',
       loginCustomerId: '4654620160',
       gclid: 'CjwKCA_x',
+      gbraid: null,
+      wbraid: null,
       eventTimestamp: '2026-09-17T07:07:36.123Z',
       eventSource: 'WEB',
       conversionValue: 3980,
@@ -84,5 +86,66 @@ describe('Google への CV 送信内容を取り消しの照合用に残す（Ca
     expect(record.eventTimestamp).toBe(sentBody!.events[0].eventTimestamp);
     expect(record.gclid).toBe('CjwKCA_real');
     vi.unstubAllGlobals();
+  });
+});
+
+
+describe('Google braid offline CV (TB-363)', () => {
+  const config = { customer_id: 'test-customer', conversion_action_id: 'test-action', oauth_token: 'test-token' };
+  const cases = [
+    { ref: { gbraid: 'GB_TEST' }, type: 'gbraid', value: 'GB_TEST' },
+    { ref: { wbraid: 'WB_TEST' }, type: 'wbraid', value: 'WB_TEST' },
+    { ref: { gclid: 'GC_TEST', gbraid: 'GB_TEST', wbraid: 'WB_TEST' }, type: 'gclid', value: 'GC_TEST' },
+    { ref: { gclid: '', gbraid: 'GB_TEST', wbraid: 'WB_TEST' }, type: 'gbraid', value: 'GB_TEST' },
+  ];
+
+  it.each(cases)('selects only $type and logs the identifier for line_friend_add', async ({ ref, type, value }) => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ events: [{}] })));
+    vi.stubGlobal('fetch', fetchMock);
+    getRefTrackingWithClickIds.mockResolvedValueOnce(ref);
+    getActiveAdPlatforms.mockResolvedValueOnce([{ id: 'p-google', name: 'google', config: JSON.stringify(config) }]);
+    logAdConversion.mockClear();
+    try {
+      await sendAdConversions(dbWithFriend('U-normal'), 'f-braid', 'line_friend_add');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [, init] = (fetchMock.mock.calls as unknown as [string, RequestInit][])[0];
+      const event = JSON.parse(String(init.body)).events[0];
+      expect(event.adIdentifiers).toEqual({ [type]: value });
+      expect(event).not.toHaveProperty('userData');
+      expect(event).not.toHaveProperty('userIdentifiers');
+      expect(event).not.toHaveProperty('customVariables');
+      const logged = logAdConversion.mock.calls[0][1];
+      expect(logged).toMatchObject({ eventName: 'line_friend_add', clickId: value, clickIdType: type, status: 'sent' });
+      expect(JSON.parse(logged.requestBody)[type]).toBe(value);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps the chosen braid identifier in failed logs, even with a Meta click ID', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('rejected', { status: 400 })));
+    getRefTrackingWithClickIds.mockResolvedValueOnce({ fbclid: 'META', wbraid: 'WB_TEST' });
+    getActiveAdPlatforms.mockResolvedValueOnce([{ id: 'p-google', name: 'google', config: JSON.stringify(config) }]);
+    logAdConversion.mockClear();
+    try {
+      await sendAdConversions(dbWithFriend('U-normal'), 'f-braid', 'line_friend_add');
+      expect(logAdConversion.mock.calls[0][1]).toMatchObject({ clickId: 'WB_TEST', clickIdType: 'wbraid', status: 'failed' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not send without a Google click identifier', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    getRefTrackingWithClickIds.mockResolvedValueOnce({ fbclid: 'META' });
+    getActiveAdPlatforms.mockResolvedValueOnce([{ id: 'p-google', name: 'google', config: JSON.stringify(config) }]);
+    try {
+      await sendAdConversions(dbWithFriend('U-normal'), 'f-braid', 'line_friend_add');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(() => buildGoogleConversionEvent(config, {})).toThrow('requires a click identifier');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

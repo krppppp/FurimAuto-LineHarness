@@ -395,7 +395,7 @@ app.get('/r/:ref', async (c) => {
   // /auth/line(モバイル)は全クエリをここへ転送してくるが、以前はこの再構築で
   // 落ちていたため、モバイル友だち追加の ref_tracking にクリックIDが入らず
   // オフラインCVが発火しなかった。
-  for (const k of ['gclid', 'fbclid', 'twclid', 'ttclid', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'sid']) {
+  for (const k of ['gclid', 'gbraid', 'wbraid', 'fbclid', 'twclid', 'ttclid', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'sid']) {
     const v = c.req.query(k);
     if (v) liffParams.set(k, v);
   }
@@ -505,7 +505,7 @@ ${longPressHint}
     function send(type,detail){
       try{
         var b=JSON.stringify({sid:sid,page:location.pathname,events:[{type:type,detail:detail}],
-          hasClickId:!!(p.get('gclid')||p.get('fbclid')||p.get('twclid')||p.get('ttclid')),
+          hasClickId:!!(p.get('gclid')||p.get('gbraid')||p.get('wbraid')||p.get('fbclid')||p.get('twclid')||p.get('ttclid')),
           utmCampaign:p.get('utm_campaign'),utmContent:p.get('utm_content'),
           mobile:mob,referrer:document.referrer||null});
         if(navigator.sendBeacon){navigator.sendBeacon(EP,b);}else{var x=new XMLHttpRequest();x.open('POST',EP,true);x.send(b);}
@@ -572,7 +572,7 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
     function send(type,detail){
       try{
         var b=JSON.stringify({sid:sid,page:location.pathname,events:[{type:type,detail:detail}],
-          hasClickId:!!(p.get('gclid')||p.get('fbclid')||p.get('twclid')||p.get('ttclid')),
+          hasClickId:!!(p.get('gclid')||p.get('gbraid')||p.get('wbraid')||p.get('fbclid')||p.get('twclid')||p.get('ttclid')),
           utmCampaign:p.get('utm_campaign'),utmContent:p.get('utm_content'),
           mobile:mob,referrer:document.referrer||null});
         if(navigator.sendBeacon){navigator.sendBeacon(EP,b);}else{var x=new XMLHttpRequest();x.open('POST',EP,true);x.send(b);}

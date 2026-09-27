@@ -455,6 +455,8 @@ liffRoutes.get('/auth/line', async (c) => {
   const redirect = c.req.query('redirect') || '';
   const formId = c.req.query('form') || '';
   const gclid = c.req.query('gclid') || '';
+  const gbraid = c.req.query('gbraid') || '';
+  const wbraid = c.req.query('wbraid') || '';
   const fbclid = c.req.query('fbclid') || '';
   const twclid = c.req.query('twclid') || '';
   const ttclid = c.req.query('ttclid') || '';
@@ -554,6 +556,8 @@ liffRoutes.get('/auth/line', async (c) => {
   if (iganParam) liffParams.set('igan', iganParam);
   if (redirect) liffParams.set('redirect', redirect);
   if (gclid) liffParams.set('gclid', gclid);
+  if (gbraid) liffParams.set('gbraid', gbraid);
+  if (wbraid) liffParams.set('wbraid', wbraid);
   if (fbclid) liffParams.set('fbclid', fbclid);
   if (twclid) liffParams.set('twclid', twclid);
   if (ttclid) liffParams.set('ttclid', ttclid);
@@ -575,7 +579,7 @@ liffRoutes.get('/auth/line', async (c) => {
   // can verify against the correct gate via the correct X Harness instance.
   // Without these, the form falls back to the gateId baked into the form's
   // onSubmitWebhookUrl (which is stale when a form is reused across campaigns).
-  const state = JSON.stringify({ ref, redirect, form: formId, gate: gateParam, xh: xhParam2, gclid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, utmContent, utmTerm, sid, account: accountParam || poolAccount, uid: uidParam, ig: igParam, iga: igaParam, igan: iganParam });
+  const state = JSON.stringify({ ref, redirect, form: formId, gate: gateParam, xh: xhParam2, gclid, gbraid, wbraid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, utmContent, utmTerm, sid, account: accountParam || poolAccount, uid: uidParam, ig: igParam, iga: igaParam, igan: iganParam });
   const encodedState = btoa(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
   loginUrl.searchParams.set('response_type', 'code');
@@ -604,6 +608,8 @@ liffRoutes.get('/auth/line', async (c) => {
   // 広告クリックID・LPセッションIDもQR経由(PC→スマホ)で引き継ぐ。
   // これが無いとQRホップでモバイル側の帰属(オフラインCV/LP計測接続)が切れる。
   if (gclid) qrParams.set('gclid', gclid);
+  if (gbraid) qrParams.set('gbraid', gbraid);
+  if (wbraid) qrParams.set('wbraid', wbraid);
   if (fbclid) qrParams.set('fbclid', fbclid);
   if (twclid) qrParams.set('twclid', twclid);
   if (ttclid) qrParams.set('ttclid', ttclid);
@@ -698,6 +704,8 @@ liffRoutes.get('/auth/oauth', async (c) => {
   const gateParam = c.req.query('gate') || '';
   const xhParam = c.req.query('xh') || '';
   const gclid = c.req.query('gclid') || '';
+  const gbraid = c.req.query('gbraid') || '';
+  const wbraid = c.req.query('wbraid') || '';
   const fbclid = c.req.query('fbclid') || '';
   const twclid = c.req.query('twclid') || '';
   const ttclid = c.req.query('ttclid') || '';
@@ -745,7 +753,7 @@ liffRoutes.get('/auth/oauth', async (c) => {
   const callbackUrl = `${baseUrl}/auth/callback`;
   const state = JSON.stringify({
     ref, redirect, form: formId, gate: gateParam, xh: xhParam,
-    gclid, fbclid, twclid, ttclid,
+    gclid, gbraid, wbraid, fbclid, twclid, ttclid,
     utmSource, utmMedium, utmCampaign, utmContent, utmTerm, sid,
     account: accountParam || poolAccount, uid: uidParam, ig: igParam,
     iga: igaParam, igan: iganParam,
@@ -779,6 +787,8 @@ liffRoutes.get('/auth/callback', async (c) => {
   let gateParam = '';
   let xhParam = '';
   let gclid = '';
+  let gbraid = '';
+  let wbraid = '';
   let fbclid = '';
   let twclid = '';
   let ttclid = '';
@@ -801,6 +811,8 @@ liffRoutes.get('/auth/callback', async (c) => {
     gateParam = parsed.gate || '';
     xhParam = parsed.xh || '';
     gclid = parsed.gclid || '';
+    gbraid = parsed.gbraid || '';
+    wbraid = parsed.wbraid || '';
     fbclid = parsed.fbclid || '';
     twclid = parsed.twclid || '';
     ttclid = parsed.ttclid || '';
@@ -976,6 +988,8 @@ liffRoutes.get('/auth/callback', async (c) => {
         sourceUrl: null,
         fbclid: fbclid || null,
         gclid: gclid || null,
+        gbraid: gbraid || null,
+        wbraid: wbraid || null,
         twclid: twclid || null,
         ttclid: ttclid || null,
         utmSource: utmSource || null,
@@ -1000,6 +1014,8 @@ liffRoutes.get('/auth/callback', async (c) => {
     // Save ad click IDs + UTM to friend metadata (for future ad API postback)
     const adMeta: Record<string, string> = {};
     if (gclid) adMeta.gclid = gclid;
+    if (gbraid) adMeta.gbraid = gbraid;
+    if (wbraid) adMeta.wbraid = wbraid;
     if (fbclid) adMeta.fbclid = fbclid;
     if (twclid) adMeta.twclid = twclid;
     if (ttclid) adMeta.ttclid = ttclid;
@@ -1357,6 +1373,8 @@ liffRoutes.post('/api/liff/link', async (c) => {
       igan?: string;
       // 広告クリックID・UTM・LPセッションID（LIFF URLから転送。モバイル経路の帰属用）
       gclid?: string;
+      gbraid?: string;
+      wbraid?: string;
       fbclid?: string;
       twclid?: string;
       ttclid?: string;
@@ -1443,6 +1461,8 @@ liffRoutes.post('/api/liff/link', async (c) => {
             entryRouteId: route?.id ?? null,
             sourceUrl: null,
             gclid: body.gclid || null,
+            gbraid: body.gbraid || null,
+            wbraid: body.wbraid || null,
             fbclid: body.fbclid || null,
             twclid: body.twclid || null,
             ttclid: body.ttclid || null,
@@ -1524,6 +1544,8 @@ liffRoutes.post('/api/liff/link', async (c) => {
           entryRouteId: route?.id ?? null,
           sourceUrl: null,
           gclid: body.gclid || null,
+          gbraid: body.gbraid || null,
+          wbraid: body.wbraid || null,
           fbclid: body.fbclid || null,
           twclid: body.twclid || null,
           ttclid: body.ttclid || null,
