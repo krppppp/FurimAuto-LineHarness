@@ -69,7 +69,7 @@ describe('解約理由アンケート 5択（英字コード）', () => {
     const messages = client.replyMessage.mock.calls[0][1] as Array<{ text: string }>;
     expect(messages).toHaveLength(1);
     expect(messages[0].text).toContain('差し支えなければ');
-    // 引き止め・再契約導線を置かない（TB-748 決定A）
+    // 新アンケート側には引き止め・再契約導線を置かない（TB-740。旧分岐の 980 円案内はここには来ない）
     expect(messages[0].text).not.toContain('liff.line.me');
   });
 
@@ -96,7 +96,9 @@ describe('解約理由アンケート 5択（英字コード）', () => {
 });
 
 describe('解約理由アンケート回答', () => {
-  it('料金理由 → タグ新規作成・付与＋お礼のみ（ダウングレード提案は外した・TB-748 決定A）', async () => {
+  // 「月980円〜」の案内は旧分岐に残す（TB-748 で F事業のリーダーが決定Aを改めた）。
+  // 新アンケート（5択）には元から入っていないので TB-740 の要件は満たしている
+  it('料金理由 → タグ新規作成・付与＋お礼＋ダウングレード提案を返す', async () => {
     const client = makeClient();
     const db = makeDb({ tagExists: false });
 
@@ -106,9 +108,9 @@ describe('解約理由アンケート回答', () => {
     expect(db.inserts.some((s) => /INSERT OR IGNORE INTO tags/.test(s))).toBe(true);
     expect(db.inserts.some((s) => /INSERT OR IGNORE INTO friend_tags/.test(s))).toBe(true);
     const messages = client.replyMessage.mock.calls[0][1] as Array<{ text: string }>;
-    expect(messages).toHaveLength(1);
+    expect(messages).toHaveLength(2);
     expect(messages[0].text).toContain('ご回答ありがとうございます');
-    expect(messages[0].text).not.toContain('liff.line.me');
+    expect(messages[1].text).toContain('liff.line.me');
   });
 
   it('物販休止 → タグ付与＋お礼のみ（提案なし）', async () => {

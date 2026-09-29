@@ -618,16 +618,25 @@ export async function processStripeEvent(
         });
         await updateFriendPlanName(db, resolvedLineUserId, 'キャンセル済み');
         // 解約履歴（キャンセル一覧の置き換え）。stripe_event_id UNIQUE で再処理しても 1 行
-        await db
+        const cancellationInsert = await db
           .prepare(
             `INSERT OR IGNORE INTO furim_cancellations (id, line_user_id, stripe_event_id, subscription_id, plan_name, mercari_url, canceled_at)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
           )
           .bind(crypto.randomUUID(), resolvedLineUserId, body.id, obj.id, before?.plan_label ?? null, before?.mercari_url ?? null, jstNow())
           .run();
+        // このイベントで解約行を新しく入れたときだけ push する（TB-747）。この関数は後段の
+        // `if (!subDeletedOk) throw` で 2xx を返さないことがあり、Stripe は再送する。戻り値を見ずに
+        // push すると、行は増えないのにアンケートだけ 2 通目が飛ぶ。
+        // 承知のうえの副作用: push 自体が失敗して再送されると 2 度目は changes = 0 でアンケートが出ない。
+        // アンケートが 1 件取れないことより、解約した人へ同じものを 2 通送る方が悪い、という判断
+        const insertedCancellation = cancellationInsert?.meta?.changes === 1;
+        if (!insertedCancellation) {
+          console.warn('[stripe/subscription.deleted] 解約行が新規でないため解約理由アンケートの push を見送った:', body.id, resolvedLineUserId);
+        }
         // 解約理由アンケート（TB-740）: 解約行を入れた後に 1 問だけ push する。解約は成立済みなので
         // 押されなくても何も起きない（列が NULL のまま＝未回答）。push の失敗で解約処理は落とさない
-        if (env.LINE_CHANNEL_ACCESS_TOKEN) {
+        if (insertedCancellation && env.LINE_CHANNEL_ACCESS_TOKEN) {
           try {
             const surveyMessages = cancellationSurveyMessages();
             await new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN).pushMessage(resolvedLineUserId, surveyMessages as never[]);

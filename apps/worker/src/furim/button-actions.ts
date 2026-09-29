@@ -184,9 +184,10 @@ export async function handleButtonAction(
     return true;
   }
 
-  // 解約理由アンケート（旧・月額解約フローのFlexから）: タグで記録してお礼だけ返す。
-  // ダウングレード提案（プランビルダー）は F事業のリーダーの決定で外した（TB-748 決定A）。
-  // 解約直後に安いプランを出すと「値段」で辞めた人の回答が歪み、この施策で一番取りたい数字が壊れるため
+  // 解約理由アンケート（旧・月額解約フローのFlexから）: タグで記録し、理由に応じて再開提案を返す。
+  // 「月980円〜」の案内はここに残す（TB-748 で F事業のリーダーが決定Aを改めた）。
+  // 新アンケート（上の 5 択）には元から入っておらず、TB-740 の「引き止め文を挟まない」は既に満たしている。
+  // 今いくら復帰を生んでいるか測っていないものを、ついでに消さない
   if (text.includes('解約理由:')) {
     const reason = text.split(':')[1] ?? '';
     if (db && reason) {
@@ -202,10 +203,16 @@ export async function handleButtonAction(
       }
     }
     const thanks = 'ご回答ありがとうございます🙇\n今後のサービス改善に活用させていただきます。';
-    const body = reason === '物販休止' || reason === '他ツールへ乗り換え'
-      ? `${thanks}\n\nまた物販を再開される際は、いつでもこのLINEからお待ちしております！`
-      : thanks;
-    await lineClient.replyMessage(replyToken, [{ type: 'text', text: body } as never]);
+    if (reason === '物販休止' || reason === '他ツールへ乗り換え') {
+      await lineClient.replyMessage(replyToken, [
+        { type: 'text', text: `${thanks}\n\nまた物販を再開される際は、いつでもこのLINEからお待ちしております！` } as never,
+      ]);
+    } else {
+      await lineClient.replyMessage(replyToken, [
+        { type: 'text', text: thanks } as never,
+        { type: 'text', text: `💡【機能を絞って安く続ける選択肢も】\n\nFurimAutoは必要な機能だけを選べるビュッフェ式です🍽\nよく使う機能1つだけなら月980円(税抜)から再開できます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n${planBuilderUrl(env)}` } as never,
+      ]);
+    }
     return true;
   }
 

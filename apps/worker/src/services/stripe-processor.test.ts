@@ -589,13 +589,16 @@ describe('processStripeEvent — customer.subscription.deleted（Capsec #263 (4)
 
 describe('processStripeEvent — customer.subscription.deleted の解約理由アンケート push（TB-740）', () => {
   // 解約行の INSERT と push の順序を1本の配列で見る（push は必ず INSERT の後）
-  function makeCancelDb(trace: string[]) {
+  function makeCancelDb(trace: string[], cancellationChanges = 1) {
     return {
       prepare: vi.fn().mockImplementation((sql: string) => {
         const stmt = {
           bind: () => stmt,
           run: vi.fn().mockImplementation(async () => {
-            if (/INSERT OR IGNORE INTO furim_cancellations/.test(sql)) trace.push('insert');
+            if (/INSERT OR IGNORE INTO furim_cancellations/.test(sql)) {
+              trace.push('insert');
+              return { meta: { changes: cancellationChanges } };
+            }
             return { meta: { changes: 1 } };
           }),
           all: vi.fn().mockResolvedValue({ results: [] }),
@@ -634,5 +637,24 @@ describe('processStripeEvent — customer.subscription.deleted の解約理由�
 
     expect(trace).toEqual(['insert']);
     expect(fireEvent).toHaveBeenCalledWith(expect.anything(), 'stripe_subscription_deleted', expect.objectContaining({ idempotencyKey: 'evt_del_survey' }), 'tok', null, expect.anything());
+  });
+
+  // TB-747: この関数は後段で throw して 2xx を返さないことがあり、Stripe は同じイベントを再送する。
+  // 解約行は stripe_event_id UNIQUE で増えないので、push も同じ条件で 1 回に抑える
+  test('再送（解約行が増えない＝changes 0）ではアンケートを push しない', async () => {
+    const trace: string[] = [];
+    const pushMessage = vi.fn().mockImplementation(async () => { trace.push('push'); });
+    vi.mocked(LineClient).mockImplementation(() => ({ pushMessage }) as never);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await processStripeEvent(makeCancelDb(trace, 0), { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, deletedBody);
+
+    expect(trace).toEqual(['insert']);
+    expect(pushMessage).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('push を見送った'), 'evt_del_survey', 'U-cancel');
+    // 解約処理そのものは今までどおり最後まで進む
+    expect(fireEvent).toHaveBeenCalledWith(expect.anything(), 'stripe_subscription_deleted', expect.objectContaining({ idempotencyKey: 'evt_del_survey' }), 'tok', null, expect.anything());
+    warn.mockRestore();
   });
 });
