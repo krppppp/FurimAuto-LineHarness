@@ -13,7 +13,8 @@ import { cancellationReasonCodeFromLabel, recordCancellationReason, CANCELLATION
 import type { ExtCache } from './ext-auth.js';
 
 export type ButtonActionsEnv = {
-  GAS_DEPLOY_ID: string;
+  // シートへの鏡写しにだけ使う。無ければ鏡写しを飛ばす（ボタンの処理自体は Worker で完結・TB-765）
+  GAS_DEPLOY_ID?: string;
   STRIPE_SECRET_KEY?: string;
   FURIM_EXT_CACHE?: ExtCache;
   PLAN_BUILDER_LIFF_URL?: string;
@@ -164,7 +165,7 @@ export async function handleButtonAction(
       } catch (e) {
         console.error('[furim] furim_survey_answers insert failed:', lineUserId, e);
       }
-      await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'アンケート回答': surveyResult ?? '' });
+      if (env.GAS_DEPLOY_ID) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'アンケート回答': surveyResult ?? '' });
     }
     return true;
   }
@@ -306,7 +307,7 @@ export async function handleButtonAction(
       { type: 'text', text: 'メルカリToラクマコピー出品機能の説明書はこちらです。\nURL: https://furimauto.com/howto/#mCopyRakumaListing' } as never,
     ]);
     if (db && copyTickets != null) {
-      await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'Free30チケット': true, 'コピー出品チケット': copyTickets });
+      if (env.GAS_DEPLOY_ID) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'Free30チケット': true, 'コピー出品チケット': copyTickets });
     }
     return true;
   }
@@ -362,7 +363,7 @@ export async function handleButtonAction(
       type: 'text',
       text: '✅在庫管理シートを有効化しました！\n\nメルカリ・ラクマ・Shops・ヤフオク・ヤフフリの在庫を1枚のスプレッドシートでまとめて管理し、売れたら他サイトの出品を自動でお知らせ・削除できます📦\n\n【使い始め方】\n① FurimAuto拡張機能を最新版（v4.2.2以降）へ更新する\n更新方法: https://furimauto.com/howto/#checkVersion\n\n② キーコード入力画面にてバージョンが4.2.2であることを確認して、入力ボタンを一度押して成功になるまでそのまま待つ\n\n③ 出品一覧ページを一度更新してみると、新たに緑色の「在庫管理シートを作成」ボタンが現れる\n\n④ 説明書に沿ってセットアップする\nhttps://furimauto.com/howto/index.html#inventorySheet\n\nうまく表示されない時は一度拡張を開き直してキーコードを再取得してみてください🙏',
     } as never]);
-    if (db) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, {}, inventoryFlags);
+    if (db && env.GAS_DEPLOY_ID) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, {}, inventoryFlags);
     return true;
   }
 
@@ -397,7 +398,7 @@ export async function handleButtonAction(
       messages.push({ type: 'text', text: '申し訳ございません、付与処理に失敗しました🙇\n\nお手数ですが、このLINEにそのままご返信ください。担当者が確認して付与いたします。' });
     }
     await lineClient.replyMessage(replyToken, messages as never[]);
-    if (db && result.success) {
+    if (db && result.success && env.GAS_DEPLOY_ID) {
       await mirrorCustomerFieldsToGas(
         db,
         env.GAS_DEPLOY_ID,
@@ -409,6 +410,6 @@ export async function handleButtonAction(
     return true;
   }
 
-  await lineClient.replyMessage(replyToken, [{ type: 'text', text: '現在急ピッチで準備中です！' } as never]);
-  return true;
+  // ここに無い【ボタン】xxx は webhook 側で auto_replies（exact）を引き、それも無ければ「準備中」を返す（TB-765）
+  return false;
 }

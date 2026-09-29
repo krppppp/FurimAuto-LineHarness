@@ -645,11 +645,11 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     GITHUB_PAT: 'github-pat',
   };
 
-  async function postText(text: string, opts: { exactAutoReplyKeyword?: string } = {}) {
+  async function postText(text: string, opts: { exactAutoReplyKeyword?: string; aiMode?: boolean } = {}) {
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getFriendByLineUserId).mockResolvedValue(aiModeFriend);
     vi.mocked(jstNow).mockReturnValue('2026-07-31T12:00:00.000+09:00');
-    vi.mocked(getAiMode).mockResolvedValue(true);
+    vi.mocked(getAiMode).mockResolvedValue(opts.aiMode ?? true);
     vi.mocked(handleFurimAction).mockResolvedValue(false);
 
     const exactRule = opts.exactAutoReplyKeyword
@@ -674,10 +674,10 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
           all: vi.fn(async () => ({
             results: exactRule && sql.includes('FROM auto_replies') ? [exactRule] : [],
           })),
-          // hasExactAutoReply の lookup。バインドしたキーワードと一致するときだけ行を返す
+          // findExactAutoReply の lookup。バインドしたキーワードと一致するときだけ行を返す
           first: vi.fn(async () =>
             exactRule && sql.includes("match_type = 'exact'") && stmt.args[0] === exactRule.keyword
-              ? { id: exactRule.id }
+              ? exactRule
               : null,
           ),
         };
@@ -756,6 +756,33 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     await postText('ライブ参加ってどうやるんですか？', { exactAutoReplyKeyword: 'ライブ参加' });
     expect(handleAIChat).toHaveBeenCalledTimes(1);
     expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
+  });
+
+  // TB-765: 【ボタン】付きの文は Worker の handleButtonAction → exact の auto_reply → 「準備中」の順で必ず返す
+  test('AIモードONでも handleButtonAction に無い【ボタン】xxx は exact の auto_reply が返る', async () => {
+    await postText('【ボタン】ライブ参加', { exactAutoReplyKeyword: '【ボタン】ライブ参加' });
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+    expect(lineClientMocks.replyMessage.mock.calls[0]?.[1]).not.toEqual([expect.objectContaining({ text: '現在急ピッチで準備中です！' })]);
+  });
+
+  test('AIモードOFFでも【ボタン】xxx は exact の auto_reply が返る', async () => {
+    await postText('【ボタン】ライブ参加', { exactAutoReplyKeyword: '【ボタン】ライブ参加', aiMode: false });
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('【ボタン】xxx がどこにも当たらなければ「準備中」を返す（黙って捨てない）', async () => {
+    await postText('【ボタン】まだ無いボタン');
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('reply-token', [expect.objectContaining({ text: '現在急ピッチで準備中です！' })]);
+  });
+
+  test('既存の【ボタン】アンケート開始 は auto_reply より handleButtonAction が先に答える', async () => {
+    await postText('【ボタン】アンケート開始', { exactAutoReplyKeyword: '【ボタン】アンケート開始' });
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fireEvent)).not.toHaveBeenCalled();
   });
 });
 
