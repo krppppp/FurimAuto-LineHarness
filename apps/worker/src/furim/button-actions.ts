@@ -9,7 +9,7 @@ import { upsertFeatureFlags } from './customer-sync.js';
 import { INVENTORY_PATROL_ALL_SITES } from './feature-flags.js';
 import { applyTicketDelta } from './ticket-ledger.js';
 import { grantTrialPromo, type TrialPromoResult } from './trial-promo.js';
-import { isCancellationReasonCode, recordCancellationReason, type CancellationReasonCode } from './cancellation-reason.js';
+import { isCancellationReasonCode, recordCancellationReason, CANCELLATION_REASON_REPLY_TEXT, type CancellationReasonCode } from './cancellation-reason.js';
 import type { ExtCache } from './ext-auth.js';
 
 export type ButtonActionsEnv = {
@@ -180,14 +180,13 @@ export async function handleButtonAction(
         console.error('[furim] 解約理由の記録に失敗:', lineUserId, e);
       }
     }
-    await lineClient.replyMessage(replyToken, [{
-      type: 'text',
-      text: 'ご回答ありがとうございます🙇\n今後のサービス改善に活用させていただきます。\n\n差し支えなければ、もう少し詳しく一言いただけると助かります（このままご返信ください）。',
-    } as never]);
+    await lineClient.replyMessage(replyToken, [{ type: 'text', text: CANCELLATION_REASON_REPLY_TEXT } as never]);
     return true;
   }
 
-  // 解約理由アンケート（旧・月額解約フローのFlexから）: タグで記録し、理由に応じて再開提案を返す
+  // 解約理由アンケート（旧・月額解約フローのFlexから）: タグで記録してお礼だけ返す。
+  // ダウングレード提案（プランビルダー）は F事業のリーダーの決定で外した（TB-748 決定A）。
+  // 解約直後に安いプランを出すと「値段」で辞めた人の回答が歪み、この施策で一番取りたい数字が壊れるため
   if (text.includes('解約理由:')) {
     const reason = text.split(':')[1] ?? '';
     if (db && reason) {
@@ -203,16 +202,10 @@ export async function handleButtonAction(
       }
     }
     const thanks = 'ご回答ありがとうございます🙇\n今後のサービス改善に活用させていただきます。';
-    if (reason === '物販休止' || reason === '他ツールへ乗り換え') {
-      await lineClient.replyMessage(replyToken, [
-        { type: 'text', text: `${thanks}\n\nまた物販を再開される際は、いつでもこのLINEからお待ちしております！` } as never,
-      ]);
-    } else {
-      await lineClient.replyMessage(replyToken, [
-        { type: 'text', text: thanks } as never,
-        { type: 'text', text: `💡【機能を絞って安く続ける選択肢も】\n\nFurimAutoは必要な機能だけを選べるビュッフェ式です🍽\nよく使う機能1つだけなら月980円(税抜)から再開できます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n${planBuilderUrl(env)}` } as never,
-      ]);
-    }
+    const body = reason === '物販休止' || reason === '他ツールへ乗り換え'
+      ? `${thanks}\n\nまた物販を再開される際は、いつでもこのLINEからお待ちしております！`
+      : thanks;
+    await lineClient.replyMessage(replyToken, [{ type: 'text', text: body } as never]);
     return true;
   }
 

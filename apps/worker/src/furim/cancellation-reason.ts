@@ -81,29 +81,50 @@ export async function recordCancellationReasonText(
   return true;
 }
 
+// 1 通目の altText（トーク一覧・通知に出る 1 行）
+export const CANCELLATION_SURVEY_ALT_TEXT = '解約のお手続きは完了しました（よろしければ理由を1つ教えてください）';
+
+// 2 通目（5 択を押した人にだけ返す）。押していない人には何も送らない＝催促しない
+export const CANCELLATION_REASON_REPLY_TEXT =
+  'ご回答ありがとうございます。\n\n差し支えなければ、もう少し詳しく一言お聞かせください。\n（不要でしたら、何も送らずに閉じていただいて大丈夫です）';
+
+// 自由記述を受け取ったときの締め。ここで終わりにして AI チャットへ流さない
+export const CANCELLATION_FREE_TEXT_REPLY = 'ありがとうございます。いただいたご意見は今後の改善に活用させていただきます。';
+
 /**
  * 解約直後に push する 1 問アンケート。
  *
- * ⚠️ 文面は仮。LINE導線担当がこの関数の戻り値をそのまま差し替える（TB-740 子2）。
- * 差し替えるときの決まりは 2 つだけ:
- *   - ボタンの text は `CANCELLATION_REASON_PREFIX + <コード>`（コードは CANCELLATION_REASONS のキー）
- *   - 引き止め文を入れない（解約はこの時点で成立済み）
+ * 文面は F事業のリーダーの決定（TB-748）に従う:
+ *   - 先頭で「完了した」と言い切る。アンケートはその後
+ *   - 謝らない（「ご迷惑をおかけし」「申し訳ございません」を入れない）
+ *   - 引き止め文・再契約導線・クーポンを置かない（解約はこの時点で成立済み）
+ *   - 答えずに閉じられることが文面から分かる（「よろしければ」「任意」）
+ *   - 5 択の表示文言は CANCELLATION_REASONS のまま。言い換えない（集計の意味が変わる）
+ * ボタンが送る text は `CANCELLATION_REASON_PREFIX + <コード>`（表示文言は送らない）
  */
 export function cancellationSurveyMessages(): Array<Record<string, unknown>> {
   return [
     {
       type: 'flex',
-      altText: '解約手続きが完了しました（理由を1つだけ教えてください）',
+      altText: CANCELLATION_SURVEY_ALT_TEXT,
       contents: {
         type: 'bubble',
         body: {
           type: 'box',
           layout: 'vertical',
           contents: [
-            { type: 'text', text: '解約手続きが完了しました', weight: 'bold', size: 'md', wrap: true },
+            { type: 'text', text: '解約のお手続きは完了しました', weight: 'bold', size: 'md', wrap: true },
             {
               type: 'text',
-              text: 'ご利用ありがとうございました🙇\n今後の改善のため、差し支えなければ理由を1つだけ教えてください。',
+              text: 'ご利用いただきありがとうございました。',
+              size: 'sm',
+              color: '#666666',
+              margin: 'md',
+              wrap: true,
+            },
+            {
+              type: 'text',
+              text: 'よろしければ、解約の理由を1つだけ選んでください（任意です）。\nこのまま閉じていただいても、お手続きに影響はありません。',
               size: 'sm',
               color: '#666666',
               margin: 'md',

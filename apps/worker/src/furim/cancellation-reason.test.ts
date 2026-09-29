@@ -5,7 +5,7 @@ vi.mock('@line-crm/db', () => ({
 }));
 
 import { jstNow } from '@line-crm/db';
-import { recordCancellationReason, recordCancellationReasonText, isCancellationReasonCode, cancellationSurveyMessages, CANCELLATION_REASON_PREFIX } from './cancellation-reason.js';
+import { recordCancellationReason, recordCancellationReasonText, isCancellationReasonCode, cancellationSurveyMessages, CANCELLATION_REASON_PREFIX, CANCELLATION_REASON_REPLY_TEXT } from './cancellation-reason.js';
 
 type Row = { id: string; reason_text: string | null; reason_answered_at: string | null } | null;
 
@@ -95,7 +95,7 @@ describe('recordCancellationReasonText', () => {
   });
 });
 
-describe('cancellationSurveyMessages（文面は LINE導線担当が差し替える）', () => {
+describe('cancellationSurveyMessages（文面は TB-748 決定A〜D）', () => {
   test('5 択のボタンが英字コードを送る', async () => {
     const [flex] = cancellationSurveyMessages() as Array<Record<string, never>>;
     const texts = JSON.stringify(flex).match(/【ボタン】解約理由:[a-z_]+/g) ?? [];
@@ -103,6 +103,30 @@ describe('cancellationSurveyMessages（文面は LINE導線担当が差し替え
     for (const t of texts) {
       const code = t.slice(CANCELLATION_REASON_PREFIX.length);
       expect(isCancellationReasonCode(code)).toBe(true);
+    }
+  });
+
+  test('ボタンのラベルは 5 択の表示文言のまま（言い換えない）', () => {
+    const json = JSON.stringify(cancellationSurveyMessages());
+    for (const label of ['動かない', '使い方が分からない', '売るものがない・稼げなかった', '値段', '副業をやめた']) {
+      expect(json).toContain(`"label":"${label}"`);
+    }
+  });
+
+  test('完了を先に言い切り、任意だと分かり、謝らない・引き止めない（決定C）', () => {
+    const json = JSON.stringify(cancellationSurveyMessages());
+    expect(json).toContain('解約のお手続きは完了しました');
+    expect(json).toContain('よろしければ');
+    expect(json).toContain('任意');
+    for (const ng of ['申し訳', 'ご迷惑', 'liff.line.me', 'クーポン', '再開', '割引']) {
+      expect(json).not.toContain(ng);
+    }
+  });
+
+  test('2 通目に引き止め・再契約導線を置かない（決定A・D）', () => {
+    expect(CANCELLATION_REASON_REPLY_TEXT).toContain('差し支えなければ');
+    for (const ng of ['liff.line.me', '980', 'ビュッフェ', '申し訳']) {
+      expect(CANCELLATION_REASON_REPLY_TEXT).not.toContain(ng);
     }
   });
 

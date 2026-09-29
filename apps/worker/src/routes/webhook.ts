@@ -672,10 +672,14 @@ async function handleEvent(
 
     // 解約理由の自由記述（TB-740）: 5択を押してから24時間以内の最初のテキストだけを
     // furim_cancellations.reason_text に控える。ここまで来た文は定型コマンドではない自由文。
-    // 返信も return もしない（問い合わせなら今までどおり AI／スタッフ通知へ流す）
+    // 拾えたときだけお礼を返して打ち切る（AIチャット・auto_reply へ流さない）。
+    // 拾えなければ何もせず今までどおりの経路へ落とす（問い合わせの流れは変えない）
     try {
-      const { recordCancellationReasonText } = await import('../furim/cancellation-reason.js');
-      await recordCancellationReasonText(db, userId, incomingText);
+      const { recordCancellationReasonText, CANCELLATION_FREE_TEXT_REPLY } = await import('../furim/cancellation-reason.js');
+      if (await recordCancellationReasonText(db, userId, incomingText)) {
+        await loggingClient.replyMessage(event.replyToken, [{ type: 'text', text: CANCELLATION_FREE_TEXT_REPLY } as never]);
+        return;
+      }
     } catch (e) {
       console.error('[webhook] 解約理由（自由記述）の記録に失敗:', userId, e);
     }

@@ -759,6 +759,107 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
   });
 });
 
+// TB-740 子2: 5択を押した直後の自由記述だけを reason_text に控え、その 1 通は AIチャットに流さない
+describe('POST /webhook — 解約理由の自由記述（TB-740）', () => {
+  const friend = {
+    id: 'friend-cx-1',
+    line_user_id: 'U-cx',
+    display_name: 'Cancelled',
+    picture_url: null,
+    status_message: null,
+    is_following: 1,
+    user_id: null,
+    line_account_id: null,
+    metadata: '{}',
+    first_tracked_link_id: null,
+    created_at: '2026-07-31T12:00:00.000+09:00',
+    updated_at: '2026-07-31T12:00:00.000+09:00',
+  };
+
+  const cxEnv = {
+    ...baseEnv,
+    GAS_DEPLOY_ID: 'gas-deploy-id',
+    STRIPE_SECRET_KEY: 'sk_test_dummy',
+    FIREBASE_DATABASE_URL: 'https://example.firebaseio.com',
+    GEMINI_API_KEY: 'gemini-key',
+    GITHUB_PAT: 'github-pat',
+  };
+
+  async function postFreeText(text: string, answeredAt: string | null) {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue(friend);
+    vi.mocked(jstNow).mockReturnValue('2026-07-31T12:00:00.000+09:00');
+    vi.mocked(getAiMode).mockResolvedValue(true);
+    vi.mocked(handleFurimAction).mockResolvedValue(false);
+
+    const updates: string[] = [];
+    const db = {
+      prepare: vi.fn((sql: string) => {
+        const stmt = {
+          bind: vi.fn(() => stmt),
+          run: vi.fn(async () => { updates.push(sql); return {}; }),
+          all: vi.fn(async () => ({ results: [] })),
+          first: vi.fn(async () =>
+            /FROM furim_cancellations/.test(sql)
+              ? { id: 'c1', reason_text: null, reason_answered_at: answeredAt }
+              : null,
+          ),
+        };
+        return stmt;
+      }),
+    } as unknown as D1Database;
+
+    const executionCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn(), props: {} } as unknown as ExecutionContext;
+    const app = setupApp();
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Line-Signature': 'A'.repeat(43) + '=' },
+        body: JSON.stringify({
+          destination: 'bot',
+          events: [
+            {
+              type: 'message',
+              replyToken: 'reply-token',
+              message: { type: 'text', id: 'message-cx-1', text },
+              timestamp: Date.now(),
+              source: { type: 'user', userId: 'U-cx' },
+              webhookEventId: 'event-cx',
+              deliveryContext: { isRedelivery: false },
+              mode: 'active',
+            },
+          ],
+        }),
+      },
+      { ...cxEnv, DB: db },
+      executionCtx,
+    );
+    expect(res.status).toBe(200);
+    await (vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>);
+    return { updates };
+  }
+
+  test('5択を押してから24時間以内の自由文は reason_text に入り、AIチャットに流れない', async () => {
+    const { updates } = await postFreeText('値上げがきつかったです', '2026-07-31T11:00:00.000+09:00');
+    expect(updates.some((s) => /UPDATE furim_cancellations SET reason_text/.test(s))).toBe(true);
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('24時間を過ぎたテキストは記録せず、今までどおり AIチャットに流れる', async () => {
+    const { updates } = await postFreeText('別件の問い合わせです', '2026-07-29T12:00:00.000+09:00');
+    expect(updates.some((s) => /UPDATE furim_cancellations SET reason_text/.test(s))).toBe(false);
+    expect(handleAIChat).toHaveBeenCalledTimes(1);
+  });
+
+  test('5択に未回答（reason_answered_at が NULL）なら今までどおり AIチャットに流れる', async () => {
+    const { updates } = await postFreeText('こんにちは', null);
+    expect(updates.some((s) => /UPDATE furim_cancellations SET reason_text/.test(s))).toBe(false);
+    expect(handleAIChat).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('POST /webhook — follow（新規）で試用期間を D1 に先に書く（Capsec #262）', () => {
   const NOW_MS = Date.parse('2026-09-14T12:34:56.789+09:00');
   const DAY_MS = 24 * 60 * 60_000;
