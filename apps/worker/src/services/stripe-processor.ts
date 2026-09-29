@@ -14,6 +14,7 @@ import { LineClient } from '@line-crm/line-sdk';
 import { gasPost, getGasErrorFromResponse } from '../furim/gas-client.js';
 import { enqueueGasRetryJob } from '../furim/gas-retry-queue.js';
 import { keycodeReissuedMessages } from '../furim/messages.js';
+import { cancellationSurveyMessages } from '../furim/cancellation-reason.js';
 import { absorbGasKeyCode, upsertFurimCustomer, clearFurimCustomerKeyCode, getFurimCustomerByStripeId, formatJstDateTime, formatJstIso } from '../furim/customer-store.js';
 import { pullFeatureFlagsFromSheet } from '../furim/customer-sync.js';
 import { applyPlanBuilderSync, gasSyncArgs, type PlanSyncResult } from '../furim/feature-flags.js';
@@ -624,6 +625,19 @@ export async function processStripeEvent(
           )
           .bind(crypto.randomUUID(), resolvedLineUserId, body.id, obj.id, before?.plan_label ?? null, before?.mercari_url ?? null, jstNow())
           .run();
+        // 解約理由アンケート（TB-740）: 解約行を入れた後に 1 問だけ push する。解約は成立済みなので
+        // 押されなくても何も起きない（列が NULL のまま＝未回答）。push の失敗で解約処理は落とさない
+        if (env.LINE_CHANNEL_ACCESS_TOKEN) {
+          try {
+            const surveyMessages = cancellationSurveyMessages();
+            await new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN).pushMessage(resolvedLineUserId, surveyMessages as never[]);
+            if (resolvedFriend) {
+              for (const m of surveyMessages) await logOutgoing(db, resolvedFriend.id, String(m.type ?? 'flex'), JSON.stringify(m));
+            }
+          } catch (e) {
+            console.error('[stripe/subscription.deleted] 解約理由アンケート push failed:', e);
+          }
+        }
       } catch (e) {
         console.error('[stripe/subscription.deleted] D1 clear failed:', e);
       }

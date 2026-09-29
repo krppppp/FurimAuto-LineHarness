@@ -551,7 +551,12 @@ export const ADMIN_TABLES: AdminTable[] = [
     timeColumn: 'canceled_at',
     internal: ['id'],
     idColumns: ['line_user_id', 'stripe_event_id', 'subscription_id'],
-    labels: { display_name: 'LINE表示名（解約時点）' },
+    labels: {
+      display_name: 'LINE表示名（解約時点）',
+      reason_code: '解約理由',
+      reason_text: '解約理由（自由記述）',
+      reason_answered_at: '理由の回答日時',
+    },
     columns: [
       ro('id'),
       t('line_user_id', true, true),
@@ -563,6 +568,10 @@ export const ADMIN_TABLES: AdminTable[] = [
       ro('display_name', true),
       // 副業継続判定（旧 GAS setCancelJudgment のG列。段階4 で管理画面から直接編集・Capsec #246）
       t('side_job_judgment', true, true),
+      // 解約理由アンケート（TB-740）。NULL＝未回答。reason_code は英字コード（cancellation-reason.ts が文言を持つ）
+      t('reason_code', true, true),
+      t('reason_text', true, true),
+      t('reason_answered_at', true, true),
     ],
     keys: [k('line_user_id', 'line_user_id')],
   },

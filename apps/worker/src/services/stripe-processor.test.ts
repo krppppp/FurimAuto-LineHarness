@@ -53,6 +53,7 @@ import {
   markStripeEventFailed,
   updateFriendPlanName,
 } from '@line-crm/db';
+import { LineClient } from '@line-crm/line-sdk';
 import { gasGet } from '../furim/gas-client.js';
 import { fireEvent } from './event-bus.js';
 import { processStripeEvent, sweepPendingStripeEvents } from './stripe-processor.js';
@@ -583,5 +584,55 @@ describe('processStripeEvent — customer.subscription.deleted（Capsec #263 (4)
     const cancel = calls.find((c) => /INSERT OR IGNORE INTO furim_cancellations/.test(c.sql));
     expect(cancel?.sql).toMatch(/canceled_at/);
     expect(cancel?.args).toEqual([expect.any(String), 'U-cancel', 'evt_del_1', 'sub_del_1', 'PBプラン:X', 'https://jp.mercari.com/user/profile/1', '2026-07-21T12:00:00.000+09:00']);
+  });
+});
+
+describe('processStripeEvent — customer.subscription.deleted の解約理由アンケート push（TB-740）', () => {
+  // 解約行の INSERT と push の順序を1本の配列で見る（push は必ず INSERT の後）
+  function makeCancelDb(trace: string[]) {
+    return {
+      prepare: vi.fn().mockImplementation((sql: string) => {
+        const stmt = {
+          bind: () => stmt,
+          run: vi.fn().mockImplementation(async () => {
+            if (/INSERT OR IGNORE INTO furim_cancellations/.test(sql)) trace.push('insert');
+            return { meta: { changes: 1 } };
+          }),
+          all: vi.fn().mockResolvedValue({ results: [] }),
+          first: vi.fn().mockImplementation(async () => (/FROM furim_customers WHERE stripe_customer_id/.test(sql) ? { line_user_id: 'U-cancel', plan_label: 'PBプラン:X' } : null)),
+        };
+        return stmt;
+      }),
+      batch: vi.fn().mockResolvedValue([]),
+    } as unknown as D1Database;
+  }
+
+  const deletedBody = {
+    id: 'evt_del_survey',
+    type: 'customer.subscription.deleted',
+    data: { object: { id: 'sub_del_survey', customer: 'cus_del_survey', metadata: {} } },
+  };
+
+  test('解約行を入れた後にアンケートを push する', async () => {
+    const trace: string[] = [];
+    const pushMessage = vi.fn().mockImplementation(async () => { trace.push('push'); });
+    vi.mocked(LineClient).mockImplementation(() => ({ pushMessage }) as never);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+
+    await processStripeEvent(makeCancelDb(trace), { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, deletedBody);
+
+    expect(trace).toEqual(['insert', 'push']);
+    expect(pushMessage).toHaveBeenCalledWith('U-cancel', expect.arrayContaining([expect.objectContaining({ type: 'flex' })]));
+  });
+
+  test('push が失敗しても解約処理は完走する（automation まで進む）', async () => {
+    const trace: string[] = [];
+    vi.mocked(LineClient).mockImplementation(() => ({ pushMessage: vi.fn().mockRejectedValue(new Error('LINE 429')) }) as never);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+
+    await expect(processStripeEvent(makeCancelDb(trace), { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, deletedBody)).resolves.toBeUndefined();
+
+    expect(trace).toEqual(['insert']);
+    expect(fireEvent).toHaveBeenCalledWith(expect.anything(), 'stripe_subscription_deleted', expect.objectContaining({ idempotencyKey: 'evt_del_survey' }), 'tok', null, expect.anything());
   });
 });

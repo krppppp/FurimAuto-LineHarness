@@ -670,6 +670,16 @@ async function handleEvent(
       return;
     }
 
+    // 解約理由の自由記述（TB-740）: 5択を押してから24時間以内の最初のテキストだけを
+    // furim_cancellations.reason_text に控える。ここまで来た文は定型コマンドではない自由文。
+    // 返信も return もしない（問い合わせなら今までどおり AI／スタッフ通知へ流す）
+    try {
+      const { recordCancellationReasonText } = await import('../furim/cancellation-reason.js');
+      await recordCancellationReasonText(db, userId, incomingText);
+    } catch (e) {
+      console.error('[webhook] 解約理由（自由記述）の記録に失敗:', userId, e);
+    }
+
     // AIチャットモード
     // exact マッチの auto_replies（Flex・リッチメニューのボタン文言）は AIモード中でも素通りさせ、
     // 下の自動返信チェックで処理する。ai_mode は「AIチャットボットを終了する」を押すまで true の

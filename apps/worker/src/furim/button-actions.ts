@@ -9,6 +9,7 @@ import { upsertFeatureFlags } from './customer-sync.js';
 import { INVENTORY_PATROL_ALL_SITES } from './feature-flags.js';
 import { applyTicketDelta } from './ticket-ledger.js';
 import { grantTrialPromo, type TrialPromoResult } from './trial-promo.js';
+import { isCancellationReasonCode, recordCancellationReason, type CancellationReasonCode } from './cancellation-reason.js';
 import type { ExtCache } from './ext-auth.js';
 
 export type ButtonActionsEnv = {
@@ -168,7 +169,25 @@ export async function handleButtonAction(
     return true;
   }
 
-  // 解約理由アンケート（月額解約フローのFlexから）: タグで記録し、理由に応じて再開提案を返す
+  // 解約理由アンケート 5択（TB-740。解約成立直後に push する Flex から）: furim_cancellations の
+  // 最新行に英字コードで記録し、自由記述を 1 通だけ受ける。引き止め文は入れない（解約は成立済み）
+  if (text.includes('解約理由:') && isCancellationReasonCode(text.split(':')[1] ?? '')) {
+    const code = text.split(':')[1] as CancellationReasonCode;
+    if (db) {
+      try {
+        await recordCancellationReason(db, lineUserId, { code });
+      } catch (e) {
+        console.error('[furim] 解約理由の記録に失敗:', lineUserId, e);
+      }
+    }
+    await lineClient.replyMessage(replyToken, [{
+      type: 'text',
+      text: 'ご回答ありがとうございます🙇\n今後のサービス改善に活用させていただきます。\n\n差し支えなければ、もう少し詳しく一言いただけると助かります（このままご返信ください）。',
+    } as never]);
+    return true;
+  }
+
+  // 解約理由アンケート（旧・月額解約フローのFlexから）: タグで記録し、理由に応じて再開提案を返す
   if (text.includes('解約理由:')) {
     const reason = text.split(':')[1] ?? '';
     if (db && reason) {
