@@ -670,18 +670,44 @@ async function handleEvent(
       return;
     }
 
+    // ボタンタップ等の自動応答キーワードの判定（下のチャット作成/更新と解約理由の記録で共通に使う）
+    // 条件は furim/bot-routed-message.ts と共通（未対応の判定と揃える・Capsec #295）
+    const isRichMenuMessage = incomingText.startsWith(RICHMENU_MESSAGE_PREFIX);
+    const isAutoKeyword = AUTO_KEYWORDS.includes(incomingText);
+    const isTimeCommand = TIME_COMMAND_PATTERN.test(incomingText);
+    const isBotRoutedMessage = isAutoKeyword || isTimeCommand || isRichMenuMessage;
+
     // 解約理由の自由記述（TB-740）: 5択を押してから24時間以内の最初のテキストだけを
     // furim_cancellations.reason_text に控える。ここまで来た文は定型コマンドではない自由文。
-    // 拾えたときだけお礼を返して打ち切る（AIチャット・auto_reply へ流さない）。
+    // 拾えたらお礼を返して打ち切る（AIチャット・auto_reply へ流さない）。
+    // ただしチャットの作成/更新（unread）は必ず通す。2通目で「もう少し詳しく」と誘っている以上、
+    // 返ってくる文には「返金してもらえますか」等の問い合わせが混ざる。
+    // ここで return してスタッフの受信箱に残らなかったのが TB-760 の穴。
     // 拾えなければ何もせず今までどおりの経路へ落とす（問い合わせの流れは変えない）
-    try {
-      const { recordCancellationReasonText, CANCELLATION_FREE_TEXT_REPLY } = await import('../furim/cancellation-reason.js');
-      if (await recordCancellationReasonText(db, userId, incomingText)) {
-        await loggingClient.replyMessage(event.replyToken, [{ type: 'text', text: CANCELLATION_FREE_TEXT_REPLY } as never]);
-        return;
+    let cancellationFreeText = false;
+    if (!isBotRoutedMessage) {
+      try {
+        const { recordCancellationReasonText, CANCELLATION_FREE_TEXT_REPLY } = await import('../furim/cancellation-reason.js');
+        cancellationFreeText = await recordCancellationReasonText(db, userId, incomingText);
+        if (cancellationFreeText) {
+          await loggingClient.replyMessage(event.replyToken, [{ type: 'text', text: CANCELLATION_FREE_TEXT_REPLY } as never]);
+        }
+      } catch (e) {
+        console.error('[webhook] 解約理由（自由記述）の記録に失敗:', userId, e);
       }
-    } catch (e) {
-      console.error('[webhook] 解約理由（自由記述）の記録に失敗:', userId, e);
+    }
+    if (cancellationFreeText) {
+      // お礼の送信が失敗していてもここは通す（人に届かないのが一番まずい）
+      await upsertChatOnMessage(db, friend.id);
+      if (env) {
+        await notifyStaffOfIncomingMessage(db, env, {
+          friendId: friend.id,
+          friendName: friend.display_name,
+          accountId: lineAccountId,
+          preview: incomingText,
+        });
+      }
+      return;
     }
 
     // AIチャットモード
@@ -699,11 +725,7 @@ async function handleEvent(
 
     // チャットを作成/更新（ユーザーの自発的メッセージのみ unread にする）
     // ボタンタップ等の自動応答キーワードは除外
-    // 条件は furim/bot-routed-message.ts と共通（未対応の判定と揃える・Capsec #295）
-    const isRichMenuMessage = incomingText.startsWith(RICHMENU_MESSAGE_PREFIX);
-    const isAutoKeyword = AUTO_KEYWORDS.includes(incomingText);
-    const isTimeCommand = TIME_COMMAND_PATTERN.test(incomingText);
-    if (!isAutoKeyword && !isTimeCommand && !isRichMenuMessage) {
+    if (!isBotRoutedMessage) {
       await upsertChatOnMessage(db, friend.id);
       if (env) {
         await notifyStaffOfIncomingMessage(db, env, {

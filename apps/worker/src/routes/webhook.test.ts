@@ -847,16 +847,37 @@ describe('POST /webhook — 解約理由の自由記述（TB-740）', () => {
     expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
   });
 
+  // TB-760: 返金・二重請求の問い合わせが混ざるので、お礼で閉じてもスタッフの受信箱には必ず残す
+  test('reason_text に入れた文もチャットを作成/更新する（unread になる）', async () => {
+    await postFreeText('返金してもらえますか', '2026-07-31T11:00:00.000+09:00');
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(expect.anything(), 'friend-cx-1');
+  });
+
+  test('お礼の返信が失敗してもチャットの作成/更新は通す', async () => {
+    lineClientMocks.replyMessage.mockRejectedValueOnce(new Error('reply token expired'));
+    await postFreeText('請求が二重になっています', '2026-07-31T11:00:00.000+09:00');
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(expect.anything(), 'friend-cx-1');
+  });
+
   test('24時間を過ぎたテキストは記録せず、今までどおり AIチャットに流れる', async () => {
     const { updates } = await postFreeText('別件の問い合わせです', '2026-07-29T12:00:00.000+09:00');
     expect(updates.some((s) => /UPDATE furim_cancellations SET reason_text/.test(s))).toBe(false);
     expect(handleAIChat).toHaveBeenCalledTimes(1);
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 
   test('5択に未回答（reason_answered_at が NULL）なら今までどおり AIチャットに流れる', async () => {
     const { updates } = await postFreeText('こんにちは', null);
     expect(updates.some((s) => /UPDATE furim_cancellations SET reason_text/.test(s))).toBe(false);
     expect(handleAIChat).toHaveBeenCalledTimes(1);
+  });
+
+  // ボタンタップ（AUTO_KEYWORDS）は自由記述ではない。解約直後でも reason_text に入れず、
+  // 今までどおり auto_reply の経路へ落とす（unread にもしない）
+  test('窓の中でもボタンタップの定型文は reason_text に入れない', async () => {
+    const { updates } = await postFreeText('料金', '2026-07-31T11:00:00.000+09:00');
+    expect(updates.some((s) => /UPDATE furim_cancellations SET reason_text/.test(s))).toBe(false);
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 });
 
