@@ -53,16 +53,18 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-// TB-740 子2: 解約成立直後に push する 1 問アンケート（5択は英字コードで飛ぶ）
-describe('解約理由アンケート 5択（英字コード）', () => {
+// TB-740 子2: 解約成立直後に push する 1 問アンケート。
+// ボタンは日本語ラベルを送り（顧客のトークに英字コードを出さない）、D1 には reason_code が入る
+describe('解約理由アンケート 5択（日本語ラベルを送り reason_code で記録する）', () => {
   it('reason_code を最新の解約行に書き、自由記述のお願いを 1 通だけ返す', async () => {
     const client = makeClient();
     const db = makeDb({ tagExists: false, cancellation: { id: 'c1', reason_text: null, reason_answered_at: null } });
 
-    const handled = await handleButtonAction(client as never, 'U1', 'rt', '【ボタン】解約理由:price', env, db as never);
+    const handled = await handleButtonAction(client as never, 'U1', 'rt', '【ボタン】解約理由:値段', env, db as never);
 
     expect(handled).toBe(true);
     const update = db.binds.find((b) => /UPDATE furim_cancellations SET reason_code/.test(b.sql));
+    // 顧客が送ったのは「値段」でも、D1 に入るのはコード（表示文言を列に入れない）
     expect(update?.args[0]).toBe('price');
     // 5択の側ではタグを作らない（旧フローの分岐に落ちていない証拠）
     expect(db.inserts.some((s) => /INTO tags/.test(s))).toBe(false);
@@ -77,18 +79,18 @@ describe('解約理由アンケート 5択（英字コード）', () => {
     const client = makeClient();
     const db = makeDb({ tagExists: false, cancellation: null });
 
-    const handled = await handleButtonAction(client as never, 'U1', 'rt', '【ボタン】解約理由:not_working', env, db as never);
+    const handled = await handleButtonAction(client as never, 'U1', 'rt', '【ボタン】解約理由:動かない', env, db as never);
 
     expect(handled).toBe(true);
     expect(db.binds.some((b) => /UPDATE furim_cancellations/.test(b.sql))).toBe(false);
     expect(client.replyMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('未知のコードは旧フロー（タグ記録）に落ちる', async () => {
+  it('5択に無いラベル（旧アンケートの文言）は旧フロー（タグ記録）に落ちる', async () => {
     const client = makeClient();
     const db = makeDb({ tagExists: true, cancellation: { id: 'c1', reason_text: null, reason_answered_at: null } });
 
-    await handleButtonAction(client as never, 'U1', 'rt', '【ボタン】解約理由:toString', env, db as never);
+    await handleButtonAction(client as never, 'U1', 'rt', '【ボタン】解約理由:使いこなせなかった', env, db as never);
 
     expect(db.binds.some((b) => /UPDATE furim_cancellations/.test(b.sql))).toBe(false);
     expect(db.inserts.some((s) => /INSERT OR IGNORE INTO friend_tags/.test(s))).toBe(true);

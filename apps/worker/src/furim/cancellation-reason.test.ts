@@ -5,7 +5,7 @@ vi.mock('@line-crm/db', () => ({
 }));
 
 import { jstNow } from '@line-crm/db';
-import { recordCancellationReason, recordCancellationReasonText, isCancellationReasonCode, cancellationSurveyMessages, CANCELLATION_REASON_PREFIX, CANCELLATION_REASON_REPLY_TEXT } from './cancellation-reason.js';
+import { recordCancellationReason, recordCancellationReasonText, isCancellationReasonCode, cancellationReasonCodeFromLabel, cancellationSurveyMessages, CANCELLATION_REASONS, CANCELLATION_REASON_PREFIX, CANCELLATION_REASON_REPLY_TEXT } from './cancellation-reason.js';
 
 type Row = { id: string; reason_text: string | null; reason_answered_at: string | null } | null;
 
@@ -96,14 +96,26 @@ describe('recordCancellationReasonText', () => {
 });
 
 describe('cancellationSurveyMessages（文面は TB-748 決定A〜D）', () => {
-  test('5 択のボタンが英字コードを送る', async () => {
-    const [flex] = cancellationSurveyMessages() as Array<Record<string, never>>;
-    const texts = JSON.stringify(flex).match(/【ボタン】解約理由:[a-z_]+/g) ?? [];
-    expect(texts).toHaveLength(5);
-    for (const t of texts) {
-      const code = t.slice(CANCELLATION_REASON_PREFIX.length);
-      expect(isCancellationReasonCode(code)).toBe(true);
+  // action.type = message は押した文字列が本人の吹き出しとしてトークに残る。
+  // 顧客の画面に not_working と出さないため、送るのは日本語ラベル（TB-747 CTO レビュー）
+  test('5 択のボタンは日本語ラベルを送り、英字コードをトークに出さない', () => {
+    const json = JSON.stringify(cancellationSurveyMessages());
+    expect(json).not.toMatch(/【ボタン】解約理由:[a-z_]+/);
+    for (const code of Object.keys(CANCELLATION_REASONS) as Array<keyof typeof CANCELLATION_REASONS>) {
+      const label = CANCELLATION_REASONS[code];
+      expect(json).toContain(`${CANCELLATION_REASON_PREFIX}${label}`);
+      expect(cancellationReasonCodeFromLabel(label)).toBe(code);
     }
+  });
+
+  test('ボタンが送る text から reason_code に戻せる（5択以外は null）', () => {
+    expect(cancellationReasonCodeFromLabel('値段')).toBe('price');
+    // 旧アンケートのラベルとは 1 つも重ならない
+    for (const old of ['料金が高い', '使いこなせなかった', '成果が出なかった', '物販休止', '他ツールへ乗り換え', 'その他']) {
+      expect(cancellationReasonCodeFromLabel(old)).toBeNull();
+    }
+    expect(cancellationReasonCodeFromLabel('toString')).toBeNull();
+    expect(isCancellationReasonCode('price')).toBe(true);
   });
 
   test('ボタンのラベルは 5 択の表示文言のまま（言い換えない）', () => {

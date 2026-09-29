@@ -9,7 +9,7 @@ import { upsertFeatureFlags } from './customer-sync.js';
 import { INVENTORY_PATROL_ALL_SITES } from './feature-flags.js';
 import { applyTicketDelta } from './ticket-ledger.js';
 import { grantTrialPromo, type TrialPromoResult } from './trial-promo.js';
-import { isCancellationReasonCode, recordCancellationReason, CANCELLATION_REASON_REPLY_TEXT, type CancellationReasonCode } from './cancellation-reason.js';
+import { cancellationReasonCodeFromLabel, recordCancellationReason, CANCELLATION_REASON_REPLY_TEXT } from './cancellation-reason.js';
 import type { ExtCache } from './ext-auth.js';
 
 export type ButtonActionsEnv = {
@@ -169,10 +169,15 @@ export async function handleButtonAction(
     return true;
   }
 
-  // 解約理由アンケート 5択（TB-740。解約成立直後に push する Flex から）: furim_cancellations の
-  // 最新行に英字コードで記録し、自由記述を 1 通だけ受ける。引き止め文は入れない（解約は成立済み）
-  if (text.includes('解約理由:') && isCancellationReasonCode(text.split(':')[1] ?? '')) {
-    const code = text.split(':')[1] as CancellationReasonCode;
+  // 解約理由アンケート 5択（TB-740。解約成立直後に push する Flex から）: 飛んでくるのは日本語の
+  // ラベル（顧客のトークに英字コードを出さないため）。ここでコードへ直し、furim_cancellations の
+  // 最新行に reason_code で記録する。旧 5 択とラベルが重ならないので、この分岐を先に通せば衝突しない。
+  // 引き止め文は入れない（解約は成立済み）
+  const cancellationReasonCode = text.includes('解約理由:')
+    ? cancellationReasonCodeFromLabel(text.split(':')[1] ?? '')
+    : null;
+  if (cancellationReasonCode) {
+    const code = cancellationReasonCode;
     if (db) {
       try {
         await recordCancellationReason(db, lineUserId, { code });

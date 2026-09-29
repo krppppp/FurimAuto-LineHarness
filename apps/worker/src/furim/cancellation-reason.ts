@@ -13,7 +13,10 @@ export const CANCELLATION_REASONS = {
 
 export type CancellationReasonCode = keyof typeof CANCELLATION_REASONS;
 
-// アンケートのボタンが送る文言。handleButtonAction に入るよう【ボタン】を付ける
+// アンケートのボタンが送る文言。handleButtonAction に入るよう【ボタン】を付ける。
+// action.type = message は押した文字列が本人の吹き出しとしてトークに残るので、
+// 送るのは英字コードではなく日本語のラベル（顧客の画面に not_working と出さない・TB-747 CTO レビュー）。
+// D1 に入れるのは今までどおり reason_code で、日本語 → コードの変換はここで解決する
 export const CANCELLATION_REASON_PREFIX = '【ボタン】解約理由:';
 
 // 5 択を押してから自由記述を拾う期限（この時間を過ぎたテキストは別の用件とみなす）
@@ -21,6 +24,18 @@ const FREE_TEXT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export function isCancellationReasonCode(value: string): value is CancellationReasonCode {
   return Object.prototype.hasOwnProperty.call(CANCELLATION_REASONS, value);
+}
+
+/**
+ * ボタンが送ってきた日本語ラベルを reason_code に戻す。5 択のどれでもなければ null。
+ * 旧アンケートのラベル（料金が高い／使いこなせなかった／成果が出なかった／物販休止／
+ * 他ツールへ乗り換え／その他）とは 1 つも重ならないので、旧分岐と取り違えない。
+ */
+export function cancellationReasonCodeFromLabel(label: string): CancellationReasonCode | null {
+  const hit = (Object.keys(CANCELLATION_REASONS) as CancellationReasonCode[]).find(
+    (code) => CANCELLATION_REASONS[code] === label,
+  );
+  return hit ?? null;
 }
 
 type CancellationRow = {
@@ -94,13 +109,17 @@ export const CANCELLATION_FREE_TEXT_REPLY = 'ありがとうございます。�
 /**
  * 解約直後に push する 1 問アンケート。
  *
- * 文面は F事業のリーダーの決定（TB-748）に従う:
+ * この文面は 2026-09-29 に F事業のリーダーが TB-748 で承認済み。仮ではない。
+ * 直すときは TB-748 で承認を取り直すこと（勝手に別の日本語へ差し替えない）。
+ *
+ * 承認された決まり:
  *   - 先頭で「完了した」と言い切る。アンケートはその後
  *   - 謝らない（「ご迷惑をおかけし」「申し訳ございません」を入れない）
  *   - 引き止め文・再契約導線・クーポンを置かない（解約はこの時点で成立済み）
  *   - 答えずに閉じられることが文面から分かる（「よろしければ」「任意」）
  *   - 5 択の表示文言は CANCELLATION_REASONS のまま。言い換えない（集計の意味が変わる）
- * ボタンが送る text は `CANCELLATION_REASON_PREFIX + <コード>`（表示文言は送らない）
+ * ボタンが送る text は `CANCELLATION_REASON_PREFIX + <日本語ラベル>`。
+ * D1 に入るのは reason_code で、変換は cancellationReasonCodeFromLabel が行う
  */
 export function cancellationSurveyMessages(): Array<Record<string, unknown>> {
   return [
@@ -142,7 +161,7 @@ export function cancellationSurveyMessages(): Array<Record<string, unknown>> {
                 action: {
                   type: 'message',
                   label: CANCELLATION_REASONS[code],
-                  text: `${CANCELLATION_REASON_PREFIX}${code}`,
+                  text: `${CANCELLATION_REASON_PREFIX}${CANCELLATION_REASONS[code]}`,
                 },
               })),
             },
