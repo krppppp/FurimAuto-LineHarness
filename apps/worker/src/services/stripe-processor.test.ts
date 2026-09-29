@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@line-crm/db', () => ({
   getFriendByLineUserId: vi.fn(),
@@ -588,7 +588,17 @@ describe('processStripeEvent — customer.subscription.deleted（Capsec #263 (4)
 });
 
 describe('processStripeEvent — customer.subscription.deleted の解約理由アンケート push（TB-740）', () => {
-  // 解約行の INSERT と push の順序を1本の配列で見る（push は必ず INSERT の後）
+  // 解約行の INSERT・automation（解約完了の通知）・アンケートの push の順序を1本の配列で見る。
+  // TB-756 案1: 顧客に届く順は「解約完了の通知 → アンケート」。push は必ず fireEvent の後
+  function traceFireEvent(trace: string[], ok = true) {
+    vi.mocked(fireEvent).mockImplementation(async (_db, name) => {
+      if (name === 'stripe_subscription_deleted') trace.push('fireEvent');
+      return ok;
+    });
+  }
+
+  afterEach(() => { vi.mocked(fireEvent).mockResolvedValue(true); });
+
   function makeCancelDb(trace: string[], cancellationChanges = 1) {
     return {
       prepare: vi.fn().mockImplementation((sql: string) => {
@@ -616,15 +626,18 @@ describe('processStripeEvent — customer.subscription.deleted の解約理由�
     data: { object: { id: 'sub_del_survey', customer: 'cus_del_survey', metadata: {} } },
   };
 
-  test('解約行を入れた後にアンケートを push する', async () => {
+  // TB-756 案1: 本番 D1 の automation（step 11）が送る「月額プランを解消しました」より後ろで push する。
+  // 逆だと顧客には「理由を教えてください」→「解消しました」の順で届く（F事業のリーダーが不可と決定）
+  test('解約完了の通知（automation）を送り切ってからアンケートを push する', async () => {
     const trace: string[] = [];
     const pushMessage = vi.fn().mockImplementation(async () => { trace.push('push'); });
     vi.mocked(LineClient).mockImplementation(() => ({ pushMessage }) as never);
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+    traceFireEvent(trace);
 
     await processStripeEvent(makeCancelDb(trace), { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, deletedBody);
 
-    expect(trace).toEqual(['insert', 'push']);
+    expect(trace).toEqual(['insert', 'fireEvent', 'push']);
     expect(pushMessage).toHaveBeenCalledWith('U-cancel', expect.arrayContaining([expect.objectContaining({ type: 'flex' })]));
   });
 
@@ -632,10 +645,11 @@ describe('processStripeEvent — customer.subscription.deleted の解約理由�
     const trace: string[] = [];
     vi.mocked(LineClient).mockImplementation(() => ({ pushMessage: vi.fn().mockRejectedValue(new Error('LINE 429')) }) as never);
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+    traceFireEvent(trace);
 
     await expect(processStripeEvent(makeCancelDb(trace), { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, deletedBody)).resolves.toBeUndefined();
 
-    expect(trace).toEqual(['insert']);
+    expect(trace).toEqual(['insert', 'fireEvent']);
     expect(fireEvent).toHaveBeenCalledWith(expect.anything(), 'stripe_subscription_deleted', expect.objectContaining({ idempotencyKey: 'evt_del_survey' }), 'tok', null, expect.anything());
   });
 
@@ -646,15 +660,32 @@ describe('processStripeEvent — customer.subscription.deleted の解約理由�
     const pushMessage = vi.fn().mockImplementation(async () => { trace.push('push'); });
     vi.mocked(LineClient).mockImplementation(() => ({ pushMessage }) as never);
     vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+    traceFireEvent(trace);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await processStripeEvent(makeCancelDb(trace, 0), { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, deletedBody);
 
-    expect(trace).toEqual(['insert']);
+    expect(trace).toEqual(['insert', 'fireEvent']);
     expect(pushMessage).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('push を見送った'), 'evt_del_survey', 'U-cancel');
     // 解約処理そのものは今までどおり最後まで進む
     expect(fireEvent).toHaveBeenCalledWith(expect.anything(), 'stripe_subscription_deleted', expect.objectContaining({ idempotencyKey: 'evt_del_survey' }), 'tok', null, expect.anything());
     warn.mockRestore();
+  });
+
+  // automation が完走していない（= 解約完了の通知が届いたか分からない）ときにアンケートだけ出すと
+  // 順番が狂う。送らずに throw し、Stripe の再送に任せる（再送では changes 0 なのでアンケートは出ない）
+  test('automation が未完（fireEvent=false）ならアンケートを push せず throw する', async () => {
+    const trace: string[] = [];
+    const pushMessage = vi.fn().mockImplementation(async () => { trace.push('push'); });
+    vi.mocked(LineClient).mockImplementation(() => ({ pushMessage }) as never);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+    traceFireEvent(trace, false);
+
+    await expect(processStripeEvent(makeCancelDb(trace), { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, deletedBody))
+      .rejects.toThrow(/stripe_subscription_deleted automations incomplete/);
+
+    expect(trace).toEqual(['insert', 'fireEvent']);
+    expect(pushMessage).not.toHaveBeenCalled();
   });
 });

@@ -605,6 +605,9 @@ export async function processStripeEvent(
       }
     }
     const resolvedFriend = resolvedLineUserId ? await getFriendByLineUserId(db, resolvedLineUserId) : null;
+    // 解約行をこのイベントで新しく入れたか（TB-747）。解約理由アンケートの push は
+    // fireEvent（解約完了の通知）より後ろで行うので、判定だけここで持ち出す（TB-756 案1）
+    let insertedCancellation = false;
     // D1 側の解約反映（Capsec #243）: GAS deleteSubscription と同じくキーコード・端末判定を消し、
     // プラン名を「キャンセル済み」にする（チケット単価の有料判定・キーコード発行の結果を GAS と揃える）
     if (resolvedLineUserId) {
@@ -630,22 +633,9 @@ export async function processStripeEvent(
         // push すると、行は増えないのにアンケートだけ 2 通目が飛ぶ。
         // 承知のうえの副作用: push 自体が失敗して再送されると 2 度目は changes = 0 でアンケートが出ない。
         // アンケートが 1 件取れないことより、解約した人へ同じものを 2 通送る方が悪い、という判断
-        const insertedCancellation = cancellationInsert?.meta?.changes === 1;
+        insertedCancellation = cancellationInsert?.meta?.changes === 1;
         if (!insertedCancellation) {
           console.warn('[stripe/subscription.deleted] 解約行が新規でないため解約理由アンケートの push を見送った:', body.id, resolvedLineUserId);
-        }
-        // 解約理由アンケート（TB-740）: 解約行を入れた後に 1 問だけ push する。解約は成立済みなので
-        // 押されなくても何も起きない（列が NULL のまま＝未回答）。push の失敗で解約処理は落とさない
-        if (insertedCancellation && env.LINE_CHANNEL_ACCESS_TOKEN) {
-          try {
-            const surveyMessages = cancellationSurveyMessages();
-            await new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN).pushMessage(resolvedLineUserId, surveyMessages as never[]);
-            if (resolvedFriend) {
-              for (const m of surveyMessages) await logOutgoing(db, resolvedFriend.id, String(m.type ?? 'flex'), JSON.stringify(m));
-            }
-          } catch (e) {
-            console.error('[stripe/subscription.deleted] 解約理由アンケート push failed:', e);
-          }
         }
       } catch (e) {
         console.error('[stripe/subscription.deleted] D1 clear failed:', e);
@@ -657,6 +647,24 @@ export async function processStripeEvent(
       idempotencyKey: body.id,
       eventData: { stripeCustomerId, lineUserId: resolvedLineUserId, subscriptionId: obj.id },
     }, env.LINE_CHANNEL_ACCESS_TOKEN, null, actionEnv);
+
+    // 解約理由アンケート（TB-740）: 解約完了の通知（stripe_subscription_deleted の automation）を
+    // 送り切ってから 1 問だけ push する。順番は F事業のリーダーの決定（TB-748）で「完了の通知が先・
+    // アンケートが後」。解約は成立済みなので、押されなくても何も起きない（列が NULL のまま＝未回答）。
+    // subDeletedOk が false のときは完了の通知が届いたか分からないので送らない。そのときは後段で
+    // throw して Stripe が再送するが、再送では解約行が新規でない（changes = 0）のでアンケートは出ない。
+    // 承知のうえ: アンケートが 1 件取れないことより、解約した人へ順番の狂った通知を出す方が悪い
+    if (subDeletedOk && insertedCancellation && resolvedLineUserId && env.LINE_CHANNEL_ACCESS_TOKEN) {
+      try {
+        const surveyMessages = cancellationSurveyMessages();
+        await new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN).pushMessage(resolvedLineUserId, surveyMessages as never[]);
+        if (resolvedFriend) {
+          for (const m of surveyMessages) await logOutgoing(db, resolvedFriend.id, String(m.type ?? 'flex'), JSON.stringify(m));
+        }
+      } catch (e) {
+        console.error('[stripe/subscription.deleted] 解約理由アンケート push failed:', e);
+      }
+    }
 
     // plan-builderサブスクの解約: 全フラグOFF（キーコード・端末判定文字列は残す）
     // planLabelは渡さない: 直前のautomation(deleteSubscription)がプラン名に書いた
