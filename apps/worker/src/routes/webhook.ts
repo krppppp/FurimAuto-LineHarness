@@ -671,9 +671,13 @@ async function handleEvent(
     }
 
     // AIチャットモード
+    // exact マッチの auto_replies（Flex・リッチメニューのボタン文言）は AIモード中でも素通りさせ、
+    // 下の自動返信チェックで処理する。ai_mode は「AIチャットボットを終了する」を押すまで true の
+    // ままなので、ここで return するとボタンを押しても URL が返らない（TB-718 / TB-662）。
+    // contains マッチは AIチャット中の自由文とぶつかるため対象外（今までどおり AI が答える）。
     if (env?.FIREBASE_DATABASE_URL && env?.GEMINI_API_KEY && env?.GITHUB_PAT) {
       const isAIMode = await getAiMode(env.FIREBASE_DATABASE_URL, userId);
-      if (isAIMode) {
+      if (isAIMode && !(await hasExactAutoReply(db, incomingText, lineAccountId))) {
         await handleAIChat(loggingClient, userId, event.replyToken, incomingText, { GEMINI_API_KEY: env.GEMINI_API_KEY, GITHUB_PAT: env.GITHUB_PAT, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, DB: db });
         return;
       }
@@ -861,6 +865,29 @@ async function handleEvent(
   }
 }
 
+
+/**
+ * 受信文に exact マッチする有効な auto_reply があるか。AIチャットモードを素通りさせる判定に使う
+ * （TB-718）。lookup が落ちても AIチャットの応答は止めない（false を返す）。
+ */
+async function hasExactAutoReply(
+  db: D1Database,
+  text: string,
+  lineAccountId: string | null,
+): Promise<boolean> {
+  try {
+    const sql = lineAccountId
+      ? `SELECT id FROM auto_replies WHERE is_active = 1 AND match_type = 'exact' AND keyword = ? AND (line_account_id IS NULL OR line_account_id = ?) LIMIT 1`
+      : `SELECT id FROM auto_replies WHERE is_active = 1 AND match_type = 'exact' AND keyword = ? AND line_account_id IS NULL LIMIT 1`;
+    const stmt = db.prepare(sql);
+    const bound = lineAccountId ? stmt.bind(text, lineAccountId) : stmt.bind(text);
+    const row = await bound.first<{ id: string }>();
+    return !!row;
+  } catch (err) {
+    console.error('[webhook] exact auto_reply lookup failed', err);
+    return false;
+  }
+}
 
 /**
  * auto_reply 行の content/type を resolve する。template_id が set なら templates

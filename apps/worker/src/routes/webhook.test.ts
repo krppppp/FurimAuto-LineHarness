@@ -44,6 +44,8 @@ vi.mock('../services/event-bus.js', () => ({
 vi.mock('../services/step-delivery.js', () => ({
   buildMessage: vi.fn(),
   expandVariables: vi.fn(),
+  resolveMetadata: vi.fn().mockResolvedValue({}),
+  messageToLogPayload: vi.fn().mockReturnValue({ messageType: 'flex', content: '{}' }),
 }));
 
 vi.mock('../furim/actions.js', () => ({
@@ -643,21 +645,45 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     GITHUB_PAT: 'github-pat',
   };
 
-  async function postText(text: string) {
+  async function postText(text: string, opts: { exactAutoReplyKeyword?: string } = {}) {
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getFriendByLineUserId).mockResolvedValue(aiModeFriend);
     vi.mocked(jstNow).mockReturnValue('2026-07-31T12:00:00.000+09:00');
     vi.mocked(getAiMode).mockResolvedValue(true);
     vi.mocked(handleFurimAction).mockResolvedValue(false);
 
-    const stmt = {
-      bind: vi.fn(),
-      run: vi.fn().mockResolvedValue({}),
-      all: vi.fn().mockResolvedValue({ results: [] }),
-      first: vi.fn().mockResolvedValue(null),
-    };
-    stmt.bind.mockReturnValue(stmt);
-    const db = { prepare: vi.fn().mockReturnValue(stmt) } as unknown as D1Database;
+    const exactRule = opts.exactAutoReplyKeyword
+      ? {
+          id: 'ar-exact-1',
+          keyword: opts.exactAutoReplyKeyword,
+          match_type: 'exact' as const,
+          response_type: 'flex',
+          response_content: '{"type":"bubble"}',
+          template_id: null,
+          is_active: 1,
+          created_at: '2026-09-28T00:00:00.000+09:00',
+        }
+      : null;
+
+    const db = {
+      prepare: vi.fn((sql: string) => {
+        const stmt = {
+          args: [] as unknown[],
+          bind: vi.fn((...a: unknown[]) => { stmt.args = a; return stmt; }),
+          run: vi.fn().mockResolvedValue({}),
+          all: vi.fn(async () => ({
+            results: exactRule && sql.includes('FROM auto_replies') ? [exactRule] : [],
+          })),
+          // hasExactAutoReply の lookup。バインドしたキーワードと一致するときだけ行を返す
+          first: vi.fn(async () =>
+            exactRule && sql.includes("match_type = 'exact'") && stmt.args[0] === exactRule.keyword
+              ? { id: exactRule.id }
+              : null,
+          ),
+        };
+        return stmt;
+      }),
+    } as unknown as D1Database;
 
     const executionCtx = {
       waitUntil: vi.fn(),
@@ -716,6 +742,20 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     expect(handleAIChat).toHaveBeenCalledTimes(1);
     expect(actionFurimanCoupon).not.toHaveBeenCalled();
     expect(actionExtendTrial).not.toHaveBeenCalled();
+  });
+
+  // TB-718: ai_mode は「AIチャットボットを終了する」を押すまで true のままなので、
+  // ボタン文言（exact の auto_reply）が AI の定型文に吸われていた
+  test('AIモードONでも exact の auto_reply にマッチする文言は自動返信が返る', async () => {
+    await postText('ライブ参加', { exactAutoReplyKeyword: 'ライブ参加' });
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('AIモードONで exact ルールと一致しない自由文は AIチャットのまま', async () => {
+    await postText('ライブ参加ってどうやるんですか？', { exactAutoReplyKeyword: 'ライブ参加' });
+    expect(handleAIChat).toHaveBeenCalledTimes(1);
+    expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
   });
 });
 
