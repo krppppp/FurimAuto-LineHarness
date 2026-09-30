@@ -44,9 +44,9 @@ describe('recordCancellationReason', () => {
 
   test('押し直しは最後の答えを正とする（reason_code が入っていても上書きする）', async () => {
     const { db, calls } = makeDb({ id: 'c1', reason_text: null, reason_answered_at: '2026-09-29T11:00:00.000+09:00' });
-    expect(await recordCancellationReason(db, 'U-1', { code: 'too_hard' })).toBe(true);
+    expect(await recordCancellationReason(db, 'U-1', { code: 'could_not_use' })).toBe(true);
     const update = calls.find((c) => /UPDATE furim_cancellations SET reason_code/.test(c.sql));
-    expect(update?.args[0]).toBe('too_hard');
+    expect(update?.args[0]).toBe('could_not_use');
   });
 
   test('解約行が無い人には何もしない', async () => {
@@ -114,7 +114,7 @@ describe('cancellationSurveyMessages（TB-825 で旧アンケートの 6 択に�
   test('6 択のボタンは日本語の送信値を送り、それぞれ reason_code に戻せる', () => {
     const json = JSON.stringify(cancellationSurveyMessages());
     expect(json).not.toMatch(/【ボタン】解約理由:[a-z_]+/);
-    expect(Object.keys(CANCELLATION_REASONS)).toEqual(['price', 'too_hard', 'no_result', 'pause_selling', 'switched_tool', 'other']);
+    expect(Object.keys(CANCELLATION_REASONS)).toEqual(['price', 'could_not_use', 'no_results', 'paused_selling', 'switched_tool', 'other']);
     for (const code of Object.keys(CANCELLATION_REASONS) as Array<keyof typeof CANCELLATION_REASONS>) {
       const value = CANCELLATION_REASONS[code];
       expect(json).toContain(`${CANCELLATION_REASON_PREFIX}${value}`);
