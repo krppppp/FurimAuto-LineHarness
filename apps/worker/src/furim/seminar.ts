@@ -371,9 +371,10 @@ type FlexMessage = { type: 'flex'; altText: string; contents: FlexBubble };
 /**
  * 日曜 17:00 に回答者へ送る 2 つの吹き出し（A 開催日時の告知／B 聞きたい内容アンケート）。
  * 1 回の push に入れるので LINE の通数は 1 人 1 通のまま。文面は TB-822 から手動改行を外したもの。
+ * A はボタン無し（2026-09-30 くろさん「決定告知Flexにはボタンいらない」）。配信 URL は開始 5 分前の案内で送る。
  * B の選択肢は文言が長くボタンの label（20 字）に入らないため、枠（box）ごと postback にしている
  */
-export function seminarAnnounceMessages(weekId: string, chosen: Array<{ starts_at: string }>, entryUrl: string): FlexMessage[] {
+export function seminarAnnounceMessages(weekId: string, chosen: Array<{ starts_at: string }>): FlexMessage[] {
   const banner = bannerHero(isFirstWeek(weekId) ? ANNOUNCE_BANNER_FIRST : ANNOUNCE_BANNER_WEEKLY);
   const announce: FlexMessage = {
     type: 'flex',
@@ -389,10 +390,9 @@ export function seminarAnnounceMessages(weekId: string, chosen: Array<{ starts_a
           { type: 'text', text: '生配信の日時が決まりました', weight: 'bold', size: 'lg', wrap: true },
           { type: 'text', text: 'アンケートにお答えいただき、ありがとうございました。', size: 'sm', wrap: true, margin: 'md' },
           ...chosen.map((c, i) => ({ type: 'text', text: `${i === 0 ? '①' : '②'} ${slotLabel(c.starts_at)}〜`, size: 'md', weight: 'bold', margin: 'md', wrap: true })),
-          { type: 'text', text: 'お時間になったら、下のボタンからそのままご覧いただけます。投票いただいた回は、開始 5 分前にもこの LINE でお知らせします。途中の参加・退出も自由です。', size: 'sm', wrap: true, margin: 'lg' },
+          { type: 'text', text: '投票いただいた回は、開始 5 分前にこの LINE で配信の URL をお送りします。途中の参加・退出も自由です。', size: 'sm', wrap: true, margin: 'lg' },
         ],
       },
-      footer: { type: 'box', layout: 'vertical', contents: [{ type: 'button', style: 'primary', action: { type: 'uri', label: '生配信を見る', uri: entryUrl } }] },
     },
   };
   const topics: FlexMessage = {
@@ -447,7 +447,7 @@ export type AnnounceResult =
 /**
  * 日曜 17:00 の集計と告知。5 分 cron から呼ぶ。
  * 送り先は日程アンケートに答えた人（「どれも合わない」を含む）だけ。全員への一斉配信はしない（TB-821）。
- * 入口 URL に ?f=<friend_id> を入れるため 1 人ずつ push し、messages_log に残す。
+ * 1 人ずつ push し、messages_log に残す。
  */
 export async function announceSeminar(
   db: D1Database,
@@ -490,15 +490,12 @@ export async function announceSeminar(
     .bind(weekId)
     .all<{ friend_id: string; line_user_id: string }>();
   const recipients = (answerers.results ?? []).filter((r) => r.line_user_id);
-  const linkBase = await resolveSeminarLinkBase(db, env);
-  const link = await ensureWeekTrackedLink(db, weekId, week.stream_url);
-  const streamUrl = week.stream_url;
+  const messages = seminarAnnounceMessages(weekId, chosen);
 
   let delivered = 0;
   let lastErr: unknown = null;
   if (lineClient) {
     for (const r of recipients) {
-      const messages = seminarAnnounceMessages(weekId, chosen, seminarEntryUrl(linkBase, link.short_code ?? link.id, streamUrl, r.friend_id));
       try {
         await lineClient.pushMessage(r.line_user_id, messages);
         delivered++;

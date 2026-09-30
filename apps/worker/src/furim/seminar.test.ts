@@ -294,10 +294,11 @@ describe('日曜 17:00 の告知（TB-821）', () => {
     expect(runs.filter((x) => x.sql.includes('INSERT INTO messages_log'))).toHaveLength(4);
   });
 
-  it('吹き出し A に日時と視聴ボタン（f 付き）、B に内容アンケート 6 択（枠ごと postback）を入れる', () => {
-    const [announce, topics] = seminarAnnounceMessages('2026-10-04', [{ starts_at: '2026-10-05T20:00:00+09:00' }], 'https://x.example/t/abc?openExternalBrowser=1&f=fr-1');
+  it('吹き出し A は日時だけ（ボタン無し）、B は内容アンケート 6 択（枠ごと postback）の別 Flex', () => {
+    const [announce, topics] = seminarAnnounceMessages('2026-10-04', [{ starts_at: '2026-10-05T20:00:00+09:00' }]);
     expect(JSON.stringify(announce.contents)).toContain('① 10/5(月)20:00〜');
-    expect(JSON.stringify(announce.contents)).toContain('&f=fr-1');
+    expect(announce.contents.footer).toBeUndefined();
+    expect(JSON.stringify(announce.contents)).not.toContain('"uri"'); // くろさん: 決定告知にボタンはいらない
     const boxes = ((topics.contents.body as { contents: Array<{ action?: { type: string; label: string; data: string; displayText: string } }> }).contents).filter((c) => c.action);
     expect(boxes.map((b) => b.action!.data)).toEqual(SEMINAR_TOPICS.map((t) => `seminar_topic:2026-10-04:${t.id}`));
     for (const b of boxes) expect(b.action!.label.length).toBeLessThanOrEqual(20);
@@ -305,7 +306,7 @@ describe('日曜 17:00 の告知（TB-821）', () => {
   });
 
   it('Flex の本文に手動の改行を入れない（くろさん 2026-09-30）', () => {
-    const msgs = [...seminarAnnounceMessages('2026-10-04', [{ starts_at: '2026-10-05T20:00:00+09:00' }, { starts_at: '2026-10-07T20:00:00+09:00' }], 'https://x'), seminarSurveyFlex('2026-10-04', [{ slot_id: 's1', starts_at: '2026-10-04T18:00:00+09:00' }])];
+    const msgs = [...seminarAnnounceMessages('2026-10-04', [{ starts_at: '2026-10-05T20:00:00+09:00' }, { starts_at: '2026-10-07T20:00:00+09:00' }]), seminarSurveyFlex('2026-10-04', [{ slot_id: 's1', starts_at: '2026-10-04T18:00:00+09:00' }])];
     const texts: string[] = [];
     const walk = (n: unknown) => { if (Array.isArray(n)) n.forEach(walk); else if (n && typeof n === 'object') { const o = n as Record<string, unknown>; if (o.type === 'text' && typeof o.text === 'string') texts.push(o.text); Object.values(o).forEach(walk); } };
     msgs.forEach((m) => walk(m.contents));
