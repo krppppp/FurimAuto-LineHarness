@@ -1,6 +1,6 @@
 // 旧来のキーワード 2 本を D1 で完結させる（段階4・Capsec #246。段階2.5 で漏れていた LINE 起点）。
 // - 【キーワード】登録URL発行 <プラン名>: GAS getLIFFCheckoutUrl（プラン一覧の PriceID＋Stripe顧客ID で LIFF の決済 URL）
-// - 【キーワード】無料お試し1週間<YYYYMMDD>: GAS setKeyCodeExpiry（登録日時=今・終了日時=14 日後・試用キーコード・試用プランの機能フラグ）
+// - 【キーワード】無料お試し1週間<YYYYMMDD>: GAS setKeyCodeExpiry（登録日時=今・終了日時=7 日後・試用キーコード・試用プランの機能フラグ）
 // プラン一覧は furim_master（kind='plan'・payload に PriceID / キーコード接頭語 / features）に取り込み済み（#252）
 import { formatJstDateTime, formatJstIso, generateTrialKeyCode, getFurimCustomer, parseJstDateTime, upsertFurimCustomer, TRIAL_KEYCODE_PREFIX } from './customer-store.js';
 import { upsertFeatureFlags } from './customer-sync.js';
@@ -8,7 +8,7 @@ import { ALWAYS_ENABLED_FEATURE_KEYS, INVENTORY_PATROL_ALL_SITES, isInventoryPro
 import { invalidateExtCache, type ExtCache } from './ext-auth.js';
 
 export const TRIAL_PLAN_NAME = '友達登録2週間トライアルプラン';
-const TRIAL_DAYS = 14;
+const TRIAL_DAYS = 7;
 const CANCELLED_PLAN_NAME = 'キャンセル済み';
 
 type PlanPayload = { PriceID?: unknown; 'キーコード接頭語'?: unknown; features?: Record<string, unknown> };
@@ -58,7 +58,7 @@ export type TrialCampaignResult =
  * 無料お試し1週間<YYYYMMDD>: GAS setKeyCodeExpiry の移植。
  * - expiryDate（YYYYMMDD）より後にサブスク登録日時がある人は対象外（既にご登録済み）
  * - 継続中の有料会員は対象外（trial-promo.grantTrialPromo と同じ判定。キーコード刷新・終了日時の上書きが不利益）
- * - 登録日時=今・終了日時=14 日後（2026-08-27 くろさん決定で 7→14 日）
+ * - 登録日時=今・終了日時=7 日後（2026-08-27 くろさん決定で 7→14 日にしたが、2026-09-30 くろさん決定で 7 日に戻した・TB-871）
  * - キーコードは接頭語 2weektrial_ ならそのまま（同一プランの更新は不変）。違えば試用キーコードを発行し端末判定をクリアする
  * - 試用プランの機能フラグはどちらでも書く（試用切れの 2weektrial_ の人も機能が開くように・TB-858）
  */
