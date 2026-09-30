@@ -49,6 +49,8 @@ describe('normalizeBotCommand（Capsec #298）', () => {
     expect(normalizeBotCommand('キーコード　リセット')).toBe('キーコードリセット');
     expect(normalizeBotCommand('「キーコード リセット」')).toBe('キーコードリセット');
     expect(normalizeBotCommand('【キーワード】キーコード　リセット')).toBe('キーコードリセット');
+    expect(normalizeBotCommand('【キーコード】リセット')).toBe('キーコードリセット');
+    expect(normalizeBotCommand('【キーコード】 リセット\n')).toBe('キーコードリセット');
   });
 
   it('正しい形と自由文は変えない', async () => {
@@ -64,6 +66,7 @@ describe('normalizeBotCommand（Capsec #298）', () => {
       'キーコード リセットしたのに入れません',
       'キーコード　リセットはどうやるんですか？',
       'キーコード\nリセットお願いします',
+      '【キーコード】リセットしたのに入れません',
     ]) {
       expect(normalizeBotCommand(t), t).toBe(t);
     }

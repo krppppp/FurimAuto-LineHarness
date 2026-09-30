@@ -605,7 +605,7 @@ async function handleEvent(
     }
 
     // 【キーワード】アクション（"キーコードリセット"のみプレフィックスなしの単体文字列でも動く特別対応）
-    // リセットの依頼は 30 字以下・バグ報告のひな形以外に限る（isKeycodeResetRequest・Capsec #298）。
+    // リセットの依頼は 40 字以下・バグ報告のひな形以外に限る（isKeycodeResetRequest・Capsec #298）。
     // 長い文に「キーコードリセット」が含まれても、ここに入れず未返信に残して人が判断する
     const keycodeReset = isKeycodeResetRequest(incomingText);
     const keywordOnly = incomingText.includes('【キーワード】') && !incomingText.includes('キーコードリセット');
