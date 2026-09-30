@@ -113,19 +113,16 @@ describe('解約理由アンケート 6択（reason_code・タグ・返信 2 吹
 
 describe('解約理由アンケート: 6 択に無い送信値（旧 5 択 TB-746 のボタン）', () => {
   for (const old of ['値段', '動かない', '使い方が分からない', '売るものがない・稼げなかった', '副業をやめた']) {
-    it(`${old} → reason_code は書かず、タグ「解約理由:${old}」だけ付けて旧どおり返す`, async () => {
+    it(`${old} → reason_code もタグも書かず、返信もしない（webhook 側へ false で返す）`, async () => {
       const client = makeClient();
       const db = makeDb({ tagExists: false, cancellation: { id: 'c1', reason_text: null, reason_answered_at: null } });
 
       const handled = await handleButtonAction(client as never, 'U1', 'rt', `【ボタン】解約理由:${old}`, env, db as never);
 
-      expect(handled).toBe(true);
-      expect(db.binds.some((b) => /furim_cancellations/.test(b.sql))).toBe(false);
-      expect(db.binds.find((b) => /INSERT OR IGNORE INTO tags/.test(b.sql))?.args[1]).toBe(`解約理由:${old}`);
-      const messages = client.replyMessage.mock.calls[0][1] as Array<{ text: string }>;
-      expect(messages).toHaveLength(2);
-      expect(messages[0].text).toContain('ご回答ありがとうございます🙇');
-      expect(messages[1].text).toContain('liff.line.me');
+      expect(handled).toBe(false);
+      expect(db.binds.some((b) => /furim_cancellations|tags/.test(b.sql))).toBe(false);
+      expect(db.inserts).toHaveLength(0);
+      expect(client.replyMessage).not.toHaveBeenCalled();
     });
   }
 });

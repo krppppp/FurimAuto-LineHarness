@@ -127,7 +127,7 @@ describe('cancellationSurveyMessages（TB-825 で旧アンケートの 6 択に�
     expect(isCancellationReasonCode('price')).toBe(true);
   });
 
-  test('旧 5 択（TB-746）の送信値はコードに戻らない（旧分岐でタグだけ）', () => {
+  test('旧 5 択（TB-746）の送信値はコードに戻らない（何も記録しない）', () => {
     for (const old of ['値段', '動かない', '使い方が分からない', '売るものがない・稼げなかった', '副業をやめた']) {
       expect(cancellationReasonCodeFromLabel(old)).toBeNull();
     }

@@ -41,7 +41,7 @@ export function isCancellationReasonCode(value: string): value is CancellationRe
 
 /**
  * ボタンが送ってきた日本語の送信値を reason_code に戻す。6 択のどれでもなければ null。
- * 旧 5 択（TB-746）の送信値（動かない／値段 など）は null になり、button-actions の旧分岐（タグだけ）へ落ちる。
+ * 旧 5 択（TB-746）の送信値（動かない／値段 など）は null になり、button-actions では何も記録しない（TB-748 CTO の下限）。
  */
 export function cancellationReasonCodeFromLabel(label: string): CancellationReasonCode | null {
   const hit = (Object.keys(CANCELLATION_REASONS) as CancellationReasonCode[]).find(
