@@ -64,15 +64,15 @@ describe('applyTrialCampaign（無料お試し1週間）', () => {
     expect(r).toEqual({ success: false, message: '既にご登録済みの方のみ対象となります' });
   });
 
-  it('試用キーコード以外なら発行して端末判定クリア・試用プランのフラグを書き、期限は 14 日後', async () => {
+  it('試用キーコード以外なら発行して端末判定クリア・試用プランのフラグを書き、期限は 7 日後（TB-871）', async () => {
     const { db, writes } = makeDb({ customer: { line_user_id: 'U1', key_code: 'pb_old', subscription_start_at: '2026-08-01 10:00:00' }, plans: { '友達登録2週間トライアルプラン': TRIAL_PLAN } });
     const r = await applyTrialCampaign(db, undefined, 'U1', '20260930', now);
     if (!r.success) throw new Error('expected success');
     expect(r.keyCode).toMatch(/^2weektrial_[0-9a-z]{8}$/);
     expect(r.reissued).toBe(true);
     expect(r.startAt).toBe('2026-09-14 12:00:00');
-    expect(r.endAt).toBe('2026-09-28 12:00:00');
-    expect(r.mirror).toEqual({ 'サブスク登録日時': '2026-09-14 12:00:00', 'サブスク終了日時': '2026-09-28 12:00:00', 'キーコード': r.keyCode, '端末判定文字列': '' });
+    expect(r.endAt).toBe('2026-09-21 12:00:00');
+    expect(r.mirror).toEqual({ 'サブスク登録日時': '2026-09-14 12:00:00', 'サブスク終了日時': '2026-09-21 12:00:00', 'キーコード': r.keyCode, '端末判定文字列': '' });
     expect(r.flags?.mChangePrice).toBe('1');
     const upsert = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql));
     expect(upsert?.sql).toMatch(/device_code = excluded.device_code/);
@@ -85,11 +85,16 @@ describe('applyTrialCampaign（無料お試し1週間）', () => {
     if (!r.success) throw new Error('expected success');
     expect(r.keyCode).toBe('2weektrial_keep');
     expect(r.reissued).toBe(false);
-    expect(r.mirror).toEqual({ 'サブスク登録日時': '2026-09-14 12:00:00', 'サブスク終了日時': '2026-09-28 12:00:00' });
+    expect(r.mirror).toEqual({ 'サブスク登録日時': '2026-09-14 12:00:00', 'サブスク終了日時': '2026-09-21 12:00:00' });
     expect(r.flags?.mChangePrice).toBe('1');
     const flagWrite = writes.find((w) => /INSERT INTO furim_feature_flags/.test(w.sql));
     expect(flagWrite?.args).toContain('plan');
     expect(writes.find((w) => /INSERT INTO furim_customers/.test(w.sql))?.args).not.toContain('2weektrial_keep');
+  });
+
+  it('友だち追加時の試用は 14 日のまま（キーワード経路だけ 7 日・TB-871）', async () => {
+    const { FRIEND_TRIAL_DAYS } = await import('./customer-store.js');
+    expect(FRIEND_TRIAL_DAYS).toBe(14);
   });
 
   it('継続中の有料会員は断る（キーコード・期限・フラグは触らない）', async () => {
