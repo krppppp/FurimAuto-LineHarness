@@ -80,7 +80,7 @@ export async function handleKeywordAction(
   db?: D1Database,
 ): Promise<boolean> {
   // "キーコードリセット"のみ【キーワード】プレフィックスなしの単体文字列でも動く特別対応
-  // 30 字以下・バグ報告のひな形以外に限る（isKeycodeResetRequest・Capsec #298）
+  // 40 字以下・バグ報告のひな形以外に限る（isKeycodeResetRequest・Capsec #298）
   if (isKeycodeResetRequest(rawText)) {
     // 段階2.5（Capsec #250）: リセットの実体（端末判定文字列のクリア）は D1 furim_customers で完結し、GAS は待たない。
     // 拡張の認証は D1（KV は 60 秒の写しなので消す）。シートへは返信後に setCustomerFields で鏡写し（旧拡張は GAS 経路で読む）
