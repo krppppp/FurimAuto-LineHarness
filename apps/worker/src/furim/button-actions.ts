@@ -214,25 +214,8 @@ export async function handleButtonAction(
     ]);
     return true;
   }
-
-  // 解約理由アンケート（旧 5 択（TB-746）のボタンなど、上の 6 択に当たらないもの）: タグだけで記録し、
-  // 理由に応じて再開提案を返す
-  if (text.includes('解約理由:')) {
-    const reason = text.split(':')[1] ?? '';
-    if (db && reason) await tagCancellationReason(db, lineUserId, reason);
-    const thanks = 'ご回答ありがとうございます🙇\n今後のサービス改善に活用させていただきます。';
-    if (reason === '物販休止' || reason === '他ツールへ乗り換え') {
-      await lineClient.replyMessage(replyToken, [
-        { type: 'text', text: `${thanks}\n\n${cancellationReasonFollowUpText(env, reason)}` } as never,
-      ]);
-    } else {
-      await lineClient.replyMessage(replyToken, [
-        { type: 'text', text: thanks } as never,
-        { type: 'text', text: cancellationReasonFollowUpText(env, reason) } as never,
-      ]);
-    }
-    return true;
-  }
+  // 6 択に無い「解約理由:」（旧 5 択 TB-746 の値段 など）は reason_code もタグも書かない（TB-748 CTO の下限）。
+  // 下の分岐にも当たらず false で返り、webhook 側の auto_replies／「準備中」に任せる
 
   if (text === 'お友達向け説明書の発行') {
     await lineClient.replyMessage(replyToken, [{ type: 'image', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/introduction.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/introduction.png' } as never]);
