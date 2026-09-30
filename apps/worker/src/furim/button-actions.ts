@@ -72,6 +72,25 @@ async function switchSegmentTag(db: D1Database, friendId: string, newSeg: number
   if (newTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friendId, newTag.id, jstNow()).run();
 }
 
+async function tagCancellationReason(db: D1Database, lineUserId: string, reason: string): Promise<void> {
+  const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
+  if (!friend) return;
+  const tagName = `解約理由:${reason}`;
+  let tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+  if (!tag) {
+    await db.prepare('INSERT OR IGNORE INTO tags (id, name, created_at) VALUES (?, ?, ?)').bind(crypto.randomUUID(), tagName, jstNow()).run();
+    tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+  }
+  if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, tag.id, jstNow()).run();
+}
+
+function cancellationReasonFollowUpText(env: ButtonActionsEnv, reason: string): string {
+  if (reason === '物販休止' || reason === '他ツールへ乗り換え') {
+    return 'また物販を再開される際は、いつでもこのLINEからお待ちしております！';
+  }
+  return `💡【機能を絞って安く続ける選択肢も】\n\nFurimAutoは必要な機能だけを選べるビュッフェ式です🍽\nよく使う機能1つだけなら月980円(税抜)から再開できます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n${planBuilderUrl(env)}`;
+}
+
 export async function handleButtonAction(
   lineClient: LineClient,
   lineUserId: string,
@@ -170,53 +189,46 @@ export async function handleButtonAction(
     return true;
   }
 
-  // 解約理由アンケート 5択（TB-740。解約成立直後に push する Flex から）: 飛んでくるのは日本語の
-  // ラベル（顧客のトークに英字コードを出さないため）。ここでコードへ直し、furim_cancellations の
-  // 最新行に reason_code で記録する。旧 5 択とラベルが重ならないので、この分岐を先に通せば衝突しない。
-  // 引き止め文は入れない（解約は成立済み）
+  // 解約理由アンケート 6 択（TB-740・TB-825 で旧アンケートの 6 択に戻した。解約成立直後に push する Flex から）:
+  // 飛んでくるのは日本語の送信値。ここでコードへ直し、furim_cancellations の最新行に reason_code で記録する。
+  // 旧と同じタグ「解約理由:<送信値>」も付ける（過去の回答と同じ指標を続けるため）。
+  // 「月980円〜」の案内は旧どおり残す（TB-748 で F事業のリーダーが決定Aを改めた。測っていないものを消さない）。
+  // 旧の「ご回答ありがとうございます🙇…」は 2 通目（CANCELLATION_REASON_REPLY_TEXT）と重なるので出さない
   const cancellationReasonCode = text.includes('解約理由:')
     ? cancellationReasonCodeFromLabel(text.split(':')[1] ?? '')
     : null;
   if (cancellationReasonCode) {
     const code = cancellationReasonCode;
+    const reason = text.split(':')[1] ?? '';
     if (db) {
       try {
         await recordCancellationReason(db, lineUserId, { code });
       } catch (e) {
         console.error('[furim] 解約理由の記録に失敗:', lineUserId, e);
       }
+      await tagCancellationReason(db, lineUserId, reason);
     }
-    await lineClient.replyMessage(replyToken, [{ type: 'text', text: CANCELLATION_REASON_REPLY_TEXT } as never]);
+    await lineClient.replyMessage(replyToken, [
+      { type: 'text', text: CANCELLATION_REASON_REPLY_TEXT } as never,
+      { type: 'text', text: cancellationReasonFollowUpText(env, reason) } as never,
+    ]);
     return true;
   }
 
-  // 解約理由アンケート（旧・月額解約フローのFlexから）: タグで記録し、理由に応じて再開提案を返す。
-  // 「月980円〜」の案内はここに残す（TB-748 で F事業のリーダーが決定Aを改めた）。
-  // 新アンケート（上の 5 択）には元から入っておらず、TB-740 の「引き止め文を挟まない」は既に満たしている。
-  // 今いくら復帰を生んでいるか測っていないものを、ついでに消さない
+  // 解約理由アンケート（旧 5 択（TB-746）のボタンなど、上の 6 択に当たらないもの）: タグだけで記録し、
+  // 理由に応じて再開提案を返す
   if (text.includes('解約理由:')) {
     const reason = text.split(':')[1] ?? '';
-    if (db && reason) {
-      const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
-      if (friend) {
-        const tagName = `解約理由:${reason}`;
-        let tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
-        if (!tag) {
-          await db.prepare('INSERT OR IGNORE INTO tags (id, name, created_at) VALUES (?, ?, ?)').bind(crypto.randomUUID(), tagName, jstNow()).run();
-          tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
-        }
-        if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, tag.id, jstNow()).run();
-      }
-    }
+    if (db && reason) await tagCancellationReason(db, lineUserId, reason);
     const thanks = 'ご回答ありがとうございます🙇\n今後のサービス改善に活用させていただきます。';
     if (reason === '物販休止' || reason === '他ツールへ乗り換え') {
       await lineClient.replyMessage(replyToken, [
-        { type: 'text', text: `${thanks}\n\nまた物販を再開される際は、いつでもこのLINEからお待ちしております！` } as never,
+        { type: 'text', text: `${thanks}\n\n${cancellationReasonFollowUpText(env, reason)}` } as never,
       ]);
     } else {
       await lineClient.replyMessage(replyToken, [
         { type: 'text', text: thanks } as never,
-        { type: 'text', text: `💡【機能を絞って安く続ける選択肢も】\n\nFurimAutoは必要な機能だけを選べるビュッフェ式です🍽\nよく使う機能1つだけなら月980円(税抜)から再開できます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n${planBuilderUrl(env)}` } as never,
+        { type: 'text', text: cancellationReasonFollowUpText(env, reason) } as never,
       ]);
     }
     return true;
