@@ -352,7 +352,18 @@ async function handleEvent(
 
     // セミナー日程アンケートの投票（Capsec #331）。auto_replies のマッチより前に処理する
     // （auto_replies は contains マッチもあるので、後ろに置くと取り違える）
-    const { parseSeminarVoteData, recordSeminarVote, voteReplyText } = await import('../furim/seminar.js');
+    const { parseSeminarVoteData, recordSeminarVote, voteReplyText, parseSeminarTopicData, recordSeminarTopicVote, topicReplyText } = await import('../furim/seminar.js');
+    // 聞きたい内容アンケート（TB-821）。日程の票と同じく auto_replies より前に処理する
+    const topic = parseSeminarTopicData(postbackData);
+    if (topic) {
+      try {
+        const result = await recordSeminarTopicVote(db, { weekId: topic.weekId, topicId: topic.topicId, friendId: friend.id, lineUserId: userId });
+        await lineClient.replyMessage(event.replyToken, [{ type: 'text', text: topicReplyText(result) }]);
+      } catch (err) {
+        console.error('[furim/seminar] topic vote failed', err);
+      }
+      return;
+    }
     const vote = parseSeminarVoteData(postbackData);
     if (vote) {
       try {
@@ -705,7 +716,21 @@ async function handleEvent(
         console.error('[webhook] 解約理由（自由記述）の記録に失敗:', userId, e);
       }
     }
-    if (cancellationFreeText) {
+    // 聞きたい内容アンケートの「6 その他」（TB-821）: 押してから 1 時間以内の最初の自由文を控える。
+    // 解約理由と同じく、拾えたらお礼を返し、チャットの作成/更新とスタッフ通知は通して打ち切る
+    let seminarTopicNote = false;
+    if (!isBotRoutedMessage && !cancellationFreeText) {
+      try {
+        const { recordSeminarTopicNote, TOPIC_NOTE_REPLY } = await import('../furim/seminar.js');
+        seminarTopicNote = await recordSeminarTopicNote(db, friend.id, incomingText);
+        if (seminarTopicNote) {
+          await loggingClient.replyMessage(event.replyToken, [{ type: 'text', text: TOPIC_NOTE_REPLY } as never]);
+        }
+      } catch (e) {
+        console.error('[webhook] セミナーの聞きたい内容（その他）の記録に失敗:', userId, e);
+      }
+    }
+    if (cancellationFreeText || seminarTopicNote) {
       // お礼の送信が失敗していてもここは通す（人に届かないのが一番まずい）
       await upsertChatOnMessage(db, friend.id);
       if (env) {
