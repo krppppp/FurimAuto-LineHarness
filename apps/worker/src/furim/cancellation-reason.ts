@@ -7,9 +7,9 @@ import { jstNow } from '@line-crm/db';
 // price は旧 5 択の「値段」で本番に 1 行入っているので、コードを変えない
 export const CANCELLATION_REASONS = {
   price: '料金が高い',
-  too_hard: '使いこなせなかった',
-  no_result: '成果が出なかった',
-  pause_selling: '物販休止',
+  could_not_use: '使いこなせなかった',
+  no_results: '成果が出なかった',
+  paused_selling: '物販休止',
   switched_tool: '他ツールへ乗り換え',
   other: 'その他',
 } as const;
@@ -19,9 +19,9 @@ export type CancellationReasonCode = keyof typeof CANCELLATION_REASONS;
 // ボタンの表示ラベル（旧 Flex のまま。送信値とは別の文言）
 const CANCELLATION_REASON_BUTTON_LABELS: Record<CancellationReasonCode, string> = {
   price: '料金が高かった',
-  too_hard: '使いこなせなかった',
-  no_result: '思うような成果が出なかった',
-  pause_selling: '物販をやめた・お休みする',
+  could_not_use: '使いこなせなかった',
+  no_results: '思うような成果が出なかった',
+  paused_selling: '物販をやめた・お休みする',
   switched_tool: '他のツールに乗り換えた',
   other: 'その他',
 };

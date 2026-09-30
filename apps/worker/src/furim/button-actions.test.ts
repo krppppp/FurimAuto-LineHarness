@@ -60,9 +60,9 @@ beforeEach(() => {
 describe('解約理由アンケート 6択（reason_code・タグ・返信 2 吹き出し）', () => {
   const cases = [
     { value: '料金が高い', code: 'price', retention: true },
-    { value: '使いこなせなかった', code: 'too_hard', retention: true },
-    { value: '成果が出なかった', code: 'no_result', retention: true },
-    { value: '物販休止', code: 'pause_selling', retention: false },
+    { value: '使いこなせなかった', code: 'could_not_use', retention: true },
+    { value: '成果が出なかった', code: 'no_results', retention: true },
+    { value: '物販休止', code: 'paused_selling', retention: false },
     { value: '他ツールへ乗り換え', code: 'switched_tool', retention: false },
     { value: 'その他', code: 'other', retention: true },
   ];
