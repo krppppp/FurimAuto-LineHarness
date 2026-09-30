@@ -79,14 +79,30 @@ describe('applyTrialCampaign（無料お試し1週間）', () => {
     expect(writes.some((w) => /INSERT INTO furim_feature_flags/.test(w.sql))).toBe(true);
   });
 
-  it('既に試用キーコードなら据え置き（期限だけ更新・フラグは触らない）', async () => {
-    const { db, writes } = makeDb({ customer: { line_user_id: 'U1', key_code: '2weektrial_keep', subscription_start_at: null } });
+  it('既に試用キーコードならキーコードは据え置き・期限を更新し、試用プランのフラグも書く（TB-858）', async () => {
+    const { db, writes } = makeDb({ customer: { line_user_id: 'U1', key_code: '2weektrial_keep', subscription_start_at: null, subscription_end_at: '2026-09-01 12:00:00' }, plans: { '友達登録2週間トライアルプラン': TRIAL_PLAN } });
     const r = await applyTrialCampaign(db, undefined, 'U1', null, now);
     if (!r.success) throw new Error('expected success');
     expect(r.keyCode).toBe('2weektrial_keep');
     expect(r.reissued).toBe(false);
     expect(r.mirror).toEqual({ 'サブスク登録日時': '2026-09-14 12:00:00', 'サブスク終了日時': '2026-09-28 12:00:00' });
-    expect(writes.some((w) => /furim_feature_flags/.test(w.sql))).toBe(false);
+    expect(r.flags?.mChangePrice).toBe('1');
+    const flagWrite = writes.find((w) => /INSERT INTO furim_feature_flags/.test(w.sql));
+    expect(flagWrite?.args).toContain('plan');
+    expect(writes.find((w) => /INSERT INTO furim_customers/.test(w.sql))?.args).not.toContain('2weektrial_keep');
+  });
+
+  it('継続中の有料会員は断る（キーコード・期限・フラグは触らない）', async () => {
+    const { db, writes } = makeDb({ customer: { line_user_id: 'U1', key_code: 'pb_paid', plan_label: 'メルカリ 基本プラン', subscription_start_at: '2026-08-01 10:00:00', subscription_end_at: '2026-10-10 10:00:00' }, plans: { '友達登録2週間トライアルプラン': TRIAL_PLAN } });
+    expect(await applyTrialCampaign(db, undefined, 'U1', null, now)).toMatchObject({ success: false, reason: 'paid' });
+    expect(writes).toEqual([]);
+  });
+
+  it('解約済み・期限切れの有料プランは通す', async () => {
+    const cancelled = makeDb({ customer: { line_user_id: 'U1', key_code: 'pb_old', plan_label: 'キャンセル済み(メルカリ 基本プラン)', subscription_end_at: '2026-10-10 10:00:00' }, plans: { '友達登録2週間トライアルプラン': TRIAL_PLAN } });
+    expect((await applyTrialCampaign(cancelled.db, undefined, 'U1', null, now)).success).toBe(true);
+    const lapsed = makeDb({ customer: { line_user_id: 'U1', key_code: 'pb_old', plan_label: 'メルカリ 基本プラン', subscription_end_at: '2026-09-01 10:00:00' }, plans: { '友達登録2週間トライアルプラン': TRIAL_PLAN } });
+    expect((await applyTrialCampaign(lapsed.db, undefined, 'U1', null, now)).success).toBe(true);
   });
 
   it('顧客行が無ければ失敗', async () => {

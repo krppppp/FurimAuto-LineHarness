@@ -149,11 +149,13 @@ export async function handleKeywordAction(
     const data = db ? await applyTrialCampaign(db, env.FURIM_EXT_CACHE, lineUserId, expiryDate) : ({ success: false, message: 'D1 なし' } as const);
     if (data.success) {
       await lineClient.replyMessage(replyToken, [
-        { type: 'text', text: `🎉【キャンペーン参加完了！】🎉\n\nFurimAutoの全機能を2週間無料でお試しいただけます！\n\nキーコードの準備ができましたので、\nリッチメニューの「キーコード発行」をタップしてください👇\n\n使い方は簡単3ステップ！\n①キーコードを発行\n②PCブラウザにFurimAutoを導入\n③キーコードを入力する\nだけ！✋\n\n初回の導入方法は下の1分動画を参考に最短3分で導入してみてください♪` } as never,
+        { type: 'text', text: `🎉【キャンペーン参加完了！】🎉\n\nFurimAutoを2週間無料でお試しいただけます！\n\nキーコードの準備ができましたので、\nリッチメニューの「キーコード発行」をタップしてください👇\n\n使い方は簡単3ステップ！\n①キーコードを発行\n②PCブラウザにFurimAutoを導入\n③キーコードを入力する\nだけ！✋\n\n初回の導入方法は下の1分動画を参考に最短3分で導入してみてください♪` } as never,
         { type: 'video', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/install.mp4', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png', trackingId: 'setup' } as never,
-        { type: 'text', text: `📣使い方や設定方法について\n\n💡無料の2週間で全機能フル活用!\n💡全自動化運用を実現して欲しい!\n💡理解することで必ず大きな効果がでます!\n\nリッチメニューの"Youtube動画講座"から\nFurimAutoの基礎から応用まで\n全ての機能を解説しています！` } as never,
+        { type: 'text', text: `📣使い方や設定方法について\n\n💡無料の2週間でフル活用!\n💡全自動化運用を実現して欲しい!\n💡理解することで必ず大きな効果がでます!\n\nリッチメニューの"Youtube動画講座"から\nFurimAutoの基礎から応用まで\n全ての機能を解説しています！` } as never,
         copyTicketFlexMessage() as never,
       ]);
+    } else if ('reason' in data && data.reason === 'paid') {
+      await lineClient.replyMessage(replyToken, [{ type: 'text', text: `いつもFurimAutoをご利用いただきありがとうございます。\n\nこちらのキャンペーンは、有料プランをご利用中でない方向けのものです。\n\n今ご利用中のプランはそのままお使いいただけます。` } as never]);
     } else {
       await lineClient.replyMessage(replyToken, [{ type: 'text', text: `申し訳ございません。\nこのキャンペーンを既にご利用いただいているか、\nすでに終了いたしました。` } as never]);
     }

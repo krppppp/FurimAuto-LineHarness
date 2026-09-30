@@ -9,6 +9,7 @@ import { invalidateExtCache, type ExtCache } from './ext-auth.js';
 
 export const TRIAL_PLAN_NAME = '友達登録2週間トライアルプラン';
 const TRIAL_DAYS = 14;
+const CANCELLED_PLAN_NAME = 'キャンセル済み';
 
 type PlanPayload = { PriceID?: unknown; 'キーコード接頭語'?: unknown; features?: Record<string, unknown> };
 
@@ -51,14 +52,15 @@ export async function buildLegacyCheckoutUrl(
 
 export type TrialCampaignResult =
   | { success: true; keyCode: string; reissued: boolean; startAt: string; endAt: string; mirror: Record<string, unknown>; flags: Record<string, string> | null }
-  | { success: false; message: string };
+  | { success: false; message: string; reason?: 'paid' };
 
 /**
  * 無料お試し1週間<YYYYMMDD>: GAS setKeyCodeExpiry の移植。
  * - expiryDate（YYYYMMDD）より後にサブスク登録日時がある人は対象外（既にご登録済み）
+ * - 継続中の有料会員は対象外（trial-promo.grantTrialPromo と同じ判定。キーコード刷新・終了日時の上書きが不利益）
  * - 登録日時=今・終了日時=14 日後（2026-08-27 くろさん決定で 7→14 日）
- * - キーコードは接頭語 2weektrial_ ならそのまま（同一プランの更新は不変）。違えば試用キーコードを発行し端末判定をクリアし
- *   試用プランの機能フラグを書く（GAS setKeyCode と同じ）
+ * - キーコードは接頭語 2weektrial_ ならそのまま（同一プランの更新は不変）。違えば試用キーコードを発行し端末判定をクリアする
+ * - 試用プランの機能フラグはどちらでも書く（試用切れの 2weektrial_ の人も機能が開くように・TB-858）
  */
 export async function applyTrialCampaign(
   db: D1Database,
@@ -69,6 +71,9 @@ export async function applyTrialCampaign(
 ): Promise<TrialCampaignResult> {
   const customer = await getFurimCustomer(db, lineUserId);
   if (!customer) return { success: false, message: '指定されたLINEUserIDが見つかりません' };
+  const planName = (customer.plan_label ?? '').trim();
+  const isCancelled = !planName || planName.startsWith(CANCELLED_PLAN_NAME);
+  if (!isCancelled && (parseJstDateTime(customer.subscription_end_at) ?? 0) > nowMs) return { success: false, reason: 'paid', message: '有料会員は対象外です' };
   if (expiryDate && /^\d{8}$/.test(expiryDate)) {
     const limit = Date.parse(`${expiryDate.slice(0, 4)}-${expiryDate.slice(4, 6)}-${expiryDate.slice(6, 8)}T00:00:00+09:00`);
     const registered = parseJstDateTime(customer.subscription_start_at);
@@ -88,11 +93,11 @@ export async function applyTrialCampaign(
     patch.device_activated = 0;
     mirror['キーコード'] = keyCode;
     mirror['端末判定文字列'] = '';
-    const plan = await loadPlanPayload(db, TRIAL_PLAN_NAME);
-    if (plan?.features) {
-      flags = planFeaturesToFlags(plan.features, nowMs);
-      await upsertFeatureFlags(db, lineUserId, flags, 'plan');
-    }
+  }
+  const plan = await loadPlanPayload(db, TRIAL_PLAN_NAME);
+  if (plan?.features) {
+    flags = planFeaturesToFlags(plan.features, nowMs);
+    await upsertFeatureFlags(db, lineUserId, flags, 'plan');
   }
   await upsertFurimCustomer(db, lineUserId, patch);
   await invalidateExtCache(kv, current || null);
