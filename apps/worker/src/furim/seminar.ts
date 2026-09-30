@@ -12,9 +12,6 @@
 // 取れた実行だけが送る（kaisetsu-delivery と同じ枠取り）。
 import { formatJstIso } from './customer-store.js';
 
-/** 有料会員のタグ ID（月額会員）。既存のセグメント配信と同じ値 */
-export const MEMBER_TAG_ID = 'b71d63843d84f894299895e415255ead';
-
 export const SEMINAR_VOTE_PREFIX = 'seminar_vote:';
 /** 「どれも都合が合わない」の slot_id */
 export const NO_FIT_SLOT_ID = 'none';
@@ -87,29 +84,20 @@ export async function listSeminarSlots(db: D1Database, weekId: string): Promise<
 type FlexBubble = Record<string, unknown>;
 
 /**
- * アンケートの Flex（1 枠 1 postback ボタン＋「どれも合わない」）。
- * 文面は TB-822（配信文担当・2026-09-30）のまま。1 行全角 20 字以内で、改行は本文に \n で入れてある。
+ * アンケートの Flex（1 枠 1 postback ボタン＋「どれも合わない」）。全員共通の 1 種（2026-09-30 くろさん: 会員と非会員を分けない）。
+ * 文面は TB-822 をもとに、20 字ごとの手動改行を外した（くろさん: Flex の不自然な改行をやめる）。折り返しは LINE に任せる。
  * 送るのは前日の土曜なので「明日（日）17:00 締め切り」。翌日＝日曜の枠が候補にあるときだけ注記を足す。
  */
-export function seminarSurveyFlex(
-  weekId: string,
-  slots: SeminarSlot[],
-  variant: 'paid' | 'free',
-): { altText: string; contents: FlexBubble } {
+export function seminarSurveyFlex(weekId: string, slots: SeminarSlot[]): { altText: string; contents: FlexBubble } {
   const hasSameDay = slots.some((s) => s.starts_at.slice(0, 10) === weekId);
-  const title = variant === 'paid' ? '会員向け｜生配信の日程アンケート' : 'FurimAuto 生配信の日程アンケート';
-  const greeting =
-    variant === 'paid'
-      ? 'いつもご利用いただき、\nありがとうございます。\n次回の生配信でも、\n会員のみなさんの使い方の\n実例や、売上をもう一段\n伸ばす設定などを\nお見せする予定です。'
-      : 'いつもご覧いただき、\nありがとうございます。\n次回の生配信でも、\nメルカリ物販を自動化して、\n作業時間を減らすやり方を\n実演する予定です。\nご参加は無料です。';
   const body: FlexBubble[] = [
-    { type: 'text', text: title, weight: 'bold', size: 'lg', wrap: true },
-    { type: 'text', text: 'FurimAuto を運営する\n法人代表の黒岩です。', size: 'sm', wrap: true, margin: 'md' },
-    { type: 'text', text: greeting, size: 'sm', wrap: true, margin: 'md' },
-    { type: 'text', text: 'アンケートに答えて\nくださった方にだけ、\n開催日時をお知らせします。', size: 'sm', weight: 'bold', wrap: true, margin: 'md' },
-    { type: 'text', text: 'ご覧になれそうな日時を、\n下のボタンからいくつでも\n押してください。\n票の多い 2 つの日時で\n開催します。\n締め切りは明日（日）の\n17:00 です。', size: 'sm', wrap: true, margin: 'md' },
+    { type: 'text', text: 'FurimAuto 生配信の日程アンケート', weight: 'bold', size: 'lg', wrap: true },
+    { type: 'text', text: 'FurimAuto を運営する法人代表の黒岩です。', size: 'sm', wrap: true, margin: 'md' },
+    { type: 'text', text: 'いつもありがとうございます。次回の生配信でも、メルカリ物販を自動化して、作業時間を減らすやり方を実演する予定です。ご参加は無料です。', size: 'sm', wrap: true, margin: 'md' },
+    { type: 'text', text: 'アンケートに答えてくださった方にだけ、開催日時をお知らせします。', size: 'sm', weight: 'bold', wrap: true, margin: 'md' },
+    { type: 'text', text: 'ご覧になれそうな日時を、下のボタンからいくつでも押してください。票の多い 2 つの日時で開催します。締め切りは明日（日）の 17:00 です。', size: 'sm', wrap: true, margin: 'md' },
   ];
-  if (hasSameDay) body.push({ type: 'text', text: '※明日（日）の開催になる\n場合があります', size: 'xs', wrap: true, margin: 'md', color: '#888888' });
+  if (hasSameDay) body.push({ type: 'text', text: '※明日（日）の開催になる場合があります', size: 'xs', wrap: true, margin: 'md', color: '#888888' });
 
   const buttons = slots.map((s) => ({
     type: 'button',
@@ -187,17 +175,17 @@ export function parseSeminarVoteData(data: string): { weekId: string; slotId: st
   return { weekId, slotId };
 }
 
-/** 受付返信の本文（TB-822 の返信文） */
+/** 受付返信の本文（TB-822 の返信文。手動改行は外した） */
 export function voteReplyText(result: VoteResult): string {
   if (result.status !== 'counted' && result.status !== 'duplicate') {
-    return '申し訳ありません、この\nアンケートは締め切りました。\n次回の日程アンケートも\nお送りしますので、\nお待ちいただけると\n嬉しいです。';
+    return '申し訳ありません、このアンケートは締め切りました。次回の日程アンケートもお送りしますので、お待ちいただけると嬉しいです。';
   }
   if (result.slotId === NO_FIT_SLOT_ID) {
-    return `ご回答ありがとうございます。\n${result.announceDay} 17:00 に\n開催日時をお知らせします。`;
+    return `ご回答ありがとうございます。${result.announceDay} 17:00 に開催日時をお知らせします。`;
   }
   return result.status === 'counted'
-    ? `${result.label} で\n承りました。\nほかにも見られる日時が\nあれば、続けて押して\nください。\n${result.announceDay} 17:00 に\n開催日時をお知らせします。`
-    : `${result.label} は\nすでに承っております。\nありがとうございます。`;
+    ? `${result.label} で承りました。ほかにも見られる日時があれば、続けて押してください。${result.announceDay} 17:00 に開催日時をお知らせします。`
+    : `${result.label} はすでに承っております。ありがとうございます。`;
 }
 
 type QuotaResult = { ok: boolean; limit: number | null; used: number | null; note: string };
@@ -262,8 +250,7 @@ export type SurveySendResult =
 /**
  * 土曜 9:00 のアンケート送信（翌日曜からの週が対象）。5 分 cron から呼ぶ。
  * 日曜 9:00 には送らない（旧い流れ。TB-821 で廃止）。
- * 送信そのものは既存の broadcasts キュー（segment_conditions）に乗せる。有料/未課金の分けは
- * 「月額会員」タグで、既存のセグメント配信（v4.3.x のお知らせ）と同じ切り方にしている。
+ * 送信そのものは既存の broadcasts キュー（segment_conditions）に乗せる。フォロー中の全員へ 1 本。
  */
 export async function sendSeminarSurvey(
   db: D1Database,
@@ -284,12 +271,11 @@ export async function sendSeminarSurvey(
   const slots = await listSeminarSlots(db, weekId);
   if (slots.length === 0) return { sent: false, reason: 'noSlots' };
 
-  const paid = seminarSurveyFlex(weekId, slots, 'paid');
-  const free = seminarSurveyFlex(weekId, slots, 'free');
+  const flex = seminarSurveyFlex(weekId, slots);
 
   // テスト送信（あじゃぱー）は push で 1 通だけ。枠取りもしない
   if (isTestSend) {
-    if (lineClient) await lineClient.pushMessage(opts.targetLineUserId!, [{ type: 'flex', altText: free.altText, contents: free.contents }]);
+    if (lineClient) await lineClient.pushMessage(opts.targetLineUserId!, [{ type: 'flex', altText: flex.altText, contents: flex.contents }]);
     return { sent: true, weekId, slots: slots.length, broadcastIds: [] };
   }
 
@@ -313,30 +299,18 @@ export async function sendSeminarSurvey(
   }
 
   const { createBroadcast } = await import('@line-crm/db');
-  const broadcastIds: string[] = [];
-  for (const [variant, flex] of [['paid', paid], ['free', free]] as const) {
-    const segment = {
-      operator: 'AND' as const,
-      rules: [
-        { type: 'is_following' as const, value: true },
-        variant === 'paid'
-          ? { type: 'tag_exists' as const, value: MEMBER_TAG_ID }
-          : { type: 'tag_not_exists' as const, value: MEMBER_TAG_ID },
-      ],
-    };
-    const created = await createBroadcast(db, {
-      title: `[SEMINAR] ${weekId} 日程アンケート（${variant === 'paid' ? '月額会員' : '未課金'}）`,
-      messageType: 'flex',
-      messageContent: JSON.stringify(flex.contents),
-      targetType: 'all',
-      trackLinks: false, // postback だけなので URL の自動短縮は不要
-    });
-    await db
-      .prepare('UPDATE broadcasts SET status = ?, batch_offset = 0, alt_text = ?, segment_conditions = ? WHERE id = ?')
-      .bind('sending', flex.altText, JSON.stringify(segment), created.id)
-      .run();
-    broadcastIds.push(created.id);
-  }
+  const created = await createBroadcast(db, {
+    title: `[SEMINAR] ${weekId} 日程アンケート`,
+    messageType: 'flex',
+    messageContent: JSON.stringify(flex.contents),
+    targetType: 'all',
+    trackLinks: false, // postback だけなので URL の自動短縮は不要
+  });
+  await db
+    .prepare('UPDATE broadcasts SET status = ?, batch_offset = 0, alt_text = ?, segment_conditions = ? WHERE id = ?')
+    .bind('sending', flex.altText, JSON.stringify({ operator: 'AND', rules: [{ type: 'is_following', value: true }] }), created.id)
+    .run();
+  const broadcastIds = [created.id];
   return { sent: true, weekId, slots: slots.length, broadcastIds };
 }
 
@@ -377,15 +351,15 @@ export function pickTopSlots(counts: VoteCount[], take = 2): VoteCount[] {
 
 /**
  * 聞きたい内容アンケートの選択肢。text はくろさんの 6 択そのまま（言い換えると集計の意味が変わる）。
- * lines は TB-822 の改行を入れた表示用。label は postback の label（上限 20 字）で、画面には出ない
+ * label は postback の label（上限 20 字）で、画面には出ない
  */
 export const SEMINAR_TOPICS = [
-  { id: 't1', text: '1 メルカリ年商1千万越えアカウントのリアルタイム分析方法', lines: '1 メルカリ年商1千万越え\nアカウントのリアルタイム\n分析方法', label: '1 年商1千万の分析方法' },
-  { id: 't2', text: '2 全自動化運用のリアルタイム講義', lines: '2 全自動化運用の\nリアルタイム講義', label: '2 全自動化運用の講義' },
-  { id: 't3', text: '3 サービス１自動化サービスの各機能簡単解説', lines: '3 サービス１\n自動化サービスの\n各機能簡単解説', label: '3 自動化サービス解説' },
-  { id: 't4', text: '4 サービス２コピー出品機能簡単解説', lines: '4 サービス２\nコピー出品機能簡単解説', label: '4 コピー出品機能解説' },
-  { id: 't5', text: '5 サービス３自動併売在庫管理機能簡単解説', lines: '5 サービス３\n自動併売在庫管理機能\n簡単解説', label: '5 併売在庫管理解説' },
-  { id: 't6', text: '6 その他 なんでもリクエスト', lines: '6 その他\nなんでもリクエスト\n（自由記入）', label: '6 その他リクエスト' },
+  { id: 't1', text: '1 メルカリ年商1千万越えアカウントのリアルタイム分析方法', label: '1 年商1千万の分析方法' },
+  { id: 't2', text: '2 全自動化運用のリアルタイム講義', label: '2 全自動化運用の講義' },
+  { id: 't3', text: '3 サービス１自動化サービスの各機能簡単解説', label: '3 自動化サービス解説' },
+  { id: 't4', text: '4 サービス２コピー出品機能簡単解説', label: '4 コピー出品機能解説' },
+  { id: 't5', text: '5 サービス３自動併売在庫管理機能簡単解説', label: '5 併売在庫管理解説' },
+  { id: 't6', text: '6 その他 なんでもリクエスト', label: '6 その他リクエスト' },
 ] as const;
 export const OTHER_TOPIC_ID = 't6';
 export const SEMINAR_TOPIC_PREFIX = 'seminar_topic:';
@@ -396,7 +370,7 @@ type FlexMessage = { type: 'flex'; altText: string; contents: FlexBubble };
 
 /**
  * 日曜 17:00 に回答者へ送る 2 つの吹き出し（A 開催日時の告知／B 聞きたい内容アンケート）。
- * 1 回の push に入れるので LINE の通数は 1 人 1 通のまま。文面は TB-822 のまま。
+ * 1 回の push に入れるので LINE の通数は 1 人 1 通のまま。文面は TB-822 から手動改行を外したもの。
  * B の選択肢は文言が長くボタンの label（20 字）に入らないため、枠（box）ごと postback にしている
  */
 export function seminarAnnounceMessages(weekId: string, chosen: Array<{ starts_at: string }>, entryUrl: string): FlexMessage[] {
@@ -413,9 +387,9 @@ export function seminarAnnounceMessages(weekId: string, chosen: Array<{ starts_a
         layout: 'vertical',
         contents: [
           { type: 'text', text: '生配信の日時が決まりました', weight: 'bold', size: 'lg', wrap: true },
-          { type: 'text', text: 'アンケートにお答えいただき、\nありがとうございました。', size: 'sm', wrap: true, margin: 'md' },
+          { type: 'text', text: 'アンケートにお答えいただき、ありがとうございました。', size: 'sm', wrap: true, margin: 'md' },
           ...chosen.map((c, i) => ({ type: 'text', text: `${i === 0 ? '①' : '②'} ${slotLabel(c.starts_at)}〜`, size: 'md', weight: 'bold', margin: 'md', wrap: true })),
-          { type: 'text', text: 'お時間になったら、\n下のボタンからそのまま\nご覧いただけます。\n投票いただいた回は、\n開始 5 分前にもこの LINE で\nお知らせします。\n途中の参加・退出も自由です。', size: 'sm', wrap: true, margin: 'lg' },
+          { type: 'text', text: 'お時間になったら、下のボタンからそのままご覧いただけます。投票いただいた回は、開始 5 分前にもこの LINE でお知らせします。途中の参加・退出も自由です。', size: 'sm', wrap: true, margin: 'lg' },
         ],
       },
       footer: { type: 'box', layout: 'vertical', contents: [{ type: 'button', style: 'primary', action: { type: 'uri', label: '生配信を見る', uri: entryUrl } }] },
@@ -431,8 +405,8 @@ export function seminarAnnounceMessages(weekId: string, chosen: Array<{ starts_a
         type: 'box',
         layout: 'vertical',
         contents: [
-          { type: 'text', text: '当日、聞きたい内容を\n教えてください', weight: 'bold', size: 'lg', wrap: true },
-          { type: 'text', text: 'いただいた声をもとに、\n当日お話しする内容を\n決めます。\nいくつでも押してください。', size: 'sm', wrap: true, margin: 'md' },
+          { type: 'text', text: '当日、聞きたい内容を教えてください', weight: 'bold', size: 'lg', wrap: true },
+          { type: 'text', text: 'いただいた声をもとに、当日お話しする内容を決めます。いくつでも押してください。', size: 'sm', wrap: true, margin: 'md' },
           ...SEMINAR_TOPICS.map((t) => ({
             type: 'box',
             layout: 'vertical',
@@ -442,9 +416,9 @@ export function seminarAnnounceMessages(weekId: string, chosen: Array<{ starts_a
             borderWidth: '1px',
             borderColor: t.id === OTHER_TOPIC_ID ? '#AAAAAA' : '#06C755',
             action: { type: 'postback', label: t.label, data: `${SEMINAR_TOPIC_PREFIX}${weekId}:${t.id}`, displayText: t.text },
-            contents: [{ type: 'text', text: t.lines, size: 'sm', wrap: true, color: t.id === OTHER_TOPIC_ID ? '#555555' : '#06C755', weight: 'bold' }],
+            contents: [{ type: 'text', text: t.text, size: 'sm', wrap: true, color: t.id === OTHER_TOPIC_ID ? '#555555' : '#06C755', weight: 'bold' }],
           })),
-          { type: 'text', text: '各回の開始 1 時間前までに\n届いた声を、その回の内容に\n反映します。', size: 'xs', wrap: true, margin: 'lg', color: '#888888' },
+          { type: 'text', text: '各回の開始 1 時間前までに届いた声を、その回の内容に反映します。', size: 'xs', wrap: true, margin: 'lg', color: '#888888' },
         ],
       },
     },
@@ -460,7 +434,7 @@ export function seminarUrlFlex(weekId: string, startsAt: string, entryUrl: strin
     contents: {
       type: 'bubble',
       hero: bannerHero(isFirstWeek(weekId) ? ANNOUNCE_BANNER_FIRST : ANNOUNCE_BANNER_WEEKLY),
-      body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: `まもなく ${slotLabel(startsAt)} から\n生配信を始めます。\n\n下のボタンから\nそのまま入れます。\nお待ちしています。`, wrap: true, size: 'md' }] },
+      body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: `まもなく ${slotLabel(startsAt)} から生配信を始めます。下のボタンからそのまま入れます。お待ちしています。`, wrap: true, size: 'md' }] },
       footer: { type: 'box', layout: 'vertical', contents: [{ type: 'button', style: 'primary', action: { type: 'uri', label: '生配信を見る', uri: entryUrl } }] },
     },
   };
@@ -684,13 +658,13 @@ export async function recordSeminarTopicVote(
 
 /** 押したあとの返信（TB-822 の返信文） */
 export function topicReplyText(result: TopicVoteResult): string {
-  if (result.status === 'unknownTopic' || result.status === 'closed') return '受付を締め切りました。\n次回のアンケートで\nお待ちしています。';
-  if (result.status === 'duplicate') return 'すでに承っております。\nありがとうございます。';
-  if (result.topicId === OTHER_TOPIC_ID) return '聞きたいことを、この\nトークにそのまま\n送ってください。';
-  return '承りました。\nほかにも聞きたい内容が\nあれば、続けて押して\nください。';
+  if (result.status === 'unknownTopic' || result.status === 'closed') return '受付を締め切りました。次回のアンケートでお待ちしています。';
+  if (result.status === 'duplicate') return 'すでに承っております。ありがとうございます。';
+  if (result.topicId === OTHER_TOPIC_ID) return '聞きたいことを、このトークにそのまま送ってください。';
+  return '承りました。ほかにも聞きたい内容があれば、続けて押してください。';
 }
 
-export const TOPIC_NOTE_REPLY = 'リクエストを承りました。\nありがとうございます。\n当日の内容の参考に\nさせていただきます。';
+export const TOPIC_NOTE_REPLY = 'リクエストを承りました。ありがとうございます。当日の内容の参考にさせていただきます。';
 
 /**
  * 「6 その他」を押してから 1 時間以内の最初の自由文を note に控える。控えたら true。

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NO_FIT_SLOT_ID, OTHER_TOPIC_ID, SEMINAR_TOPICS, announceSeminar, collectSeminarTopicReports, parseSeminarTopicData, parseSeminarVoteData, pickTopSlots, recordSeminarTopicNote, recordSeminarTopicVote, recordSeminarVote, remindSeminarSlots, sendSeminarSurvey, seminarAnnounceMessages, seminarEntryUrl, seminarSurveyFlex, slotLabel, surveyWeekIdOf, topicReplyText, topicReportText, voteReplyText, weekIdOf } from './seminar.js';
 
+vi.mock('@line-crm/db', () => ({ createBroadcast: vi.fn(async () => ({ id: 'bc-1' })), createTrackedLink: vi.fn() }));
 vi.mock('../lib/link-base-url.js', () => ({ resolveTrackedLinkBaseUrl: async () => 'https://line-harness-prod.furimuato.workers.dev' }));
 
 const NOW = Date.parse('2026-09-27T09:02:00+09:00'); // 日曜 9:02（アンケート送信の窓）
@@ -47,7 +48,7 @@ describe('アンケートの Flex（Capsec #331）', () => {
   ];
 
   it('候補ごとに postback ボタンを作り、最後に「どれも合わない」を置く', () => {
-    const { contents } = seminarSurveyFlex('2026-09-27', slots, 'free');
+    const { contents } = seminarSurveyFlex('2026-09-27', slots);
     const buttons = (contents.footer as { contents: Array<{ action: { type: string; label: string; data: string } }> }).contents;
     expect(buttons).toHaveLength(3);
     expect(buttons[0].action).toMatchObject({ type: 'postback', label: '9/27(日)18:00', data: 'seminar_vote:2026-09-27:s1' });
@@ -56,22 +57,15 @@ describe('アンケートの Flex（Capsec #331）', () => {
   });
 
   it('日曜の枠があるときだけ「明日（日）18:00 開催」の注記を出す（アンケートは前日の土曜に届く）', () => {
-    const withSameDay = seminarSurveyFlex('2026-09-27', slots, 'free');
+    const withSameDay = seminarSurveyFlex('2026-09-27', slots);
     const texts = (b: typeof withSameDay) => JSON.stringify(b.contents);
     expect(texts(withSameDay)).toContain('※明日（日）の開催になる');
-    const laterOnly = seminarSurveyFlex('2026-09-27', [slots[1]], 'free');
+    const laterOnly = seminarSurveyFlex('2026-09-27', [slots[1]]);
     expect(texts(laterOnly)).not.toContain('※明日（日）の開催になる');
   });
 
   it('答えた人にだけ開催日時を知らせる旨を入れる（TB-821）', () => {
-    for (const v of ['paid', 'free'] as const) {
-      expect(JSON.stringify(seminarSurveyFlex('2026-10-04', slots, v).contents)).toContain('アンケートに答えて\\nくださった方にだけ、\\n開催日時をお知らせします。');
-    }
-  });
-
-  it('有料会員と未課金で文面が違う', () => {
-    expect(JSON.stringify(seminarSurveyFlex('2026-09-27', slots, 'paid').contents)).toContain('会員向け｜生配信の日程アンケート');
-    expect(JSON.stringify(seminarSurveyFlex('2026-09-27', slots, 'free').contents)).toContain('ご参加は無料です');
+    expect(JSON.stringify(seminarSurveyFlex('2026-10-04', slots).contents)).toContain('アンケートに答えてくださった方にだけ、開催日時をお知らせします。');
   });
 });
 
@@ -91,7 +85,7 @@ describe('投票の記録（Capsec #331）', () => {
     expect(r).toMatchObject({ status: 'counted', label: '9/27(日)18:00' });
     expect(runs[0].sql).toContain('INSERT OR IGNORE INTO furim_seminar_votes');
     expect(runs[0].binds.slice(1, 5)).toEqual(['2026-09-27', 's1', 'f1', 'U1']);
-    expect(voteReplyText(r)).toContain('9/27(日)18:00 で\n承りました');
+    expect(voteReplyText(r)).toContain('9/27(日)18:00 で承りました');
     expect(voteReplyText(r)).toContain('本日 17:00 に'); // 日曜に押した人には「本日」
   });
 
@@ -257,6 +251,20 @@ describe('送る曜日と時刻（TB-821）', () => {
     expect(surveyWeekIdOf(Date.parse('2026-10-10T09:05:00+09:00'))).toBe('2026-10-11');
   });
 
+  it('土曜 9:00 は全員共通の 1 本だけ一斉配信を積む（会員／未課金で分けない）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ type: 'none', totalUsage: 0 }))));
+    const { db, runs } = makeScriptedDb({
+      first: [['COUNT(*) AS n FROM friends', { n: 500 }]],
+      all: [['FROM furim_seminar_slots', [{ slot_id: 's1', starts_at: '2026-10-04T18:00:00+09:00' }]]],
+    });
+    const r = await sendSeminarSurvey(db, null, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: Date.parse('2026-10-03T09:00:00+09:00') });
+    vi.unstubAllGlobals();
+    expect(r).toMatchObject({ sent: true, weekId: '2026-10-04', broadcastIds: ['bc-1'] });
+    const updates = runs.filter((x) => x.sql.startsWith('UPDATE broadcasts'));
+    expect(updates).toHaveLength(1);
+    expect(updates[0].binds[2]).toBe(JSON.stringify({ operator: 'AND', rules: [{ type: 'is_following', value: true }] }));
+  });
+
   it('土曜 9 時台以外は送らない', async () => {
     const { db } = makeScriptedDb({});
     const r = await sendSeminarSurvey(db, null, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: Date.parse('2026-10-03T10:00:00+09:00') });
@@ -296,14 +304,12 @@ describe('日曜 17:00 の告知（TB-821）', () => {
     expect(boxes[0].action!.displayText).toBe('1 メルカリ年商1千万越えアカウントのリアルタイム分析方法');
   });
 
-  it('文面の 1 行は全角 20 字以内', () => {
-    const msgs = [...seminarAnnounceMessages('2026-10-04', [{ starts_at: '2026-10-05T20:00:00+09:00' }, { starts_at: '2026-10-07T20:00:00+09:00' }], 'https://x'), seminarSurveyFlex('2026-10-04', [{ slot_id: 's1', starts_at: '2026-10-04T18:00:00+09:00' }], 'paid'), seminarSurveyFlex('2026-10-04', [], 'free')];
+  it('Flex の本文に手動の改行を入れない（くろさん 2026-09-30）', () => {
+    const msgs = [...seminarAnnounceMessages('2026-10-04', [{ starts_at: '2026-10-05T20:00:00+09:00' }, { starts_at: '2026-10-07T20:00:00+09:00' }], 'https://x'), seminarSurveyFlex('2026-10-04', [{ slot_id: 's1', starts_at: '2026-10-04T18:00:00+09:00' }])];
     const texts: string[] = [];
     const walk = (n: unknown) => { if (Array.isArray(n)) n.forEach(walk); else if (n && typeof n === 'object') { const o = n as Record<string, unknown>; if (o.type === 'text' && typeof o.text === 'string') texts.push(o.text); Object.values(o).forEach(walk); } };
     msgs.forEach((m) => walk(m.contents));
-    const width = (l: string) => [...l].reduce((w, ch) => w + (/[ -~]/.test(ch) ? 0.5 : 1), 0);
-    const over = texts.flatMap((t) => t.split('\n')).filter((l) => width(l) > 20);
-    expect(over).toEqual([]);
+    expect(texts.filter((t) => t.includes('\n'))).toEqual([]);
   });
 
   it('日曜 17 時以外は送らない', async () => {
@@ -373,7 +379,7 @@ describe('聞きたい内容アンケート（TB-821）', () => {
   });
 
   it('「6 その他」を押すと自由記入を促し、1 時間以内の最初の文を控える', async () => {
-    expect(topicReplyText({ status: 'counted', topicId: OTHER_TOPIC_ID })).toContain('そのまま\n送ってください');
+    expect(topicReplyText({ status: 'counted', topicId: OTHER_TOPIC_ID })).toContain('このトークにそのまま送ってください');
     const now = Date.parse('2026-10-04T17:20:00+09:00');
     const fresh = makeScriptedDb({ first: [['FROM furim_seminar_topic_votes', { id: 'v1', voted_at: '2026-10-04T17:05:00.000+09:00' }]] });
     expect(await recordSeminarTopicNote(fresh.db, 'f1', ' 仕入れの基準が知りたい ', now)).toBe(true);
