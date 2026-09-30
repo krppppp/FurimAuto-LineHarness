@@ -163,3 +163,21 @@ board から unblock 要求が来たが、残りは Stripe live の書き込み�
 - **TB-423 を作成**（critical・くろさん宛・10/5 まで）。TB-137 はこれを blocker にして blocked。
   `unblockDescriptor` に他人を owner として書くことは API 側で拒否されるので（agent は自分しか指定できない）、
   子タスクを blocker にする形にした
+
+## 2026-09-30 Stripe 読み取りで確認・done
+
+くろさんがダッシュボードで 2 名を直した（TB-423 は秘書が close）。`~/.config/furimauto/prod.env` に `STRIPE_LIVE_RESTRICTED_KEY` が入っていたので GET のみで確認。
+
+- 修正の形は **subscription schedule（9/26 作成）**: 今期は重複 item のまま（支払い済み）、次期からパッケージのみ（proration none）
+  - 中村航さん: 切替 **10/06 20:00 JST**（D1 の 10/07 は 1 日ずれ）。upcoming 小計 8,980（SNSレビューお礼 −500・外税 848）
+  - あおいさん: 切替 10/13 13:51 JST。upcoming 小計 5,980（外税 598）
+  - 外税 10% は過去の請求と同じ扱い
+- 次期に重複 item は無い → TB-137 は done
+- **残り**: subscription の `metadata.features` が古いまま（スクリプトなら空にしていたが、ダッシュボードの予約変更では残る）。
+  `stripe-processor.ts:196・410` が更新時に metadata の features を D1 と plan_label に書くので、更新後も D1 は古い features のまま。
+  TB-348 の D1 UPDATE を先に打っても更新日に戻る。subscription_price は item 合計から取るので自動で直る
+- metadata を空にするかは **TB-865**（F事業のリーダーの決定・10/06 20:00 まで）に切り出し、TB-348 には保留を依頼
+
+### 次のアクション
+- TB-865 で「空にする」なら、決済・顧客マスター担当が `metadata[features]=` を 2 本（キーに書き込み権限が無ければくろさんがダッシュボードで）。その場合 TB-348 は不要
+- 10/06 20:00 以降、中村航さんの D1 subscription_price が 8,980 になったことを読み取りで確認
