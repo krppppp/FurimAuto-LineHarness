@@ -223,11 +223,15 @@ type LinkEnv = { WORKER_URL?: string; WORKER_PUBLIC_URL?: string };
  * 告知・リマインドのボタンに載せる入口 URL。計測リンク /t/<code> を通してから配信 URL へ飛ばす。
  * base が絶対 URL にならないときは計測を捨てて配信 URL をそのまま返す。相対 URL の入った flex は
  * LINE が弾くため、1 通も届かないまま cron が再送を繰り返す（2026-09-27 の初回告知がこれで 0 件）
+ *
+ * friendId を渡すと &f= を足す。/t/ は f があれば LIFF を通らずに link_clicks.friend_id へ入れるので、
+ * openExternalBrowser=1 で外部ブラウザに出ても誰が押したかが残る（TB-449）。個人 push のときだけ渡す
  */
-export function seminarEntryUrl(base: string, code: string, streamUrl: string): string {
+export function seminarEntryUrl(base: string, code: string, streamUrl: string, friendId?: string | null): string {
   const trimmed = (base ?? '').replace(/\/$/, '');
   if (!/^https:\/\//i.test(trimmed)) return streamUrl;
-  return `${trimmed}/t/${code}?openExternalBrowser=1`;
+  const f = friendId ? `&f=${encodeURIComponent(friendId)}` : '';
+  return `${trimmed}/t/${code}?openExternalBrowser=1${f}`;
 }
 
 async function resolveSeminarLinkBase(db: D1Database, env: LinkEnv): Promise<string> {
@@ -477,51 +481,56 @@ export async function remindSeminarSlots(
 
     const voters = await db
       .prepare(
-        `SELECT f.line_user_id AS line_user_id
+        `SELECT DISTINCT f.id AS friend_id, f.line_user_id AS line_user_id
            FROM furim_seminar_votes v JOIN friends f ON f.id = v.friend_id
           WHERE v.week_id = ? AND v.slot_id = ? AND f.is_following = 1`,
       )
       .bind(weekId, slot.slot_id)
-      .all<{ line_user_id: string }>();
-    const ids = (voters.results ?? []).map((v) => v.line_user_id).filter(Boolean);
-    reminded.push({ slotId: slot.slot_id, recipients: ids.length });
-    if (ids.length === 0 || !lineClient) continue;
+      .all<{ friend_id: string; line_user_id: string }>();
+    const recipients = (voters.results ?? []).filter((v) => v.line_user_id);
+    reminded.push({ slotId: slot.slot_id, recipients: recipients.length });
+    if (recipients.length === 0 || !lineClient) continue;
 
     const linkBase = await resolveSeminarLinkBase(db, env);
     const existing = await db
       .prepare('SELECT id, short_code FROM tracked_links WHERE name = ? ORDER BY created_at DESC LIMIT 1')
       .bind(`seminar_${weekId}`)
       .first<{ id: string; short_code: string | null }>();
-    const entryUrl = existing
-      ? seminarEntryUrl(linkBase, existing.short_code ?? existing.id, week.stream_url)
-      : week.stream_url;
-    const messages = [
-      {
-        type: 'flex',
-        altText: `まもなく ${slotLabel(slot.starts_at)} からセミナーを始めます`,
-        contents: {
-          type: 'bubble',
-          hero: bannerHero(isFirstWeek(weekId) ? ANNOUNCE_BANNER_FIRST : ANNOUNCE_BANNER_WEEKLY),
-          body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: `まもなく ${slotLabel(slot.starts_at)} からセミナーを始めます。下のボタンからご覧いただけます。お待ちしています。`, wrap: true, size: 'md' }] },
-          footer: { type: 'box', layout: 'vertical', contents: [{ type: 'button', style: 'primary', action: { type: 'uri', label: 'セミナーを見る', uri: entryUrl } }] },
+    const streamUrl = week.stream_url;
+    const messagesFor = (friendId: string) => {
+      const entryUrl = existing
+        ? seminarEntryUrl(linkBase, existing.short_code ?? existing.id, streamUrl, friendId)
+        : streamUrl;
+      return [
+        {
+          type: 'flex',
+          altText: `まもなく ${slotLabel(slot.starts_at)} からセミナーを始めます`,
+          contents: {
+            type: 'bubble',
+            hero: bannerHero(isFirstWeek(weekId) ? ANNOUNCE_BANNER_FIRST : ANNOUNCE_BANNER_WEEKLY),
+            body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: `まもなく ${slotLabel(slot.starts_at)} からセミナーを始めます。下のボタンからご覧いただけます。お待ちしています。`, wrap: true, size: 'md' }] },
+            footer: { type: 'box', layout: 'vertical', contents: [{ type: 'button', style: 'primary', action: { type: 'uri', label: 'セミナーを見る', uri: entryUrl } }] },
+          },
         },
-      },
-    ];
-    // 1 通も送れないまま失敗したときは枠取りを戻す。reminded_at を立てたままにすると、
-    // まだ 30 分前の窓の中でも次の tick が拾わず、そのままリマインドが消える
-    let sentAny = false;
-    try {
-      for (let i = 0; i < ids.length; i += 500) {
-        const chunk = ids.slice(i, i + 500);
-        if (lineClient.multicast) await lineClient.multicast(chunk, messages);
-        else for (const id of chunk) await lineClient.pushMessage(id, messages);
-        sentAny = true;
+      ];
+    };
+    // 入口 URL に ?f=<friend_id> を入れるため、multicast をやめて 1 人ずつ push する（TB-449）。
+    // 1 人の失敗（ブロック直後など）で残りを止めない。全員に失敗したときだけ枠取りを戻して投げ直す。
+    // reminded_at を立てたままにすると、まだ 30 分前の窓の中でも次の tick が拾わず、そのままリマインドが消える
+    let sent = 0;
+    let lastErr: unknown = null;
+    for (const r of recipients) {
+      try {
+        await lineClient.pushMessage(r.line_user_id, messagesFor(r.friend_id));
+        sent++;
+      } catch (err) {
+        lastErr = err;
+        console.error('[furim/seminar] reminder push failed', r.friend_id, err);
       }
-    } catch (err) {
-      if (!sentAny) {
-        await db.prepare('UPDATE furim_seminar_slots SET reminded_at = NULL WHERE week_id = ? AND slot_id = ?').bind(weekId, slot.slot_id).run();
-      }
-      throw err;
+    }
+    if (sent === 0 && lastErr) {
+      await db.prepare('UPDATE furim_seminar_slots SET reminded_at = NULL WHERE week_id = ? AND slot_id = ?').bind(weekId, slot.slot_id).run();
+      throw lastErr;
     }
   }
   return { reminded };

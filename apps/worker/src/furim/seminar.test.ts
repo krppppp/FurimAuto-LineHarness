@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { NO_FIT_SLOT_ID, parseSeminarVoteData, pickTopSlots, recordSeminarVote, seminarEntryUrl, seminarSurveyFlex, slotLabel, voteReplyText, weekIdOf } from './seminar.js';
+import { NO_FIT_SLOT_ID, parseSeminarVoteData, pickTopSlots, recordSeminarVote, remindSeminarSlots, seminarEntryUrl, seminarSurveyFlex, slotLabel, voteReplyText, weekIdOf } from './seminar.js';
+
+vi.mock('../lib/link-base-url.js', () => ({ resolveTrackedLinkBaseUrl: async () => 'https://line-harness-prod.furimuato.workers.dev' }));
 
 const NOW = Date.parse('2026-09-27T09:02:00+09:00'); // 日曜 9:02（アンケート送信の窓）
 
@@ -144,5 +146,75 @@ describe('入口 URL（Capsec #332）', () => {
 
   it('base が空なら計測を捨てて配信 URL をそのまま使う（相対 URL は LINE が弾く）', () => {
     expect(seminarEntryUrl('', 'abc123', stream)).toBe(stream);
+  });
+
+  it('friendId を渡すと &f= を足す（TB-449）', () => {
+    expect(seminarEntryUrl('https://line-harness-prod.furimuato.workers.dev', 'abc123', stream, 'fr-1'))
+      .toBe('https://line-harness-prod.furimuato.workers.dev/t/abc123?openExternalBrowser=1&f=fr-1');
+    expect(seminarEntryUrl('', 'abc123', stream, 'fr-1')).toBe(stream);
+  });
+});
+
+describe('30 分前リマインド（TB-449）', () => {
+  const REMIND_NOW = Date.parse('2026-10-04T19:35:00+09:00');
+  const voters = [
+    { friend_id: 'fr-1', line_user_id: 'U1' },
+    { friend_id: 'fr-2', line_user_id: 'U2' },
+  ];
+
+  function makeReminderDb() {
+    const runs: Array<{ sql: string; binds: unknown[] }> = [];
+    const db = {
+      prepare(sql: string) {
+        const stmt = {
+          binds: [] as unknown[],
+          bind(...b: unknown[]) { stmt.binds = b; return stmt; },
+          async first() {
+            if (sql.includes('FROM furim_seminar_weeks')) return { week_id: '2026-10-04', stream_url: 'https://www.youtube.com/@FurimAuto/live', survey_sent_at: null };
+            if (sql.includes('FROM tracked_links')) return { id: 'link-1', short_code: 'abc123' };
+            return null;
+          },
+          async all() {
+            if (sql.includes('FROM furim_seminar_slots')) return { results: [{ slot_id: 's3', starts_at: '2026-10-04T20:00:00+09:00' }] };
+            if (sql.includes('FROM furim_seminar_votes')) return { results: voters };
+            return { results: [] };
+          },
+          async run() { runs.push({ sql, binds: stmt.binds }); return { meta: { changes: 1 } }; },
+        };
+        return stmt;
+      },
+    };
+    return { db: db as unknown as D1Database, runs };
+  }
+
+  const uriOf = (messages: unknown[]) =>
+    (messages[0] as { contents: { footer: { contents: Array<{ action: { uri: string } }> } } }).contents.footer.contents[0].action.uri;
+
+  it('multicast を使わず 1 人ずつ push し、入口 URL にその人の friend_id を載せる', async () => {
+    const { db } = makeReminderDb();
+    const pushMessage = vi.fn().mockResolvedValue(undefined);
+    const multicast = vi.fn();
+    const r = await remindSeminarSlots(db, { pushMessage, multicast }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW });
+    expect(r.reminded).toEqual([{ slotId: 's3', recipients: 2 }]);
+    expect(multicast).not.toHaveBeenCalled();
+    expect(pushMessage).toHaveBeenCalledTimes(2);
+    expect(pushMessage.mock.calls[0][0]).toBe('U1');
+    expect(uriOf(pushMessage.mock.calls[0][1])).toBe('https://line-harness-prod.furimuato.workers.dev/t/abc123?openExternalBrowser=1&f=fr-1');
+    expect(uriOf(pushMessage.mock.calls[1][1])).toBe('https://line-harness-prod.furimuato.workers.dev/t/abc123?openExternalBrowser=1&f=fr-2');
+  });
+
+  it('1 人の失敗で残りを止めない。枠取りは戻さない', async () => {
+    const { db, runs } = makeReminderDb();
+    const pushMessage = vi.fn().mockRejectedValueOnce(new Error('blocked')).mockResolvedValue(undefined);
+    await remindSeminarSlots(db, { pushMessage }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW });
+    expect(pushMessage).toHaveBeenCalledTimes(2);
+    expect(runs.some((x) => x.sql.includes('reminded_at = NULL'))).toBe(false);
+  });
+
+  it('全員に失敗したら枠取りを戻して投げ直す（次の tick で再送できるように）', async () => {
+    const { db, runs } = makeReminderDb();
+    const pushMessage = vi.fn().mockRejectedValue(new Error('LINE down'));
+    await expect(remindSeminarSlots(db, { pushMessage }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW })).rejects.toThrow('LINE down');
+    expect(runs.some((x) => x.sql.includes('reminded_at = NULL'))).toBe(true);
   });
 });
