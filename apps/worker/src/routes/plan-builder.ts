@@ -1345,6 +1345,12 @@ if (checkoutBtnEl) checkoutBtnEl.addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = changeMode ? '変更内容を確認中…' : '申し込み内容を送信中…';
   err.textContent = '';
+  if (!lineUserId) {
+    err.textContent = 'LINEのログインを確認できませんでした。お手数ですが、スマートフォンのLINEアプリからもう一度開いてお申し込みください。';
+    btn.disabled = false;
+    btn.textContent = applyLabel();
+    return;
+  }
   try {
     const payload = { ...selectionPayload(), lineUserId };
     const res = await fetch('/plan-builder/intent', {
@@ -1354,6 +1360,14 @@ if (checkoutBtnEl) checkoutBtnEl.addEventListener('click', async () => {
     });
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'intent failed');
+    const inClient = typeof liff !== 'undefined' && liff.isInClient && liff.isInClient();
+    if (data.change && !inClient) {
+      // 下の直接Checkoutは新規サブスクを作るため、既存契約者がLINE外で押すと二重契約になる
+      err.textContent = 'プラン変更はスマートフォンのLINEアプリから開いて操作してください。';
+      btn.disabled = false;
+      btn.textContent = applyLabel();
+      return;
+    }
     if (data.change) {
       // プラン変更: 実行前に支払い内容を確認してもらう
       // アップグレード=日割り差額を即時決済（Stripe算出の確定額） / ダウングレード=決済なし・次回更新日切替
@@ -1372,7 +1386,7 @@ if (checkoutBtnEl) checkoutBtnEl.addEventListener('click', async () => {
         return;
       }
     }
-    if (typeof liff !== 'undefined' && liff.isInClient && liff.isInClient()) {
+    if (inClient) {
       // 選択内容をユーザーのメッセージとしてトークに送信 → Botが決済リンクを返す
       await liff.sendMessages([{ type: 'text', text: data.message }]);
       liff.closeWindow();
@@ -1437,6 +1451,11 @@ function hidePbLoading() {
         lineUserId = profile.userId;
         showCouponBanner();
         await loadCurrentPlan(); // 既存契約者は現構成で初期化（プラン変更モード）
+      } else {
+        // PC版LINEなどからLINE外のブラウザで開くと未ログインのまま lineUserId が取れず、
+        // 申し込みが intent の 400（lineUserId required）で必ず失敗していた（2026-10-02 Dりょうすけさん・TB-948）
+        liff.login({ redirectUri: window.location.href });
+        return;
       }
     } catch (e) { console.log('liff init skipped:', e); }
   }
