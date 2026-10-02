@@ -27,7 +27,6 @@ import { sendBookingNotification } from './services/booking-notifier.js';
 import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
 import { authMiddleware } from './middleware/auth.js';
 import { setFirebaseAuthToken } from './furim/firebase-client.js';
-import { setGasSharedSecret } from './furim/gas-client.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
@@ -79,7 +78,6 @@ import { messagesRoute } from './routes/messages.js';
 import { processKaisetsuDeliveries } from './services/kaisetsu-delivery.js';
 import { syncSegments } from './services/segment-sync.js';
 import { sweepPendingStripeEvents } from './services/stripe-processor.js';
-import { sweepGasRetryJobs } from './furim/gas-retry-queue.js';
 import { watchPlanChangeIntents } from './furim/plan-change-watch.js';
 import { forms } from './routes/forms.js';
 import { adPlatforms } from './routes/ad-platforms.js';
@@ -150,8 +148,6 @@ export type Env = {
     WORKER_PUBLIC_URL?: string;
     ADMIN_PUBLIC_URL?: string;
     LIFF_PUBLIC_URL?: string;
-    GAS_DEPLOY_ID?: string;
-    GAS_SHARED_SECRET?: string;
     // アンバサダー紹介offer の id（環境ごとに別値）。ref がこの offer の affiliate_link
     // なら紹介URL経由の紹介成立処理を走らせる。未設定なら URL経由紹介は静かに無効。
     FURIM_AMBASSADOR_OFFER_ID?: string;
@@ -216,7 +212,6 @@ app.use('*', authMiddleware);
 // Firebase RTDB auth — ルール非公開のためRESTに?auth=が必要
 app.use('*', async (c, next) => {
   setFirebaseAuthToken(c.env.FIREBASE_DB_SECRET);
-  setGasSharedSecret(c.env.GAS_SHARED_SECRET);
   await next();
 });
 
@@ -991,23 +986,13 @@ async function scheduled(
   ctx: ExecutionContext,
 ): Promise<void> {
   setFirebaseAuthToken(env.FIREBASE_DB_SECRET);
-  setGasSharedSecret(env.GAS_SHARED_SECRET);
   // FurimAuto: 毎時0分のセグメント判定・シナリオ切替は syncSegments（D1 算出）が担う。
   // 旧 GAS sendStepMessages の POST は段階2.5（Capsec #250）で廃止
-
-  // GASキープウォーム: 5分ごとの軽量ping（シート非接触・doGetで即return）。
-  // 低頻度時間帯のコールドスタート緩和（キーコード発行等の体感遅延・無応答対策）
-  if (env.GAS_DEPLOY_ID) {
-    ctx.waitUntil(
-      fetch(`https://script.google.com/macros/s/${env.GAS_DEPLOY_ID}/exec?method=ping`, { redirect: 'follow' })
-        .catch((err) => console.error('[cron] GAS ping error:', err)),
-    );
-  }
 
   // アンバサダー紹介URLの再試行（毎回）: 友だち追加時の processReferral が、被紹介者の
   // GASマスター登録(CF eventFollow)より先に走って保留になったケースを catch-up で成立させる。
   // タイミング非依存で確実に紹介成立させるための機構（冪等・silent）。
-  if (env.GAS_DEPLOY_ID && env.FURIM_AMBASSADOR_OFFER_ID) {
+  if (env.FURIM_AMBASSADOR_OFFER_ID) {
     ctx.waitUntil(
       import('./furim/keyword-actions.js')
         .then(({ retryPendingAmbassadorReferrals }) => retryPendingAmbassadorReferrals(env, env.DB))
@@ -1022,16 +1007,6 @@ async function scheduled(
       .then(({ retryMissedAdConversions }) => retryMissedAdConversions(env.DB))
       .catch((err) => console.error('[cron] ad-conversion retry error:', err)),
   );
-
-  // GASシート認可ヘルスチェック: 毎時30分にシート読み取りを実叩きし、
-  // 認可失効（7日周期事故の再発）を顧客報告より先に検知してスタッフへWeb Push
-  if (isJstMinuteWindow(event.scheduledTime, 30)) {
-    ctx.waitUntil(
-      import('./services/gas-health.js')
-        .then(({ checkGasSheetAuth }) => checkGasSheetAuth(env.DB, env))
-        .catch((err) => console.error('[cron] gas-health error:', err)),
-    );
-  }
 
   // LIFF ID 取り違え検知: 案内先(env.LIFF_URL)とフロントに焼かれたIDの突き合わせ。
   // 比較のみで外部通信は無いので毎tick走らせ、通知だけ毎時15分に絞る
@@ -1126,10 +1101,6 @@ async function scheduled(
   // pendingのまま滞留したstripe_eventsの再処理（052/054のdurable設計の消費側。
   // 未配線のままpendingが永久放置される事故が2026-08-01〜05に8件発生した対策）
   jobs.push(sweepPendingStripeEvents(env.DB, env));
-  // GAS呼び出しの再実行キュー（migration 059）。キーコードリセット等がインラインで
-  // 完遂できなかった場合にここが完遂させ、完了をユーザーへpushする
-  // （2026-08-13 GASフェッチのハング対策。積み側は keyword-actions）
-  jobs.push(sweepGasRetryJobs(env.DB, defaultLineClient, env));
   // プラン変更（PB-…）の未反映検知: LINE でコード送信済みなのに 30分経っても used_at が無い、
   // または used なのに Stripe に反映が無いものを1回だけ通知する（Capsec #240）
   jobs.push(watchPlanChangeIntents(env.DB, defaultLineClient, env));
@@ -1139,16 +1110,6 @@ async function scheduled(
     import('./furim/patrol-watch.js')
       .then(({ watchPatrolHeartbeat }) => watchPatrolHeartbeat(env.DB, defaultLineClient))
       .catch((err) => console.error('[cron] patrol-watch error:', err)),
-  );
-  // 顧客マスター（シート）⇄ D1 furim_customers の差分検知（Capsec #243）。
-  // 内部で JST :15/:45 の tick だけ動き、30分以上続くズレをスタッフへ1回だけ通知する
-  jobs.push(
-    import('./furim/customer-sync.js')
-      .then(async ({ reconcileFurimCustomers, recordReconcileCompleted }) => {
-        const r = await reconcileFurimCustomers(env.DB, defaultLineClient, env, { now: event.scheduledTime });
-        if (!r.skipped && env.GAS_DEPLOY_ID && env.FURIM_EXT_CACHE) await recordReconcileCompleted(env.FURIM_EXT_CACHE, Date.now());
-      })
-      .catch((err) => console.error('[cron] furim customer-sync error:', err)),
   );
   // 週1セミナーの日程アンケート（Capsec #331 → TB-821）。土曜 9:00 JST に翌日曜からの週ぶんを有料/未課金の2種で送る。
   // 曜日・時刻の判定と二重送信の枠取りは sendSeminarSurvey の中で行う（日曜 9:00 にはもう送らない）
@@ -1205,14 +1166,6 @@ async function scheduled(
       })
       .catch((err) => console.error('[cron] seminar topic report error:', err)),
   );
-  if (event.cron !== '0 */6 * * *' && env.FURIM_EXT_CACHE) {
-    const kv = env.FURIM_EXT_CACHE;
-    jobs.push(
-      import('./furim/customer-sync.js')
-        .then(({ checkReconcileStall }) => checkReconcileStall(kv, env.DB, defaultLineClient, env, event.scheduledTime))
-        .catch((err) => console.error('[cron] furim customer-sync stall check error:', err)),
-    );
-  }
 
   await Promise.allSettled(jobs);
 
@@ -1260,21 +1213,6 @@ async function scheduled(
       );
     } catch (e) {
       console.error('event-booking-expirer error:', e);
-    }
-  }
-
-  // シート「自動化処理履歴」→ D1 furim_execution_logs の差分取り込み（Capsec #296）— 6h cron tick。
-  // 拡張 4.3.0 以前の会員はまだシートに実行ログを送っているので、D1 だけで件数を数えられるように写す。
-  // 取り込み済みの最新からさかのぼるので、止まっていた間の抜けも次の回で埋まる。
-  // 旧経路の会員が 0 人になったら内部で何もしない（移行が終わったら自然に止まる）。デプロイは権限管理課
-  if (event.cron === '0 */6 * * *' && env.GAS_DEPLOY_ID) {
-    try {
-      const { syncExecutionLogsFromSheet, recordSheetSyncHeartbeat } = await import('./furim/sheet-execution-sync.js');
-      const result = await syncExecutionLogsFromSheet(env.DB, env.GAS_DEPLOY_ID, { dryRun: false });
-      console.log('[sheet-execution-sync]', JSON.stringify(result));
-      await recordSheetSyncHeartbeat(env.DB, result);
-    } catch (e) {
-      console.error('sheet-execution-sync error:', e);
     }
   }
 

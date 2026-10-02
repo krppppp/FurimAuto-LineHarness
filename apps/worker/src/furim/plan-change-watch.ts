@@ -15,7 +15,7 @@ const STAFF_LINE_USER_ID = 'U5d35c3e6b2be0a6ec699b2a1de2aba93';
 const GRACE_MINUTES = 30;
 const LOOKBACK_DAYS = 3;
 
-export type PlanChangeWatchEnv = PushEnv & { STRIPE_SECRET_KEY?: string; GAS_DEPLOY_ID?: string };
+export type PlanChangeWatchEnv = PushEnv & { STRIPE_SECRET_KEY?: string };
 
 type IntentRow = {
   id: string;

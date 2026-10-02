@@ -1,5 +1,4 @@
 import { extractFlexAltText } from '../utils/flex-alt-text.js';
-import { FRIEND_TRIAL_DAYS } from '../furim/customer-store.js';
 
 /**
  * イベントバス — システム内イベントの発火と処理
@@ -51,27 +50,11 @@ export interface EventPayload {
 
 export interface ActionEnv {
   lineAccessToken?: string;
-  gasDeployId?: string;
   stripeSecretKey?: string;
   lineAccountId?: string | null;
   richMenuMemberHome?: string;
   richMenuDefaultHome?: string;
 }
-
-// call_gas_post の失敗時に gas_retry_jobs キューへ退避してよい書き込み系メソッドと、
-// キュー実行前の「実行済みチェック」（gas-retry-queue.ts の DONE_CHECKS キー）。
-// GAS側はWorkerがタイムアウトで見切っても実行を完走することがあるため、非冪等な
-// メソッドは再実行前に効果の有無を必ず確認する。リスト外のメソッドは従来どおり
-// throw して stripe_events sweep（イベント丸ごと再実行）に委ねる
-const GAS_QUEUE_METHODS: Record<string, { doneCheck: string | null }> = {
-  setCustomerData: { doneCheck: 'customerRowExists' },
-  setSubscriptionData: { doneCheck: 'subscriptionRecorded' },
-  // setKeyCode はGAS側の接頭語一致ガード（同一プランなら再発行しない）が冪等性を担保する
-  setKeyCode: { doneCheck: null },
-  setTransactionData: { doneCheck: 'transactionRecorded' },
-  deleteSubscription: { doneCheck: 'subscriptionDeleted' },
-  setTicketTransaction: { doneCheck: 'ticketTransactionRecorded' },
-};
 
 /**
  * Fire an event and run all registered handlers.
@@ -379,61 +362,6 @@ function matchConditions(
   return true;
 }
 
-/** GAS引数のテンプレート変数展開 */
-async function resolveGasArgs(
-  db: D1Database,
-  args: Record<string, unknown>,
-  friendId: string | undefined,
-  payload: EventPayload,
-): Promise<Record<string, unknown>> {
-  const friend = friendId
-    ? await db
-        .prepare('SELECT id, line_user_id, display_name, metadata FROM friends WHERE id = ?')
-        .bind(friendId)
-        .first<{ id: string; line_user_id: string; display_name: string | null; metadata: string }>()
-    : null;
-  const nowJst = new Date(Date.now() + 9 * 60 * 60_000);
-  // 無料試用は14日（2026-08-27 くろさん決定で7日→14日化。既存登録者は7日のまま）
-  const trialEndJst = new Date(nowJst.getTime() + FRIEND_TRIAL_DAYS * 24 * 60 * 60_000);
-  const fmtJst = (d: Date) => d.toISOString().replace('T', ' ').slice(0, 19);
-  // {{key_code}}: furim_customers.key_code（友だち追加時に Worker が生成した試用キーコード。Capsec #243）。
-  // 使う automation（setCustomerData）だけのために引く
-  let keyCode = '';
-  const needsKeyCode = Object.values(args).some((v) => typeof v === 'string' && v.includes('{{key_code}}'));
-  if (friend && needsKeyCode) {
-    const kc = await db
-      .prepare('SELECT key_code FROM furim_customers WHERE line_user_id = ?')
-      .bind(friend.line_user_id)
-      .first<{ key_code: string | null }>();
-    keyCode = kc?.key_code ?? '';
-  }
-  const resolved: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(args)) {
-    if (typeof v === 'string') {
-      const meta = friend ? (JSON.parse(friend.metadata || '{}') as Record<string, string>) : {};
-      let s = v;
-      if (friend) {
-        s = s
-          .replace('{{friend_id}}', friend.id)
-          .replace('{{line_user_id}}', friend.line_user_id)
-          .replace('{{display_name}}', friend.display_name ?? '')
-          .replace('{{stripe_customer_id}}', meta.stripeCustomerId ?? '')
-          .replace('{{now_jst}}', fmtJst(nowJst))
-          .replace('{{trial_end_jst}}', fmtJst(trialEndJst))
-          .replace('{{key_code}}', keyCode);
-      }
-      // {{eventData.KEY}} — payload.eventData から動的展開
-      s = s.replace(/\{\{eventData\.([^}]+)\}\}/g, (_m, key: string) =>
-        String(payload.eventData?.[key] ?? ''),
-      );
-      resolved[k] = s;
-    } else {
-      resolved[k] = v;
-    }
-  }
-  return resolved;
-}
-
 /** アクション実行 */
 async function executeAction(
   db: D1Database,
@@ -445,7 +373,7 @@ async function executeAction(
 ): Promise<void> {
   const lineAccessToken = env.lineAccessToken;
   const friendId = payload.friendId;
-  const noFriendActions = ['send_webhook', 'code_managed'];
+  const noFriendActions = ['send_webhook', 'code_managed', 'call_gas', 'call_gas_post', 'call_gas_get'];
   if (!friendId && !noFriendActions.includes(action.type)) {
     throw new Error('friendId is required for this action');
   }
@@ -597,102 +525,10 @@ async function executeAction(
     }
 
     case 'call_gas':
-    case 'call_gas_post': {
-      const gasDeployId = env.gasDeployId;
-      if (!gasDeployId) break;
-      const { gasPost, getGasErrorFromResponse } = await import('../furim/gas-client.js');
-      const method = action.params.method as string;
-      const args = (action.params.args ?? {}) as Record<string, unknown>;
-      const resolvedArgs = await resolveGasArgs(db, args, friendId, payload);
-      let response: unknown;
-      try {
-        response = await gasPost(gasDeployId, { method, ...resolvedArgs });
-        // GASはHTTP 200のまま失敗を返すことがある（{success:false} / HTMLエラーページ）。
-        // 成功扱いで無言ロストしないよう、応答本文の失敗も例外に揃える
-        const failure = getGasErrorFromResponse(response);
-        if (failure) throw new Error(`${method}: ${failure}`);
-      } catch (err) {
-        // GAS_QUEUE_METHODS の書き込み系は失敗を落とせない。再実行キューに積み、cronが
-        // doneCheck（実行前の実行済み確認）つきで完遂させる。
-        // GAS側はWorkerが見切っても完走することがあるため、盲目リトライは重複書き込みを生む
-        // （2026-08-14 よっしーさん3重行）。doneCheckつきのキュー退避だけが安全な再実行手段。
-        // これによりイベント本体は1パスで完走し、sweepのイベント丸ごと再実行を発生させない
-        const queueSpec = GAS_QUEUE_METHODS[method];
-        if (queueSpec && friendId) {
-          const friend = await db
-            .prepare('SELECT line_user_id FROM friends WHERE id = ?')
-            .bind(friendId)
-            .first<{ line_user_id: string }>();
-          if (friend) {
-            const { enqueueGasRetryJob } = await import('../furim/gas-retry-queue.js');
-            await enqueueGasRetryJob(db, {
-              lineUserId: friend.line_user_id,
-              method,
-              params: resolvedArgs as Record<string, unknown>,
-              callType: 'post',
-              doneCheck: queueSpec.doneCheck,
-              // 同一ユーザーの別イベント分（別インボイス等）を落とさないようイベントIDで一意化
-              dedupeKey: payload.idempotencyKey ? `${method}:${payload.idempotencyKey}` : undefined,
-              maxAttempts: 20,
-            });
-            console.warn(`[event-bus] ${method} 失敗→再実行キューに退避 friendId=${friendId}: ${String(err)}`);
-            // 退避時はresponseが無いため後続のcaptureはスキップされる（stripe系automationはcapture未使用）
-            break;
-          }
-        }
-        throw err;
-      }
-      // GAS 応答にキーコードが載っていれば D1 furim_customers に取り込む（Capsec #243:
-      // setCustomerData / setKeyCode の発行結果を D1 と揃える）
-      if (friendId && response && typeof response === 'object' && 'keyCode' in (response as Record<string, unknown>)) {
-        const kcFriend = await db
-          .prepare('SELECT line_user_id FROM friends WHERE id = ?')
-          .bind(friendId)
-          .first<{ line_user_id: string }>();
-        const { absorbGasKeyCode } = await import('../furim/customer-store.js');
-        await absorbGasKeyCode(db, kcFriend?.line_user_id, response);
-        // 旧プラン（プラン一覧ベース）の setCustomerData / setKeyCode は機能フラグ列をシートにしか書かない。
-        // 拡張の認証は D1 furim_feature_flags を読む（Capsec #245）ので、直後に 1 行取り込んで 30 分待たせない
-        if (method === 'setCustomerData' || method === 'setKeyCode') {
-          const { pullFeatureFlagsFromSheet } = await import('../furim/customer-sync.js');
-          await pullFeatureFlagsFromSheet(db, gasDeployId, kcFriend?.line_user_id);
-        }
-      }
-      // capture: { eventDataキー: GAS応答フィールド } — 後続stepの {{eventData.KEY}} で参照できる
-      const capture = action.params.capture as Record<string, string> | undefined;
-      if (capture && response && typeof response === 'object') {
-        if (!payload.eventData) payload.eventData = {};
-        for (const [evKey, respField] of Object.entries(capture)) {
-          payload.eventData[evKey] = (response as Record<string, unknown>)[respField];
-        }
-      }
-      break;
-    }
-
+    case 'call_gas_post':
     case 'call_gas_get': {
-      const gasDeployId = env.gasDeployId;
-      if (!gasDeployId) break;
-      const { gasGet } = await import('../furim/gas-client.js');
-      const method = action.params.method as string;
-      const args = (action.params.args ?? {}) as Record<string, unknown>;
-      const setVariable = action.params.set_variable as string;
-      const responseField = action.params.response_field as string | undefined;
-      const operator = (action.params.operator as string | undefined) ?? 'truthy';
-      const compareValue = action.params.compare_value as string | undefined;
-      const resolvedArgs = await resolveGasArgs(db, args, friendId, payload);
-      const response = await gasGet(gasDeployId, { method, ...resolvedArgs }) as Record<string, unknown>;
-      const fieldValue = responseField ? response[responseField] : response;
-      let result: boolean;
-      switch (operator) {
-        case 'not_empty': result = !!fieldValue && fieldValue !== ''; break;
-        case 'empty':     result = !fieldValue || fieldValue === ''; break;
-        case 'equals':    result = String(fieldValue) === compareValue; break;
-        case 'not_equals':result = String(fieldValue) !== compareValue; break;
-        case 'falsy':     result = !fieldValue; break;
-        default:          result = !!fieldValue; break;
-      }
-      if (!payload.eventData) payload.eventData = {};
-      payload.eventData[setVariable] = result;
+      // 顧客管理の GAS とスプレッドシートは廃止（TB-940）。本番データに残っているアクションは何もせず通す
+      console.log(`[event-bus] ${action.type} は廃止のため実行しない method=${String(action.params.method ?? '')}`);
       break;
     }
 

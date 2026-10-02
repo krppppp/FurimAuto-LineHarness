@@ -1,7 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('./gas-client.js', () => ({ gasGet: vi.fn(), gasPost: vi.fn(), getGasErrorFromResponse: () => null }));
-
 const { grantTrialPromo, TRIAL_PROMOS, trialPromoIdForKeyCode } = await import('./trial-promo.js');
 
 type Write = { sql: string; args: unknown[] };

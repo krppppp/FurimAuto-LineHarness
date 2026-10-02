@@ -3,12 +3,6 @@ import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest';
 // closing_daily の発火だけ観測したいので event-bus をモックする
 const fireEventMock = vi.fn();
 vi.mock('./event-bus.js', () => ({ fireEvent: fireEventMock }));
-// GAS 同期はテスト対象外（gasDeployId を渡さなければ呼ばれない）
-vi.mock('../furim/gas-client.js', () => ({
-  gasGet: vi.fn(),
-  getGasErrorFromResponse: vi.fn(() => null),
-}));
-
 const { processKaisetsuDeliveries } = await import('./kaisetsu-delivery.js');
 
 interface FriendRow {

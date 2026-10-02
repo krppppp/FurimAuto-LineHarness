@@ -428,7 +428,7 @@ async function maybeProcessAmbassadorReferral(
       withOutgoingLog(new LineClient(token), db, friend.id),
       lineUserId,
       ambAff.code,
-      { GAS_DEPLOY_ID: c.env.GAS_DEPLOY_ID ?? '', STRIPE_SECRET_KEY: c.env.STRIPE_SECRET_KEY, DB: db },
+      { STRIPE_SECRET_KEY: c.env.STRIPE_SECRET_KEY, DB: db },
       db,
       { refCode: ref },
     );

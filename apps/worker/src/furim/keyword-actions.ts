@@ -1,8 +1,7 @@
 import type { LineClient } from '@line-crm/line-sdk';
-import { buildKeycodeResetMessages, fetchCurrentKeyCode } from './gas-retry-queue.js';
+import { buildKeycodeResetMessages, fetchCurrentKeyCode } from './keycode-reset.js';
 import { copyTicketFlexMessage } from './messages.js';
 import { upsertFurimCustomer, resolveStripeCustomerId, extendSubscriptionEnd, getFurimCustomer } from './customer-store.js';
-import { mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
 import { invalidateExtCache, type ExtCache } from './ext-auth.js';
 import { applyTrialCampaign, buildLegacyCheckoutUrl } from './legacy-keywords.js';
 import { isPaidPlan } from './ticket-checkout.js';
@@ -62,7 +61,6 @@ async function resolveAmbassadorCouponName(ambassadorCode: string, env: KeywordA
 }
 
 export type KeywordActionsEnv = {
-  GAS_DEPLOY_ID: string;
   STRIPE_SECRET_KEY?: string;
   DB?: D1Database;
   FURIM_EXT_CACHE?: ExtCache;
@@ -83,7 +81,7 @@ export async function handleKeywordAction(
   // 30 字以下・バグ報告のひな形以外に限る（isKeycodeResetRequest・Capsec #298）
   if (isKeycodeResetRequest(rawText)) {
     // 段階2.5（Capsec #250）: リセットの実体（端末判定文字列のクリア）は D1 furim_customers で完結し、GAS は待たない。
-    // 拡張の認証は D1（KV は 60 秒の写しなので消す）。シートへは返信後に setCustomerFields で鏡写し（旧拡張は GAS 経路で読む）
+    // 拡張の認証は D1（KV は 60 秒の写しなので消す）
     console.log('[furim] キーコードリセット: D1 で端末判定を解除', lineUserId);
     const current = db ? await getFurimCustomer(db, lineUserId) : null;
     if (db) {
@@ -95,7 +93,7 @@ export async function handleKeywordAction(
     // キーコードが取れなくてもリセット完了の案内は返す（メニュー誘導にフォールバック）
     const keyCode = await fetchCurrentKeyCode(db, lineUserId);
     const doneMessages = buildKeycodeResetMessages(keyCode) as never[];
-    // GAS側のリセットは完了済みなので、返信は何があっても届けきる。
+    // D1 のリセットは完了済みなので、返信は何があっても届けきる。
     // replyMessageが落ちると呼び出し元のcatchでエラー文言に化け、実際にはリセット済みなのに
     // 「失敗した」と伝わってしまう（2026-08-12 小笠さん事象では reply・エラー通知とも届かず無反応だった）
     try {
@@ -106,8 +104,6 @@ export async function handleKeywordAction(
       await lineClient.pushMessage(lineUserId, doneMessages);
       console.log('[furim] キーコードリセット: push再送完了', lineUserId);
     }
-    // シートの端末判定文字列を空に（旧拡張の GAS getKeyCodeSet が読む列。失敗は再実行キューが完遂させる）
-    if (db) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { '端末判定文字列': '' });
     return true;
   }
 
@@ -145,7 +141,7 @@ export async function handleKeywordAction(
   if (text.includes('無料お試し1週間')) {
     const match = text.match(/無料お試し1週間(\d{8})/);
     const expiryDate = match ? match[1] : null;
-    // 段階4（Capsec #246）: 旧 GAS setKeyCodeExpiry の移植。D1 に先に書き、シートへは setCustomerFields で鏡写し
+    // 段階4（Capsec #246）: 旧 GAS setKeyCodeExpiry の移植
     const data = db ? await applyTrialCampaign(db, env.FURIM_EXT_CACHE, lineUserId, expiryDate) : ({ success: false, message: 'D1 なし' } as const);
     if (data.success) {
       await lineClient.replyMessage(replyToken, [
@@ -159,7 +155,6 @@ export async function handleKeywordAction(
     } else {
       await lineClient.replyMessage(replyToken, [{ type: 'text', text: `申し訳ございません。\nこのキャンペーンを既にご利用いただいているか、\nすでに終了いたしました。` } as never]);
     }
-    if (db && data.success) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, data.mirror, data.flags ?? undefined);
     return true;
   }
 
@@ -295,12 +290,9 @@ export async function processReferral(
     body: new URLSearchParams({ coupon: introducedCouponID, 'metadata[ambassadorStripeID]': ambassadorStripeID ?? '', 'metadata[isIntroduced]': 'true', 'metadata[isFirstSubscription]': 'true' }).toString(),
   });
 
-  // 無料試用 +7 日: D1 の期限を延ばし、シート（段階3 まで拡張が読む）へ鏡写し
+  // 無料試用 +7 日: D1 の期限を延ばす
   try {
-    const newEnd = await extendSubscriptionEnd(targetDb, introducedLineUserId, 7);
-    if (newEnd && env.GAS_DEPLOY_ID) {
-      await mirrorCustomerFieldsToGas(targetDb, env.GAS_DEPLOY_ID, introducedLineUserId, { 'サブスク終了日時': newEnd });
-    }
+    await extendSubscriptionEnd(targetDb, introducedLineUserId, 7);
   } catch (e) {
     console.error('[furim] processReferral: 期限延長に失敗', introducedLineUserId, e);
   }
@@ -394,7 +386,7 @@ export async function processReferral(
  * 保留以外の終端（対象外/無効/自己紹介）は metadata.ambReferralDone=1 でマークし再試行を止める。
  */
 export async function retryPendingAmbassadorReferrals(
-  env: { GAS_DEPLOY_ID?: string; STRIPE_SECRET_KEY?: string; DB?: D1Database; FURIM_AMBASSADOR_OFFER_ID?: string; LINE_CHANNEL_ACCESS_TOKEN: string },
+  env: { STRIPE_SECRET_KEY?: string; DB?: D1Database; FURIM_AMBASSADOR_OFFER_ID?: string; LINE_CHANNEL_ACCESS_TOKEN: string },
   db: D1Database,
 ): Promise<void> {
   if (!env.FURIM_AMBASSADOR_OFFER_ID) return;

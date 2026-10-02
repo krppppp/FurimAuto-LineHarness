@@ -112,8 +112,8 @@ furimCoupons.get('/api/furim/coupons', async (c) => {
 /** 友だちのサブスク discount スタック + 通知予約状況 */
 furimCoupons.get('/api/furim/friends/:id/coupon', async (c) => {
   try {
-    if (!c.env.STRIPE_SECRET_KEY || !c.env.GAS_DEPLOY_ID) {
-      return c.json({ success: false, error: 'Stripe/GAS not configured' }, 503);
+    if (!c.env.STRIPE_SECRET_KEY) {
+      return c.json({ success: false, error: 'Stripe not configured' }, 503);
     }
     const friend = await getFriendById(c.env.DB, c.req.param('id'));
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
@@ -143,8 +143,8 @@ furimCoupons.get('/api/furim/friends/:id/coupon', async (c) => {
 /** クーポンをサブスクへスタック付与 + 3分後のLINE通知を予約 */
 furimCoupons.post('/api/furim/friends/:id/coupon', async (c) => {
   try {
-    if (!c.env.STRIPE_SECRET_KEY || !c.env.GAS_DEPLOY_ID) {
-      return c.json({ success: false, error: 'Stripe/GAS not configured' }, 503);
+    if (!c.env.STRIPE_SECRET_KEY) {
+      return c.json({ success: false, error: 'Stripe not configured' }, 503);
     }
     const body = await c.req.json<{ couponId?: string; message?: string }>();
     if (!body.couponId || !body.message?.trim()) {
@@ -226,8 +226,8 @@ furimCoupons.post('/api/furim/friends/:id/coupon', async (c) => {
 /** 指定クーポンをスタックから除去 + 通知予約キャンセル */
 furimCoupons.delete('/api/furim/friends/:id/coupon', async (c) => {
   try {
-    if (!c.env.STRIPE_SECRET_KEY || !c.env.GAS_DEPLOY_ID) {
-      return c.json({ success: false, error: 'Stripe/GAS not configured' }, 503);
+    if (!c.env.STRIPE_SECRET_KEY) {
+      return c.json({ success: false, error: 'Stripe not configured' }, 503);
     }
     const couponId = c.req.query('couponId') ?? '';
     if (!couponId) return c.json({ success: false, error: 'couponId is required' }, 400);

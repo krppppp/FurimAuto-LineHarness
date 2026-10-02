@@ -1,10 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // 段階2.5（Capsec #250）: LINE 起点の残り（アンケート・Free30・在庫管理シート・無料開放・Furimanクーポン・解説見た・Meet予約）は
-// D1 で完結し、GAS へは setCustomerFields の鏡写しだけを送る。gasGet / gasPost を差し替えて経路を確認する
-const gasGet = vi.fn();
-const gasPost = vi.fn();
-vi.mock('./gas-client.js', () => ({ gasGet, gasPost, getGasErrorFromResponse: () => null }));
+// D1 で完結する。シートへの鏡写しも無い（TB-940）。fetch を差し替えて script.google.com へ行かないことを確かめる
 vi.mock('./firebase-client.js', () => ({
   getSentGiftBatches: vi.fn().mockResolvedValue([]),
   setSentGiftBatches: vi.fn().mockResolvedValue(undefined),
@@ -55,7 +52,6 @@ function makeDb(opts: {
           if (/FROM furim_coupons WHERE name/.test(sql)) { const id = coupons[String(args[0])]; return id ? { coupon_id: id } : null; }
           if (/FROM tags WHERE name/.test(sql)) return { id: 'tag1' };
           if (/FROM friend_tags WHERE friend_id/.test(sql)) return null;
-          if (/SELECT id FROM gas_retry_jobs/.test(sql)) return null;
           return null;
         },
         all: async () => {
@@ -73,32 +69,40 @@ function makeDb(opts: {
   return { db, writes };
 }
 
-const env = { GAS_DEPLOY_ID: 'deploy-id', STRIPE_SECRET_KEY: 'sk_test' };
+const env = { STRIPE_SECRET_KEY: 'sk_test' };
 
-function mirrorCall(fields: Record<string, unknown>, flags?: Record<string, string>) {
-  return ['deploy-id', flags ? { method: 'setCustomerFields', lineUserId: 'Uxxx', fields, flags } : { method: 'setCustomerFields', lineUserId: 'Uxxx', fields }];
+let fetchStub: ReturnType<typeof vi.fn>;
+
+function gasCalls(stub: ReturnType<typeof vi.fn> = fetchStub) {
+  return stub.mock.calls.filter((c) => String(c[0]).includes('script.google.com'));
+}
+
+function noGasWrites(writes: Write[]) {
+  return !writes.some((w) => /gas_retry_jobs/.test(w.sql));
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  gasPost.mockResolvedValue({ success: true });
+  vi.unstubAllGlobals();
+  fetchStub = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+  vi.stubGlobal('fetch', fetchStub);
 });
 
 describe('【ボタン】アンケート回答', () => {
-  it('D1 survey_answer と furim_survey_answers を書き、シートへは setCustomerFields で鏡写し（GAS setSurveyResult は呼ばない）', async () => {
+  it('D1 survey_answer と furim_survey_answers を書く（GAS は呼ばない）', async () => {
     const client = makeClient();
     const { db, writes } = makeDb({ customer: { line_user_id: 'Uxxx', survey_answer: null } });
     await handleButtonAction(client as never, 'Uxxx', 'rt', '【ボタン】アンケート回答:物販', env, db);
     expect(writes.some((w) => /INSERT INTO furim_customers/.test(w.sql) && /survey_answer/.test(w.sql))).toBe(true);
     const hist = writes.find((w) => /INSERT INTO furim_survey_answers/.test(w.sql));
     expect(hist?.args.slice(1, 4)).toEqual(['Uxxx', '太郎', '物販']);
-    expect(gasPost).toHaveBeenCalledWith(...mirrorCall({ 'アンケート回答': '物販' }));
-    expect(gasPost).toHaveBeenCalledTimes(1);
+    expect(gasCalls()).toHaveLength(0);
+    expect(noGasWrites(writes)).toBe(true);
   });
 });
 
 describe('【ボタン】コピー出品チケット30枚GET', () => {
-  it('未受領なら台帳 free30:<id> で +30 して free30_ticket=1、残数をシートへ鏡写し', async () => {
+  it('未受領なら台帳 free30:<id> で +30 して free30_ticket=1（GAS は呼ばない）', async () => {
     const client = makeClient();
     const { db, writes } = makeDb({ customer: { line_user_id: 'Uxxx', key_code: 'pb_1', free30_ticket: 0 }, copyTicketsAfter: 30 });
     await handleButtonAction(client as never, 'Uxxx', 'rt', '【ボタン】コピー出品チケット30枚GET', env, db);
@@ -106,28 +110,30 @@ describe('【ボタン】コピー出品チケット30枚GET', () => {
     expect(ledger?.args).toContain('free30:Uxxx');
     expect(ledger?.args).toContain(30);
     expect(writes.some((w) => /INSERT INTO furim_customers/.test(w.sql) && /free30_ticket/.test(w.sql))).toBe(true);
-    expect(gasPost).toHaveBeenCalledWith(...mirrorCall({ 'Free30チケット': true, 'コピー出品チケット': 30 }));
+    expect(gasCalls()).toHaveLength(0);
+    expect(noGasWrites(writes)).toBe(true);
     expect(client.replyMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('受領済みなら付与も鏡写しもしない（返信は同じ）', async () => {
+  it('受領済みなら付与しない（返信は同じ）', async () => {
     const client = makeClient();
     const { db, writes } = makeDb({ customer: { line_user_id: 'Uxxx', key_code: 'pb_1', free30_ticket: 1 } });
     await handleButtonAction(client as never, 'Uxxx', 'rt', '【ボタン】コピー出品チケット30枚GET', env, db);
     expect(writes.some((w) => /furim_ticket_ledger/.test(w.sql))).toBe(false);
-    expect(gasPost).not.toHaveBeenCalled();
+    expect(gasCalls()).toHaveLength(0);
     expect(client.replyMessage).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('【ボタン】在庫管理シート無料お試し', () => {
-  it('D1 furim_feature_flags に InventorySheet/AutoMultiChannel を書き、flags で鏡写し（GAS enableInventorySheet は呼ばない）', async () => {
+  it('D1 furim_feature_flags に InventorySheet/AutoMultiChannel を書く（GAS は呼ばない）', async () => {
     const client = makeClient();
     const { db, writes } = makeDb({ customer: { line_user_id: 'Uxxx', key_code: 'pb_1' } });
     await handleButtonAction(client as never, 'Uxxx', 'rt', '【ボタン】在庫管理シート無料お試し', env, db);
     const flagWrites = writes.filter((w) => /INSERT INTO furim_feature_flags/.test(w.sql));
     expect(flagWrites.map((w) => w.args.slice(1, 3))).toEqual([['InventorySheet', '1'], ['AutoMultiChannel', 'メルカリ/Shops/ラクマ/ヤフオク/ヤフフリ']]);
-    expect(gasPost).toHaveBeenCalledWith(...mirrorCall({}, { InventorySheet: '1', AutoMultiChannel: 'メルカリ/Shops/ラクマ/ヤフオク/ヤフフリ' }));
+    expect(gasCalls()).toHaveLength(0);
+    expect(noGasWrites(writes)).toBe(true);
   });
 });
 
@@ -137,7 +143,7 @@ describe('【ボタン】無料開放プレゼント', () => {
     const { db } = makeDb({ customer: { line_user_id: 'Uxxx', key_code: 'pb_1', plan_label: '', subscription_end_at: null } });
     await handleButtonAction(client as never, 'Uxxx', 'rt', '【ボタン】無料開放プレゼント', env, db);
     expect(client.replyMessage.mock.calls[0][1][0].text).toContain('このキャンペーンは終了しました');
-    expect(gasPost).not.toHaveBeenCalled();
+    expect(gasCalls()).toHaveLength(0);
   });
 });
 
@@ -151,13 +157,16 @@ describe('Furimanです（Youtube クーポン）', () => {
     return fetchStub;
   }
 
-  it('登録 1 週間以内は半額クーポン: Stripe 適用 → D1 youtube_coupon＋適用履歴 → 返信 → シートへ鏡写し', async () => {
+  it('登録 1 週間以内は半額クーポン: Stripe 適用 → D1 youtube_coupon＋適用履歴 → 返信（GAS は呼ばない）', async () => {
     const fetchStub = stubStripe();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-14T12:00:00+09:00'));
     const client = makeClient();
     const { db, writes } = makeDb({ customer: { line_user_id: 'Uxxx', stripe_customer_id: 'cus_1', youtube_coupon: null }, friend: { id: 'friend1', display_name: '太郎', created_at: '2026-09-12T10:00:00.000+09:00', metadata: '{}' } });
     try {
       await actionFurimanCoupon(client as never, 'Uxxx', 'rt', env as never, db);
     } finally {
+      vi.useRealTimers();
       vi.unstubAllGlobals();
     }
     const apply = fetchStub.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === 'POST');
@@ -166,8 +175,8 @@ describe('Furimanです（Youtube クーポン）', () => {
     const hist = writes.find((w) => /INSERT INTO furim_coupon_applications/.test(w.sql));
     expect(hist?.args.slice(1, 6)).toEqual(['Uxxx', 'cus_1', 'Youtubeご視聴感謝半額クーポン', '0lVkixXx', 'Furiman経由']);
     expect(client.replyMessage.mock.calls[0][1][0].text).toContain('Youtubeご視聴感謝半額クーポン');
-    expect(gasPost).toHaveBeenCalledWith(...mirrorCall({ 'Youtubeクーポン': 'Youtubeご視聴感謝半額クーポン' }));
-    expect(gasGet).not.toHaveBeenCalled();
+    expect(gasCalls(fetchStub)).toHaveLength(0);
+    expect(noGasWrites(writes)).toBe(true);
   });
 
   it('付与済みなら「既にご利用」を返して何も書かない', async () => {
@@ -181,7 +190,6 @@ describe('Furimanです（Youtube クーポン）', () => {
     }
     expect(client.replyMessage.mock.calls[0][1][0].text).toContain('既にご利用いただいている');
     expect(writes).toHaveLength(0);
-    expect(gasPost).not.toHaveBeenCalled();
   });
 
   it('resolveFurimanCoupon: 1 週間超は 20%OFF、顧客IDが無ければ null', async () => {
@@ -229,19 +237,20 @@ describe('解説見た（applyExtendTrialKeyword / actionExtendTrial）', () => 
     expect((await applyExtendTrialKeyword(db2, undefined, 'Uxxx')).result).toBe('error');
   });
 
-  it('actionExtendTrial: 返信 → 鏡写し → kaisetsu メタ（trial_end は新期限）', async () => {
+  it('actionExtendTrial: 返信 → kaisetsu メタ（trial_end は新期限）。GAS は呼ばない', async () => {
     const now = Date.parse('2026-09-14T12:00:00+09:00');
     vi.useFakeTimers();
     vi.setSystemTime(new Date(now));
     const client = makeClient();
     const { db, writes } = makeDb({ customer: { line_user_id: 'Uxxx', key_code: '2weektrial_a', plan_label: null, extend_keyword: null, subscription_end_at: '2026-09-24 10:00:00' } });
     try {
-      await actionExtendTrial(client as never, 'Uxxx', 'rt', 'deploy-id', db);
+      await actionExtendTrial(client as never, 'Uxxx', 'rt', db);
     } finally {
       vi.useRealTimers();
     }
     expect(client.replyMessage.mock.calls[0][1][0].text).toContain('1週間延長しました');
-    expect(gasPost).toHaveBeenCalledWith(...mirrorCall({ 'サブスク終了日時': '2026-10-01 10:00:00', '延長キーワード': '1w' }));
+    expect(gasCalls()).toHaveLength(0);
+    expect(noGasWrites(writes)).toBe(true);
     const meta = writes.find((w) => /UPDATE friends SET metadata = \?/.test(w.sql));
     expect(String(meta?.args[0])).toContain('"trial_end":"2026-10-01"');
   });
@@ -257,7 +266,6 @@ describe('Meet予約（延長キーワード送信済みかは D1 を見る）',
     const { db: db2 } = makeDb({ customer: { line_user_id: 'Uxxx', extend_keyword: null } });
     await handleFurimAction(client2 as never, 'Uxxx', 'rt', '【リッチメニュー】Meet予約', env, db2);
     expect(client2.replyMessage.mock.calls[0][1][0].text).toContain('Meet予約の前に動画をご覧ください');
-    expect(gasPost).not.toHaveBeenCalled();
-    expect(gasGet).not.toHaveBeenCalled();
+    expect(gasCalls()).toHaveLength(0);
   });
 });

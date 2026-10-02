@@ -4,7 +4,6 @@ import { carouselTemplate, surveyTemplate, copyTicketFlexMessage } from './messa
 import { logOutgoing } from '../utils/message-log.js';
 import { upsertFurimCustomer, resolveStripeCustomerId, getFurimCustomer } from './customer-store.js';
 import { buildTicketCheckoutUrl } from './ticket-checkout.js';
-import { mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
 import { upsertFeatureFlags } from './customer-sync.js';
 import { INVENTORY_PATROL_ALL_SITES } from './feature-flags.js';
 import { applyTicketDelta } from './ticket-ledger.js';
@@ -13,8 +12,6 @@ import { cancellationReasonCodeFromLabel, recordCancellationReason, CANCELLATION
 import type { ExtCache } from './ext-auth.js';
 
 export type ButtonActionsEnv = {
-  // シートへの鏡写しにだけ使う。無ければ鏡写しを飛ばす（ボタンの処理自体は Worker で完結・TB-765）
-  GAS_DEPLOY_ID?: string;
   STRIPE_SECRET_KEY?: string;
   FURIM_EXT_CACHE?: ExtCache;
   PLAN_BUILDER_LIFF_URL?: string;
@@ -159,8 +156,7 @@ export async function handleButtonAction(
     if (surveyResult === '紹介') {
       await lineClient.pushMessage(lineUserId, [{ type: 'text', text: referralPushText } as never]);
     }
-    // D1 furim_customers（限定特典①の解放判定）と回答履歴 furim_survey_answers（旧: シート「アンケート結果」）を先に書く。
-    // シートへは setCustomerFields で鏡写し（段階2.5・Capsec #250。GAS setSurveyResult は削除）
+    // D1 furim_customers（限定特典①の解放判定）と回答履歴 furim_survey_answers（旧: シート「アンケート結果」）に書く
     if (db) {
       try {
         await upsertFurimCustomer(db, lineUserId, { survey_answer: surveyResult ?? null });
@@ -184,7 +180,6 @@ export async function handleButtonAction(
       } catch (e) {
         console.error('[furim] furim_survey_answers insert failed:', lineUserId, e);
       }
-      if (env.GAS_DEPLOY_ID) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'アンケート回答': surveyResult ?? '' });
     }
     return true;
   }
@@ -274,14 +269,11 @@ export async function handleButtonAction(
 
   if (text.includes('コピー出品チケット30枚GET')) {
     // 付与の実体（+30 枚）も D1（台帳 free30:<lineUserId> で通算 1 回）。限定特典④の解放判定は free30_ticket。
-    // シートへは setCustomerFields で鏡写し（段階2.5・Capsec #250。GAS setFree30CopyTickets は削除）
-    let copyTickets: number | null = null;
     if (db) {
       try {
         const customer = await getFurimCustomer(db, lineUserId);
         if (customer?.free30_ticket !== 1) {
           const r = await applyTicketDelta(db, env.FURIM_EXT_CACHE, { line_user_id: lineUserId, key_code: customer?.key_code ?? null }, { delta: 30, reason: 'free30', idempotencyKey: `free30:${lineUserId}` });
-          copyTickets = r.copyTickets;
           await upsertFurimCustomer(db, lineUserId, { free30_ticket: 1 });
           console.log(`[furim] Free30: +30 ${r.applied ? 'applied' : 'dup'} lineUserId=${lineUserId} left=${r.copyTickets}`);
         } else {
@@ -301,9 +293,6 @@ export async function handleButtonAction(
       { type: 'video', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/%E7%B0%A1%E5%8D%98%E8%A7%A3%E8%AA%AC1%E5%88%86%E5%8B%95%E7%94%BB/%E3%83%A1%E3%83%AB%E3%82%AB%E3%83%AATo%E3%83%A9%E3%82%AF%E3%83%9E%E3%82%B3%E3%83%92%E3%82%9A%E3%83%BC%E5%87%BA%E5%93%81.mp4', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png' } as never,
       { type: 'text', text: 'メルカリToラクマコピー出品機能の説明書はこちらです。\nURL: https://furimauto.com/howto/#mCopyRakumaListing' } as never,
     ]);
-    if (db && copyTickets != null) {
-      if (env.GAS_DEPLOY_ID) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'Free30チケット': true, 'コピー出品チケット': copyTickets });
-    }
     return true;
   }
 
@@ -336,10 +325,8 @@ export async function handleButtonAction(
   }
 
   // 在庫管理シート無料プロモ: フラグ(InventorySheet)をTRUE・自動削除巡回(AutoMultiChannel)を全サイトに設定。
-  // 該当ユーザーのマスターシート行を GAS が書き換える。拡張は次回 getKeyCodeSet 取得で有効判定する。
   if (text.includes('在庫管理シート無料お試し')) {
-    // 拡張の認証（段階3・Capsec #245）は D1 furim_feature_flags を読む。D1 に先に書き、シートへは setCustomerFields の
-    // flags で鏡写し（段階2.5・Capsec #250。GAS enableInventorySheet は削除）
+    // 拡張の認証（段階3・Capsec #245）は D1 furim_feature_flags を読む
     const inventoryFlags = { InventorySheet: '1', AutoMultiChannel: INVENTORY_PATROL_ALL_SITES };
     if (db) {
       try {
@@ -358,7 +345,6 @@ export async function handleButtonAction(
       type: 'text',
       text: '✅在庫管理シートを有効化しました！\n\nメルカリ・ラクマ・Shops・ヤフオク・ヤフフリの在庫を1枚のスプレッドシートでまとめて管理し、売れたら他サイトの出品を自動でお知らせ・削除できます📦\n\n【使い始め方】\n① FurimAuto拡張機能を最新版（v4.2.2以降）へ更新する\n更新方法: https://furimauto.com/howto/#checkVersion\n\n② キーコード入力画面にてバージョンが4.2.2であることを確認して、入力ボタンを一度押して成功になるまでそのまま待つ\n\n③ 出品一覧ページを一度更新してみると、新たに緑色の「在庫管理シートを作成」ボタンが現れる\n\n④ 説明書に沿ってセットアップする\nhttps://furimauto.com/howto/index.html#inventorySheet\n\nうまく表示されない時は一度拡張を開き直してキーコードを再取得してみてください🙏',
     } as never]);
-    if (db && env.GAS_DEPLOY_ID) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, {}, inventoryFlags);
     return true;
   }
 
@@ -393,15 +379,6 @@ export async function handleButtonAction(
       messages.push({ type: 'text', text: '申し訳ございません、付与処理に失敗しました🙇\n\nお手数ですが、このLINEにそのままご返信ください。担当者が確認して付与いたします。' });
     }
     await lineClient.replyMessage(replyToken, messages as never[]);
-    if (db && result.success && env.GAS_DEPLOY_ID) {
-      await mirrorCustomerFieldsToGas(
-        db,
-        env.GAS_DEPLOY_ID,
-        lineUserId,
-        { 'サブスク終了日時': result.expiryJst, 'キーコード': result.keyCode, '端末判定文字列': '', '初回発行': true },
-        result.flags,
-      );
-    }
     return true;
   }
 

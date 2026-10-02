@@ -6,7 +6,6 @@ const {
   generateTrialKeyCode,
   TRIAL_KEYCODE_PREFIX,
   buildUpsertStatement,
-  absorbGasKeyCode,
   deriveGiftStatus,
   resolveStripeCustomerId,
 } = await import('./customer-store.js');
@@ -60,49 +59,6 @@ describe('buildUpsertStatement', () => {
     await buildUpsertStatement(db, 'U1', { key_code: null, survey_answer: undefined }).run();
     expect(writes[0].sql).toContain('(line_user_id, key_code, created_at, updated_at)');
     expect(writes[0].args[1]).toBeNull();
-  });
-});
-
-describe('absorbGasKeyCode', () => {
-  it('keyCode が D1 と異なれば key_code を更新し device_activated=0', async () => {
-    const { db, writes } = makeDb({ customer: { key_code: 'old', device_activated: 1 } });
-    await absorbGasKeyCode(db, 'U1', { success: true, keyCode: 'pb_new12345' });
-    expect(writes).toHaveLength(1);
-    expect(writes[0].sql).toContain('key_code = excluded.key_code');
-    expect(writes[0].sql).toContain('device_activated = excluded.device_activated');
-    expect(writes[0].args.slice(1, 3)).toEqual(['pb_new12345', 0]);
-  });
-
-  it('keyCode が同じで keyCodeIssued も無ければ何も書かない', async () => {
-    const { db, writes } = makeDb({ customer: { key_code: 'pb_same', device_activated: 1 } });
-    await absorbGasKeyCode(db, 'U1', { keyCode: 'pb_same', keyCodeIssued: false });
-    expect(writes).toHaveLength(0);
-  });
-
-  it('keyCodeIssued=true なら key_code_issued=1・device_activated=0・device_code=NULL', async () => {
-    const { db, writes } = makeDb({ customer: { key_code: 'pb_same', device_activated: 1, key_code_issued: 0 } });
-    await absorbGasKeyCode(db, 'U1', { keyCode: 'pb_same', keyCodeIssued: true });
-    expect(writes).toHaveLength(1);
-    expect(writes[0].sql).toContain('(line_user_id, key_code_issued, device_activated, device_code, created_at, updated_at)');
-    expect(writes[0].args.slice(1, 4)).toEqual([1, 0, null]);
-  });
-
-  it('エラーコード文字列・keyCode 無し・db 無しは無視', async () => {
-    const { db, writes } = makeDb({ customer: null });
-    await absorbGasKeyCode(db, 'U1', { keyCode: 'エラーコード(401)' });
-    await absorbGasKeyCode(db, 'U1', { success: true });
-    await absorbGasKeyCode(db, null, { keyCode: 'pb_x' });
-    await absorbGasKeyCode(undefined, 'U1', { keyCode: 'pb_x' });
-    expect(writes).toHaveLength(0);
-  });
-
-  it('D1 の書き込みが落ちても throw しない', async () => {
-    const db = {
-      prepare() {
-        return { bind() { return { run: async () => { throw new Error('boom'); }, first: async () => null }; } };
-      },
-    } as unknown as D1Database;
-    await expect(absorbGasKeyCode(db, 'U1', { keyCode: 'pb_x' })).resolves.toBeUndefined();
   });
 });
 

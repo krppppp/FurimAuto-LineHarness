@@ -2,9 +2,8 @@
 // backfill-ext-columns と同じ作法: スタッフ認証（authMiddleware）・dryRun 既定・本番は confirmProd 必須。
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
-import { SHEET_BACKFILL_SPECS, backfillSheet, countTableRows, getSheetSpec } from '../furim/sheet-backfill.js';
 import { moveConsumeRowsToAutoCopyLogs } from '../furim/ticket-ledger.js';
-import { FIX_TARGETS, fixDatetimes, isFixTarget, type SheetCache } from '../furim/fix-datetimes.js';
+import { FIX_TARGETS, fixDatetimes, isFixTarget } from '../furim/fix-datetimes.js';
 import { fillPaymentsFromStripe, makeStripeInvoiceFetcher } from '../furim/fill-payments-from-stripe.js';
 import { MAX_CUSTOMER_IDS, backfillStripeInvoices, fixSharedCustomers, makeStripeApi, parseSince } from '../furim/backfill-stripe-invoices.js';
 
@@ -16,10 +15,9 @@ furimBackfill.get('/api/furim/fix-datetimes', async (c) => {
     if (only !== undefined && !isFixTarget(only)) {
       return c.json({ success: false, error: 'target が不正です', targets: FIX_TARGETS }, 400);
     }
-    const cache: SheetCache = new Map();
     const targets = [];
     for (const target of only ? [only] : FIX_TARGETS) {
-      const r = await fixDatetimes(c.env.DB, c.env.GAS_DEPLOY_ID, target, { dryRun: true, staffId: c.get('staff').id, cache });
+      const r = await fixDatetimes(c.env.DB, target, { dryRun: true, staffId: c.get('staff').id });
       targets.push(r);
     }
     return c.json({ success: true, targets });
@@ -40,50 +38,10 @@ furimBackfill.post('/api/furim/fix-datetimes', async (c) => {
     if (!dryRun && !isDev && body.confirmProd !== true) {
       return c.json({ success: false, error: '本番workerでの実行には confirmProd: true が必要です' }, 403);
     }
-    const result = await fixDatetimes(c.env.DB, c.env.GAS_DEPLOY_ID, body.target, { dryRun, staffId: c.get('staff').id });
+    const result = await fixDatetimes(c.env.DB, body.target, { dryRun, staffId: c.get('staff').id });
     return c.json({ success: true, ...result });
   } catch (err) {
     console.error('[furim/fix-datetimes] error:', err);
-    return c.json({ success: false, error: String(err) }, 500);
-  }
-});
-
-/** GET /api/furim/backfill-sheets — 取り込み対象シートと対応テーブル・D1 の現在件数 */
-furimBackfill.get('/api/furim/backfill-sheets', async (c) => {
-  try {
-    const sheets = [];
-    for (const spec of SHEET_BACKFILL_SPECS) {
-      sheets.push({ name: spec.name, sheet: spec.sheet, table: spec.table, d1Count: await countTableRows(c.env.DB, spec) });
-    }
-    return c.json({ success: true, sheets });
-  } catch (err) {
-    console.error('[furim/backfill-sheets] error:', err);
-    return c.json({ success: false, error: String(err) }, 500);
-  }
-});
-
-/**
- * POST /api/furim/backfill-sheets
- * Body: { sheet: string（SHEET_BACKFILL_SPECS の name）, dryRun?: boolean = true, confirmProd?: boolean }
- * 1 回の呼び出しで 1 シートを全行取り込む（冪等・再実行で増えない）
- */
-furimBackfill.post('/api/furim/backfill-sheets', async (c) => {
-  const isDev = c.env.WORKER_NAME === 'line-harness';
-  try {
-    const body = await c.req.json<{ sheet?: string; dryRun?: boolean; confirmProd?: boolean }>().catch(() => ({}) as { sheet?: string; dryRun?: boolean; confirmProd?: boolean });
-    const spec = body.sheet ? getSheetSpec(body.sheet) : undefined;
-    if (!spec) {
-      return c.json({ success: false, error: 'sheet を指定してください', sheets: SHEET_BACKFILL_SPECS.map((s) => s.name) }, 400);
-    }
-    const dryRun = body.dryRun !== false;
-    if (!dryRun && !isDev && body.confirmProd !== true) {
-      return c.json({ success: false, error: '本番workerでの実行には confirmProd: true が必要です' }, 403);
-    }
-    if (!c.env.GAS_DEPLOY_ID) return c.json({ success: false, error: 'GAS_DEPLOY_ID not configured' }, 500);
-    const result = await backfillSheet(c.env.DB, c.env.GAS_DEPLOY_ID, spec, { dryRun });
-    return c.json({ success: true, ...result });
-  } catch (err) {
-    console.error('[furim/backfill-sheets] error:', err);
     return c.json({ success: false, error: String(err) }, 500);
   }
 });

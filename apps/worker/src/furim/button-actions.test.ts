@@ -1,7 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('./gas-client.js', () => ({ gasGet: vi.fn(), gasPost: vi.fn() }));
-
 const { handleButtonAction } = await import('./button-actions.js');
 const { CANCELLATION_REASON_REPLY_TEXT } = await import('./cancellation-reason.js');
 
@@ -48,7 +46,7 @@ function makeDb(opts: { tagExists: boolean; cancellation?: { id: string; reason_
   };
 }
 
-const env = { GAS_DEPLOY_ID: 'deploy-id' };
+const env = {};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -129,7 +127,6 @@ describe('解約理由アンケート: 6 択に無い送信値（旧 5 択 TB-74
 
 describe('チケット購入 N枚（決済 URL は Worker で組む・Capsec #243）', () => {
   const ticketEnv = {
-    GAS_DEPLOY_ID: 'deploy-id',
     WORKER_NAME: 'line-harness-prod',
     FURIM_TICKET_LIFF_URL: 'https://liff.line.me/1660804123-VgnRNDJm',
     FURIM_TICKET_PRICE_IDS: JSON.stringify({ '15': 'price_15', '14': 'price_14', '13': 'price_13', '10': 'price_10' }),

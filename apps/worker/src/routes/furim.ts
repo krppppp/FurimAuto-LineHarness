@@ -7,9 +7,7 @@ import {
   jstNow,
 } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
-import { gasGet } from '../furim/gas-client.js';
 import { upsertFurimCustomer, getFurimCustomerByStripeId } from '../furim/customer-store.js';
-import { backfillFurimCustomers, backfillFurimExtColumns, reconcileFurimCustomers } from '../furim/customer-sync.js';
 import type { Env } from '../index.js';
 
 const furim = new Hono<Env>();
@@ -712,88 +710,6 @@ furim.post('/api/furim/setup-prices', async (c) => {
 });
 
 /**
- * POST /api/furim/backfill-plan-names
- * GASスプシ「顧客情報-サブスク情報-キーコード」の既存プラン名データをD1 friends.plan_nameへ
- * 一括バックフィルする。Stripe webhook同期(stripe-processor.ts)導入前の既存データ用、および
- * スプシ側が手動編集された場合の再同期用リカバリ手段として維持する。
- * Body: { dryRun?: boolean = true, confirmProd?: boolean }
- */
-furim.post('/api/furim/backfill-plan-names', async (c) => {
-  const isDev = c.env.WORKER_NAME === 'line-harness';
-  try {
-    const body = await c.req.json<{ dryRun?: boolean; confirmProd?: boolean }>().catch(() => ({}) as { dryRun?: boolean; confirmProd?: boolean });
-    const dryRun = body.dryRun !== false;
-    if (!dryRun && !isDev && body.confirmProd !== true) {
-      return c.json({ success: false, error: '本番workerでの実行には confirmProd: true が必要です' }, 403);
-    }
-    if (!c.env.GAS_DEPLOY_ID) return c.json({ success: false, error: 'GAS_DEPLOY_ID not configured' }, 500);
-
-    const gasRes = (await gasGet(c.env.GAS_DEPLOY_ID, {
-      method: 'getData',
-      sheet: '顧客情報-サブスク情報-キーコード',
-      headerRow: '3',
-    })) as { success: boolean; rows?: Array<Record<string, unknown>> };
-    if (!gasRes.success || !gasRes.rows) {
-      return c.json({ success: false, error: 'GASからのデータ取得に失敗しました' }, 500);
-    }
-
-    const targets = gasRes.rows
-      .map((row) => ({
-        lineUserId: String(row['LINE_ID'] ?? '').trim(),
-        planName: String(row['プラン名'] ?? '').trim(),
-      }))
-      .filter((r) => r.lineUserId && r.planName);
-
-    if (dryRun) {
-      return c.json({
-        success: true,
-        dryRun,
-        totalRows: gasRes.rows.length,
-        targetCount: targets.length,
-        sample: targets.slice(0, 5),
-      });
-    }
-
-    // Workersのサブリクエスト上限対策で100件単位のbatchに分割。
-    // updated は「実際にUPDATEがマッチした行数」(meta.changesの合計)。試行数(targets.length)
-    // ではない — D1のline_user_idにマッチする行が無ければ changes=0 のまま無言で通り過ぎるため、
-    // 差分を notMatched として可視化する（GAS側の表記ゆれ・削除済み友だち等の検知用）。
-    const CHUNK = 100;
-    let updated = 0;
-    for (let i = 0; i < targets.length; i += CHUNK) {
-      const chunk = targets.slice(i, i + CHUNK);
-      const now = jstNow();
-      const stmts = chunk.map((t) =>
-        c.env.DB.prepare(`UPDATE friends SET plan_name = ?, updated_at = ? WHERE line_user_id = ?`).bind(
-          t.planName,
-          now,
-          t.lineUserId,
-        ),
-      );
-      const results = await c.env.DB.batch(stmts);
-      updated += results.reduce((sum, r) => sum + (r.meta?.changes ?? 0), 0);
-    }
-    const notMatched = targets.length - updated;
-
-    console.log(
-      '[furim/backfill-plan-names]',
-      JSON.stringify({ dryRun, totalRows: gasRes.rows.length, targetCount: targets.length, updated, notMatched }),
-    );
-    return c.json({
-      success: true,
-      dryRun,
-      totalRows: gasRes.rows.length,
-      targetCount: targets.length,
-      updated,
-      notMatched,
-    });
-  } catch (err) {
-    console.error('[furim/backfill-plan-names] error:', err);
-    return c.json({ success: false, error: String(err) }, 500);
-  }
-});
-
-/**
  * POST /api/furim/customer-state
  * GAS getKeyCodeSet から呼ばれる（Capsec #243）。拡張がキーコードを入力して端末判定文字列が
  * 発行された瞬間に D1 furim_customers.device_activated を立てる（限定特典③の解放判定）。
@@ -845,79 +761,6 @@ furim.post('/api/furim/ticket-consumed', async (c) => {
   } catch (err) {
     console.error('[furim/ticket-consumed] error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
-  }
-});
-
-/**
- * POST /api/furim/backfill-customers
- * スプシ「顧客情報-サブスク情報-キーコード」全件を D1 furim_customers に upsert する（初期投入・復旧用）。
- * Body: { dryRun?: boolean = true, confirmProd?: boolean }
- */
-furim.post('/api/furim/backfill-customers', async (c) => {
-  const isDev = c.env.WORKER_NAME === 'line-harness';
-  try {
-    const body = await c.req.json<{ dryRun?: boolean; confirmProd?: boolean }>().catch(() => ({}) as { dryRun?: boolean; confirmProd?: boolean });
-    const dryRun = body.dryRun !== false;
-    if (!dryRun && !isDev && body.confirmProd !== true) {
-      return c.json({ success: false, error: '本番workerでの実行には confirmProd: true が必要です' }, 403);
-    }
-    if (!c.env.GAS_DEPLOY_ID) return c.json({ success: false, error: 'GAS_DEPLOY_ID not configured' }, 500);
-    const result = await backfillFurimCustomers(c.env.DB, c.env.GAS_DEPLOY_ID, { dryRun });
-    return c.json({ success: true, ...result });
-  } catch (err) {
-    console.error('[furim/backfill-customers] error:', err);
-    return c.json({ success: false, error: String(err) }, 500);
-  }
-});
-
-/**
- * POST /api/furim/backfill-ext-columns
- * 段階3（Capsec #245）の初期投入: シートから端末判定文字列・各サイト URL・在庫管理シート・機能フラグだけを D1 に写す。
- * Body: { dryRun?: boolean = true, confirmProd?: boolean }
- */
-furim.post('/api/furim/backfill-ext-columns', async (c) => {
-  const isDev = c.env.WORKER_NAME === 'line-harness';
-  try {
-    const body = await c.req.json<{ dryRun?: boolean; confirmProd?: boolean }>().catch(() => ({}) as { dryRun?: boolean; confirmProd?: boolean });
-    const dryRun = body.dryRun !== false;
-    if (!dryRun && !isDev && body.confirmProd !== true) {
-      return c.json({ success: false, error: '本番workerでの実行には confirmProd: true が必要です' }, 403);
-    }
-    if (!c.env.GAS_DEPLOY_ID) return c.json({ success: false, error: 'GAS_DEPLOY_ID not configured' }, 500);
-    const result = await backfillFurimExtColumns(c.env.DB, c.env.GAS_DEPLOY_ID, { dryRun });
-    return c.json({ success: true, ...result });
-  } catch (err) {
-    console.error('[furim/backfill-ext-columns] error:', err);
-    return c.json({ success: false, error: String(err) }, 500);
-  }
-});
-
-/**
- * POST /api/furim/reconcile-customers
- * 差分検知を手動で 1 回走らせる（cron の :15/:45 ゲートを無視）。通知条件は cron と同じ。
- */
-furim.post('/api/furim/reconcile-customers', async (c) => {
-  try {
-    if (!c.env.GAS_DEPLOY_ID) return c.json({ success: false, error: 'GAS_DEPLOY_ID not configured' }, 500);
-    const lineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN) : null;
-    const result = await reconcileFurimCustomers(c.env.DB, lineClient, c.env, { force: true });
-    return c.json({ success: true, ...result });
-  } catch (err) {
-    console.error('[furim/reconcile-customers] error:', err);
-    return c.json({ success: false, error: String(err) }, 500);
-  }
-});
-
-/** GET /api/furim/customer-diffs — 未解決の差分一覧 */
-furim.get('/api/furim/customer-diffs', async (c) => {
-  try {
-    const rows = await c.env.DB
-      .prepare('SELECT d.*, f.display_name FROM furim_sync_diffs d LEFT JOIN friends f ON f.line_user_id = d.line_user_id WHERE d.resolved_at IS NULL ORDER BY d.first_seen_at LIMIT 500')
-      .all();
-    return c.json({ success: true, count: (rows.results ?? []).length, diffs: rows.results ?? [] });
-  } catch (err) {
-    console.error('[furim/customer-diffs] error:', err);
-    return c.json({ success: false, error: String(err) }, 500);
   }
 });
 

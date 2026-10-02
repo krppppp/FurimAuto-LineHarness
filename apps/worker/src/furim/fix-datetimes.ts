@@ -1,19 +1,13 @@
 import { toJstString } from '@line-crm/db';
-import { parseJstDateTime, TRIAL_KEYCODE_PREFIX } from './customer-store.js';
-import { MASTER_SHEET, sheetRowLineUserId } from './customer-sync.js';
-import { fetchSheetRows, str, type SheetRow } from './sheet-backfill.js';
+import { parseJstDateTime } from './customer-store.js';
 
-export const FIX_TARGETS = ['customers', 'affiliates', 'friend-sub', 'chats', 'friend-tags', 'format-unify', 'trial-dates'] as const;
+export const FIX_TARGETS = ['chats', 'friend-tags', 'format-unify'] as const;
 export type FixTarget = (typeof FIX_TARGETS)[number];
 
 export const FIX_STAFF_NAME = 'system:fix-datetimes';
-export const SUB_LINE_USER_ID = 'U16f359b3620c61ba076132988934a48a';
 export const SAME_INSTANT_TOLERANCE_MS = 2000;
 export const SAMPLE_LIMIT = 5;
 const CANDIDATES_PER_BATCH = 50;
-const DAY_MS = 24 * 60 * 60_000;
-
-const AMBASSADOR_SHEET = 'アンバサダー';
 
 export function isFixTarget(v: unknown): v is FixTarget {
   return typeof v === 'string' && (FIX_TARGETS as readonly string[]).includes(v);
@@ -61,87 +55,6 @@ export function classifyFixRows(rows: FixRow[]): Classified {
     out.candidates.push({ table: r.table, column: r.column, rowId: r.rowId, pk: r.pk, oldValue: r.oldValue, newValue: toJstString(new Date(srcMs)) });
   }
   return out;
-}
-
-export type SheetCache = Map<string, SheetRow[]>;
-
-async function sheetRows(gasDeployId: string | undefined, sheet: string, headerRow: number, cache: SheetCache): Promise<SheetRow[]> {
-  const cached = cache.get(sheet);
-  if (cached) return cached;
-  if (!gasDeployId) throw new Error('GAS_DEPLOY_ID not configured');
-  const rows = await fetchSheetRows(gasDeployId, { name: 'fix-datetimes', sheet, headerRow, table: '' });
-  cache.set(sheet, rows);
-  return rows;
-}
-
-function uniqueSourceMap(pairs: Array<[string, string | null]>): Map<string, string | null> {
-  const map = new Map<string, string | null>();
-  const dup = new Set<string>();
-  for (const [k, v] of pairs) {
-    if (dup.has(k)) continue;
-    if (map.has(k) && map.get(k) !== v) {
-      map.set(k, null);
-      dup.add(k);
-      continue;
-    }
-    map.set(k, v);
-  }
-  return map;
-}
-
-export function friendRegisteredAtByLineUserId(rows: SheetRow[]): Map<string, string | null> {
-  const pairs: Array<[string, string | null]> = [];
-  for (const r of rows) {
-    const id = sheetRowLineUserId(r);
-    if (id) pairs.push([id, str(r['友達登録日時'])]);
-  }
-  return uniqueSourceMap(pairs);
-}
-
-export function ambassadorRegisteredAtByCode(rows: SheetRow[]): Map<string, string | null> {
-  const pairs: Array<[string, string | null]> = [];
-  for (const r of rows) {
-    const code = str(r['アンバサダーコード']);
-    const at = str(r['登録日時']);
-    if (!code || code === 'String' || at === 'String') continue;
-    pairs.push([code, at]);
-  }
-  return uniqueSourceMap(pairs);
-}
-
-async function loadCustomers(db: D1Database, gasDeployId: string | undefined, cache: SheetCache): Promise<FixRow[]> {
-  const sources = friendRegisteredAtByLineUserId(await sheetRows(gasDeployId, MASTER_SHEET, 3, cache));
-  const rows = (await db.prepare('SELECT line_user_id, created_at FROM furim_customers').all<{ line_user_id: string; created_at: string }>()).results ?? [];
-  return rows.map((r) => ({
-    table: 'furim_customers',
-    column: 'created_at',
-    rowId: r.line_user_id,
-    pk: { line_user_id: r.line_user_id },
-    oldValue: r.created_at,
-    source: sources.get(r.line_user_id) ?? null,
-    stuck: String(r.created_at).startsWith('2026-09-13T19:54'),
-  }));
-}
-
-async function loadAffiliates(db: D1Database, gasDeployId: string | undefined, cache: SheetCache): Promise<FixRow[]> {
-  const sources = ambassadorRegisteredAtByCode(await sheetRows(gasDeployId, AMBASSADOR_SHEET, 2, cache));
-  const rows = (await db.prepare('SELECT id, code, created_at FROM affiliates').all<{ id: string; code: string; created_at: string }>()).results ?? [];
-  return rows.map((r) => ({
-    table: 'affiliates',
-    column: 'created_at',
-    rowId: r.id,
-    pk: { id: r.id },
-    oldValue: r.created_at,
-    source: sources.get(r.code) ?? null,
-    stuck: true,
-  }));
-}
-
-async function loadFriendSub(db: D1Database, gasDeployId: string | undefined, cache: SheetCache): Promise<FixRow[]> {
-  const sources = friendRegisteredAtByLineUserId(await sheetRows(gasDeployId, MASTER_SHEET, 3, cache));
-  const row = await db.prepare('SELECT id, line_user_id, created_at FROM friends WHERE line_user_id = ?').bind(SUB_LINE_USER_ID).first<{ id: string; line_user_id: string; created_at: string }>();
-  if (!row) return [];
-  return [{ table: 'friends', column: 'created_at', rowId: row.id, pk: { id: row.id }, oldValue: row.created_at, source: sources.get(SUB_LINE_USER_ID) ?? null, stuck: true }];
 }
 
 async function loadChats(db: D1Database): Promise<FixRow[]> {
@@ -215,20 +128,13 @@ async function loadFriendTags(db: D1Database): Promise<FixRow[]> {
   return out;
 }
 
-export async function loadFixRows(db: D1Database, gasDeployId: string | undefined, target: FixTarget, cache: SheetCache): Promise<FixRow[]> {
+export async function loadFixRows(db: D1Database, target: FixTarget): Promise<FixRow[]> {
   switch (target) {
-    case 'customers':
-      return loadCustomers(db, gasDeployId, cache);
-    case 'affiliates':
-      return loadAffiliates(db, gasDeployId, cache);
-    case 'friend-sub':
-      return loadFriendSub(db, gasDeployId, cache);
     case 'chats':
       return loadChats(db);
     case 'friend-tags':
       return loadFriendTags(db);
     case 'format-unify':
-    case 'trial-dates':
       return [];
   }
 }
@@ -265,30 +171,6 @@ export async function applyFixCandidates(
     });
   }
   return { updated, auditRows };
-}
-
-export type SevenDayJudge = {
-  friendCreatedAt: string | null;
-  daysSinceRegistration: number | null;
-  furimanCoupon: '7日未満（半額）' | '経過済み（20%OFF）';
-  extendTrial: '1週間以内（+7日）' | '経過済み（+3日）';
-};
-
-export function judgeSevenDay(friendCreatedAt: string | null, nowMs: number): SevenDayJudge {
-  const registeredAt = friendCreatedAt ? Date.parse(friendCreatedAt) : NaN;
-  const days = Number.isNaN(registeredAt) ? NaN : Math.floor((nowMs - registeredAt) / DAY_MS);
-  const withinOneWeek = !Number.isNaN(registeredAt) && nowMs - registeredAt <= 7 * DAY_MS;
-  return {
-    friendCreatedAt,
-    daysSinceRegistration: Number.isNaN(days) ? null : days,
-    furimanCoupon: days < 7 ? '7日未満（半額）' : '経過済み（20%OFF）',
-    extendTrial: withinOneWeek ? '1週間以内（+7日）' : '経過済み（+3日）',
-  };
-}
-
-async function readSubJudge(db: D1Database, nowMs: number): Promise<SevenDayJudge> {
-  const friend = await db.prepare('SELECT created_at FROM friends WHERE line_user_id = ?').bind(SUB_LINE_USER_ID).first<{ created_at: string }>();
-  return judgeSevenDay(friend?.created_at ?? null, nowMs);
 }
 
 export type FixSample = { table: string; column: string; rowId: string; oldValue: string; newValue: string };
@@ -371,71 +253,6 @@ async function formatUnify(db: D1Database, dryRun: boolean, staffId: string, now
   return result;
 }
 
-export const TRIAL_DATE_COLUMNS = [
-  { column: 'subscription_start_at', sheetColumn: 'サブスク登録日時' },
-  { column: 'subscription_end_at', sheetColumn: 'サブスク終了日時' },
-] as const;
-
-export type TrialDateMissing = { lineUserId: string; column: string; friendCreatedAt: string | null };
-
-export function buildFillEmptyStatements(db: D1Database, c: FixCandidate, staffId: string, now: string): D1PreparedStatement[] {
-  return [
-    db
-      .prepare(`UPDATE furim_customers SET ${c.column} = ? WHERE line_user_id = ? AND (${c.column} IS NULL OR ${c.column} = '')`)
-      .bind(c.newValue, c.pk.line_user_id),
-    db
-      .prepare(
-        'INSERT INTO furim_admin_audit (id, staff_id, staff_name, table_name, row_id, column_name, old_value, new_value, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1',
-      )
-      .bind(crypto.randomUUID(), staffId, FIX_STAFF_NAME, c.table, c.rowId, c.column, c.oldValue || null, c.newValue, now),
-  ];
-}
-
-async function trialDates(db: D1Database, gasDeployId: string | undefined, dryRun: boolean, staffId: string, now: string, cache: SheetCache): Promise<FixResult> {
-  const result: FixResult = { target: 'trial-dates', dryRun, candidates: 0, updated: 0, skippedNoSource: 0, skippedAlreadyFixed: 0, auditRows: 0, samples: [], missing: [] };
-  const rows =
-    (
-      await db
-        .prepare(
-          `SELECT c.line_user_id, c.subscription_start_at, c.subscription_end_at, f.created_at AS friend_created_at
-           FROM furim_customers c LEFT JOIN friends f ON f.line_user_id = c.line_user_id
-           WHERE substr(c.key_code, 1, ?) = ? AND (c.subscription_end_at IS NULL OR c.subscription_end_at = '')`,
-        )
-        .bind(TRIAL_KEYCODE_PREFIX.length, TRIAL_KEYCODE_PREFIX)
-        .all<{ line_user_id: string; subscription_start_at: string | null; subscription_end_at: string | null; friend_created_at: string | null }>()
-    ).results ?? [];
-  if (rows.length === 0) return result;
-  const sheet = await sheetRows(gasDeployId, MASTER_SHEET, 3, cache);
-  const candidates: FixCandidate[] = [];
-  for (const { column, sheetColumn } of TRIAL_DATE_COLUMNS) {
-    const pairs: Array<[string, string | null]> = [];
-    for (const r of sheet) {
-      const id = sheetRowLineUserId(r);
-      if (id) pairs.push([id, str(r[sheetColumn])]);
-    }
-    const sources = uniqueSourceMap(pairs);
-    for (const row of rows) {
-      const oldValue = row[column] ?? '';
-      if (oldValue !== '') continue;
-      const srcMs = parseJstDateTime(sources.get(row.line_user_id) ?? null);
-      if (srcMs == null) {
-        result.skippedNoSource++;
-        result.missing!.push({ lineUserId: row.line_user_id, column, friendCreatedAt: row.friend_created_at });
-        continue;
-      }
-      candidates.push({ table: 'furim_customers', column, rowId: row.line_user_id, pk: { line_user_id: row.line_user_id }, oldValue, newValue: toJstString(new Date(srcMs)) });
-    }
-  }
-  result.candidates = candidates.length;
-  result.samples = candidates.slice(0, SAMPLE_LIMIT * 2).map(({ table, column, rowId, oldValue, newValue }) => ({ table, column, rowId, oldValue, newValue }));
-  if (dryRun || candidates.length === 0) return result;
-  const applied = await applyFixCandidates(db, candidates, staffId, now, buildFillEmptyStatements);
-  result.updated = applied.updated;
-  result.auditRows = applied.auditRows;
-  console.log('[furim/fix-datetimes]', JSON.stringify({ target: 'trial-dates', candidates: result.candidates, updated: result.updated, auditRows: result.auditRows, skippedNoSource: result.skippedNoSource }));
-  return result;
-}
-
 export type FixResult = {
   target: FixTarget;
   dryRun: boolean;
@@ -445,23 +262,18 @@ export type FixResult = {
   skippedAlreadyFixed: number;
   auditRows: number;
   samples: FixSample[];
-  judgeBefore?: SevenDayJudge;
-  judgeAfter?: SevenDayJudge;
   columns?: FormatUnifyColumnResult[];
-  missing?: TrialDateMissing[];
 };
 
 export async function fixDatetimes(
   db: D1Database,
-  gasDeployId: string | undefined,
   target: FixTarget,
-  opts: { dryRun: boolean; staffId: string; now?: string; nowMs?: number; cache?: SheetCache },
+  opts: { dryRun: boolean; staffId: string; now?: string; nowMs?: number },
 ): Promise<FixResult> {
   const nowMs = opts.nowMs ?? Date.now();
   const now = opts.now ?? toJstString(new Date(nowMs));
   if (target === 'format-unify') return formatUnify(db, opts.dryRun, opts.staffId, now);
-  if (target === 'trial-dates') return trialDates(db, gasDeployId, opts.dryRun, opts.staffId, now, opts.cache ?? new Map());
-  const rows = await loadFixRows(db, gasDeployId, target, opts.cache ?? new Map());
+  const rows = await loadFixRows(db, target);
   const classified = classifyFixRows(rows);
   const result: FixResult = {
     target,
@@ -473,18 +285,10 @@ export async function fixDatetimes(
     auditRows: 0,
     samples: classified.candidates.slice(0, SAMPLE_LIMIT).map(({ table, column, rowId, oldValue, newValue }) => ({ table, column, rowId, oldValue, newValue })),
   };
-  if (target === 'friend-sub') result.judgeBefore = await readSubJudge(db, nowMs);
-  if (opts.dryRun) {
-    if (target === 'friend-sub') {
-      const next = classified.candidates[0]?.newValue ?? result.judgeBefore?.friendCreatedAt ?? null;
-      result.judgeAfter = judgeSevenDay(next, nowMs);
-    }
-    return result;
-  }
+  if (opts.dryRun) return result;
   const applied = await applyFixCandidates(db, classified.candidates, opts.staffId, now);
   result.updated = applied.updated;
   result.auditRows = applied.auditRows;
-  if (target === 'friend-sub') result.judgeAfter = await readSubJudge(db, nowMs);
   console.log('[furim/fix-datetimes]', JSON.stringify({ target, candidates: result.candidates, updated: result.updated, auditRows: result.auditRows, skippedNoSource: result.skippedNoSource, skippedAlreadyFixed: result.skippedAlreadyFixed }));
   return result;
 }

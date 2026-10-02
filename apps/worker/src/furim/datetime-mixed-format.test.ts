@@ -7,7 +7,6 @@ import { watchPlanChangeIntents } from './plan-change-watch.js';
 import { retryMissedAdConversions } from '../services/ad-conversion.js';
 import { formatJstDateTime, formatJstIso, parseJstDateTime } from './customer-store.js';
 import { formatExpiredDate } from './ext-auth.js';
-import { toEpoch } from './gas-retry-queue.js';
 
 const HOUR = 60 * 60_000;
 const DAY = 24 * HOUR;
@@ -134,11 +133,6 @@ describe('サブスク期限の読み手: 形式が混ざっても同じ時刻�
 
   it('拡張へ返す expiredDate は保存形式によらず同じ文字列', () => {
     for (const vs of cases) expect(new Set(vs.map((v) => formatExpiredDate(v))).size).toBe(1);
-  });
-
-  it('GAS 再実行の突き合わせ（toEpoch）でシートのスペース区切りと D1 の ISO が同じ時刻', () => {
-    const ms = Date.parse('2026-10-15T13:40:05+09:00');
-    expect(toEpoch(formatJstDateTime(ms))).toBe(toEpoch(formatJstIso(ms)));
   });
 
   it('stripe-processor の D1 値（formatJstIso）とシート値（formatJstDateTime）は同じ時刻', () => {

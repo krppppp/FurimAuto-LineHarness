@@ -638,7 +638,6 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
 
   const aiEnv = {
     ...baseEnv,
-    GAS_DEPLOY_ID: 'gas-deploy-id',
     STRIPE_SECRET_KEY: 'sk_test_dummy',
     FIREBASE_DATABASE_URL: 'https://example.firebaseio.com',
     GEMINI_API_KEY: 'gemini-key',
@@ -805,7 +804,6 @@ describe('POST /webhook — 解約理由の自由記述（TB-740）', () => {
 
   const cxEnv = {
     ...baseEnv,
-    GAS_DEPLOY_ID: 'gas-deploy-id',
     STRIPE_SECRET_KEY: 'sk_test_dummy',
     FIREBASE_DATABASE_URL: 'https://example.firebaseio.com',
     GEMINI_API_KEY: 'gemini-key',

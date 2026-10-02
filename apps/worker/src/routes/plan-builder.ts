@@ -143,7 +143,7 @@ export async function ensureComboCoupon(secretKey: string, nFull: number, nSemi:
 
 // 顧客レベルのクーポン（「Furimanです」キーワードで付与される旧来フロー）を確認する。
 // Stripe顧客ID の解決は D1（furim_customers → friends.metadata）だけ（GAS getStripeIDwithLINEID は段階2.5 で削除・Capsec #244）
-async function resolveCustomerIdD1First(db: D1Database | undefined, _gasDeployId: string | undefined, lineUserId: string): Promise<string | null> {
+async function resolveCustomerIdD1First(db: D1Database | undefined, lineUserId: string): Promise<string | null> {
   if (!db) return null;
   try {
     const { resolveStripeCustomerId } = await import('../furim/customer-store.js');
@@ -158,7 +158,6 @@ async function resolveCustomerIdD1First(db: D1Database | undefined, _gasDeployId
 // 「既に付いているか」を見るだけ（LIFFバナー表示と、checkoutでcombo割引に潰されない制御に使う）
 async function getCustomerCoupon(
   secretKey: string,
-  gasDeployId: string,
   lineUserId: string,
   db?: D1Database,
 ): Promise<{ exists: boolean; customerId?: string; couponName?: string; percent?: number | null }> {
@@ -166,7 +165,7 @@ async function getCustomerCoupon(
   // Stripe の顧客取得が落ちても customerId は返す（Checkout で新しい顧客を作らせない・TB-949）
   let customerId: string | null = null;
   try {
-    customerId = await resolveCustomerIdD1First(db, gasDeployId, lineUserId);
+    customerId = await resolveCustomerIdD1First(db, lineUserId);
     if (!customerId) return { exists: false };
     const cust = (await stripeCall(secretKey, `customers/${customerId}`, undefined, 'GET')) as {
       discount?: { coupon?: { name?: string; percent_off?: number | null } };
@@ -194,8 +193,8 @@ planBuilder.get('/plan-builder/features', async (c) => {
 // 顧客に付与済みのクーポン確認（LIFF UIのバナー表示用。付与は「Furimanです」キーワードで）
 planBuilder.get('/plan-builder/coupon-status', async (c) => {
   const lineUserId = c.req.query('lineUserId') ?? '';
-  if (!lineUserId || !c.env.GAS_DEPLOY_ID || !c.env.STRIPE_SECRET_KEY) return c.json({ success: true, eligible: false });
-  const s = await getCustomerCoupon(c.env.STRIPE_SECRET_KEY, c.env.GAS_DEPLOY_ID, lineUserId, c.env.DB);
+  if (!lineUserId || !c.env.STRIPE_SECRET_KEY) return c.json({ success: true, eligible: false });
+  const s = await getCustomerCoupon(c.env.STRIPE_SECRET_KEY, lineUserId, c.env.DB);
   return c.json({ success: true, eligible: s.exists, couponName: s.couponName ?? null, percent: s.percent ?? null });
 });
 
@@ -210,7 +209,6 @@ export type PlanSelectionInput = {
 
 export type PlanCheckoutEnv = {
   STRIPE_SECRET_KEY?: string;
-  GAS_DEPLOY_ID?: string;
   WORKER_PUBLIC_URL?: string;
   // GAS の顧客ID照合が落ちたときのフォールバック用（friends.metadata.stripeCustomerId）
   DB?: D1Database;
@@ -358,8 +356,7 @@ export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: Plan
     {
       // 顧客は D1 の furim_customers → friends.metadata の順で引く。DB を渡さないと furim_customers を
       // 見られず、metadata に無い人は Checkout で新しい Stripe 顧客ができていた（TB-949）。
-      // GAS は顧客の解決に使っていないので GAS_DEPLOY_ID の有無で飛ばさない
-      const cc = await getCustomerCoupon(secretKey, env.GAS_DEPLOY_ID ?? '', body.lineUserId, env.DB);
+      const cc = await getCustomerCoupon(secretKey, body.lineUserId, env.DB);
       if (cc.customerId) params['customer'] = cc.customerId;
       // 顧客IDが取れないと、以後の webhook が顧客IDで行を引けず、サブスク終了日時が
       // 更新されずキーコードが「有効期限切れ」になる（2026-09-13 あおいさん事案）。
@@ -423,12 +420,12 @@ planBuilder.post('/plan-builder/checkout', async (c) => {
 // lineUserIdからアクティブなStripeサブスクを引く（プラン変更フロー用）。
 // スプシでStripe顧客IDを逆引き→activeサブスクの先頭を返す。無ければnull
 export async function getActiveSubscriptionForLine(
-  env: { GAS_DEPLOY_ID?: string; STRIPE_SECRET_KEY?: string; DB?: D1Database },
+  env: { STRIPE_SECRET_KEY?: string; DB?: D1Database },
   lineUserId: string,
 ): Promise<{ customerId: string; sub: Record<string, unknown> } | null> {
   if (!env.STRIPE_SECRET_KEY) return null;
   try {
-    const customerId = (await resolveCustomerIdD1First(env.DB, env.GAS_DEPLOY_ID, lineUserId)) ?? '';
+    const customerId = (await resolveCustomerIdD1First(env.DB, lineUserId)) ?? '';
     if (!customerId || !customerId.startsWith('cus_')) return null;
     const list = (await stripeCall(env.STRIPE_SECRET_KEY, 'subscriptions', { customer: customerId, status: 'active', limit: '3' }, 'GET')) as unknown as { data: Array<Record<string, unknown>> };
     const sub = list.data?.[0];

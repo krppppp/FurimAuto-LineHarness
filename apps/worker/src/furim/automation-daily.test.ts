@@ -4,11 +4,8 @@ import {
   judgeAutomationDrop,
   judgeTargetDay,
   median,
-  sheetSyncStaleHours,
   summarizeAutomationDaily,
-  SHEET_SYNC_HEARTBEAT_ID,
 } from './automation-daily.js';
-import { recordSheetSyncHeartbeat } from './sheet-execution-sync.js';
 
 function makeDb(opts: { daily?: unknown[]; services?: unknown[]; sameTime?: unknown[]; heartbeat?: unknown }) {
   const captured: Array<{ sql: string; binds: unknown[] }> = [];
@@ -84,17 +81,5 @@ describe('自動化の日別件数と人数（Capsec #296）', () => {
     expect(q.binds.length).toBeGreaterThan(50);
     const t = captured.find((x) => x.sql.includes(', 12, 8)'))!;
     expect(t.binds.slice(0, 3)).toEqual(['2026-09-10', '2026-09-16', '15:13:00']);
-  });
-
-  it('シート取り込みの停止時間。心拍がまだ無ければ判定しない', () => {
-    expect(sheetSyncStaleHours('2026-09-17T03:00:05.000+09:00', '2026-09-17T10:30:00.000+09:00')).toBe(7);
-    expect(sheetSyncStaleHours(null, '2026-09-17T10:30:00.000+09:00')).toBeNull();
-  });
-
-  it('取り込みの心拍は、画面が読むのと同じ id で書く', async () => {
-    const { db, captured } = makeDb({});
-    await recordSheetSyncHeartbeat(db, { stopped: true, reason: 'x', legacyMembers: 0 }, '2026-09-17T15:00:00.000+09:00');
-    expect(captured[0].sql).toContain('furim_health_heartbeat');
-    expect(captured[0].binds.slice(0, 3)).toEqual([SHEET_SYNC_HEARTBEAT_ID, '2026-09-17T15:00:00.000+09:00', 'stopped']);
   });
 });
