@@ -18,6 +18,7 @@ import {
 import { toDisplayDateTime } from '../datetime'
 import {
   DATETIME_PLACEHOLDER,
+  bulkDeleteRows,
   cell,
   mutate,
   saveRowChanges,
@@ -158,7 +159,7 @@ function RowEditor({
     : `${pkLabels} = ${id}`
 
   const handleDelete = async () => {
-    if (!window.confirm(`${table.label} の行（${rowSummary || id}）を削除します。元に戻せません。よろしいですか？`)) return
+    if (!window.confirm(`${table.label} の 1 件（${rowSummary || id}）を削除します。元に戻せません。よろしいですか？`)) return
     setSaving(true)
     setError('')
     try {
@@ -376,10 +377,15 @@ function DataTableInner() {
   const [editing, setEditing] = useState<Row | null>(null)
   const [adding, setAdding] = useState(false)
   const [exporting, setExporting] = useState(false)
+  // 一括削除（TB-927）: チェックした行の id。表示中のページの行だけを持つ
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [notice, setNotice] = useState('')
   const load = useCallback(async (cur: string, search: string) => {
     if (!name) return
     setLoading(true)
     setError('')
+    setSelected(new Set())
     try {
       const params = new URLSearchParams({ limit: String(LIMIT), cursor: cur })
       if (search) params.set('q', search)
@@ -451,6 +457,42 @@ function DataTableInner() {
   }
 
   const cols = table ? listColumnsOf(table) : []
+  const selectable = Boolean(table?.deletable)
+  const pageIds = table ? rows.map((r) => rowId(r, table)) : []
+  const allSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id))
+
+  const toggleRow = (id: string) =>
+    setSelected((s) => {
+      const next = new Set(s)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(pageIds))
+
+  const handleBulkDelete = async () => {
+    if (!table || selected.size === 0) return
+    const ids = pageIds.filter((id) => selected.has(id))
+    if (!window.confirm(`${table.label} の ${ids.length} 件を削除します。元に戻せません。よろしいですか？`)) return
+    setBulkDeleting(true)
+    setError('')
+    setNotice('')
+    try {
+      const res = await bulkDeleteRows(table.name, ids)
+      const gone = new Set([...res.deleted, ...res.missing])
+      setRows((rs) => rs.filter((r) => !gone.has(rowId(r, table))))
+      setTotal((t) => Math.max(0, t - res.deleted.length))
+      setSelected((s) => new Set([...s].filter((id) => !gone.has(id))))
+      const missingText = res.missing.length ? `（${res.missing.length} 件はすでに消えていました）` : ''
+      if (res.error) setError(`${res.deleted.length} 件を削除したところで止まりました${missingText}: ${res.error}`)
+      else setNotice(`${res.deleted.length} 件を削除しました${missingText}`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '削除に失敗しました')
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
 
   return (
     <div>
@@ -528,11 +570,33 @@ function DataTableInner() {
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>
       )}
+      {notice && (
+        <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">{notice}</div>
+      )}
 
       <div className="mb-2 flex items-center justify-between text-xs text-gray-500">
         <span>
           {total} 件{query ? `（「${query}」で絞り込み）` : ''}
           {table?.allRows ? '・全件表示' : `・${offset + 1}〜${Math.min(offset + rows.length, total)} 件目`}
+          {selectable && selected.size > 0 && (
+            <>
+              <span className="ml-3 font-medium text-gray-700">{selected.size} 件を選択中</span>
+              <button
+                onClick={handleBulkDelete}
+                disabled={bulkDeleting}
+                className="ml-2 px-2.5 py-1 font-medium text-red-700 bg-white border border-red-300 rounded hover:bg-red-50 disabled:opacity-50"
+              >
+                {bulkDeleting ? '削除中...' : `選択した ${selected.size} 件を削除`}
+              </button>
+              <button
+                onClick={() => setSelected(new Set())}
+                disabled={bulkDeleting}
+                className="ml-1 px-2.5 py-1 font-medium text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                選択を解除
+              </button>
+            </>
+          )}
         </span>
         <span className={`flex items-center gap-2 ${table?.allRows ? 'hidden' : ''}`}>
           <button
@@ -564,6 +628,16 @@ function DataTableInner() {
                   className="px-3 py-2 text-left text-xs font-semibold text-gray-500 whitespace-nowrap sticky top-0 left-0 z-30 bg-gray-50 border-b border-r border-gray-200"
                   title="_display_name（friends.display_name）"
                 >
+                  {selectable && (
+                    <input
+                      type="checkbox"
+                      aria-label="このページの行をすべて選択"
+                      title="このページの行をすべて選択"
+                      checked={allSelected}
+                      onChange={toggleAll}
+                      className="mr-2 align-middle"
+                    />
+                  )}
                   {table.displayNameLabel ?? 'LINE表示名'}
                 </th>
                 {cols.map((c) => (
@@ -585,13 +659,26 @@ function DataTableInner() {
                   </td>
                 </tr>
               ) : (
-                rows.map((r) => (
+                rows.map((r) => {
+                  const id = rowId(r, table)
+                  const checked = selected.has(id)
+                  return (
                   <tr
-                    key={rowId(r, table)}
+                    key={id}
                     onClick={() => setEditing(r)}
-                    className="cursor-pointer hover:bg-green-50 transition-colors group"
+                    className={`cursor-pointer hover:bg-green-50 transition-colors group ${checked ? 'bg-red-50' : ''}`}
                   >
-                    <td className="px-3 py-2 whitespace-nowrap max-w-xs truncate sticky left-0 z-10 bg-white group-hover:bg-green-50 border-b border-r border-gray-100">
+                    <td className={`px-3 py-2 whitespace-nowrap max-w-xs truncate sticky left-0 z-10 group-hover:bg-green-50 border-b border-r border-gray-100 ${checked ? 'bg-red-50' : 'bg-white'}`}>
+                      {selectable && (
+                        <input
+                          type="checkbox"
+                          aria-label="この行を選択"
+                          checked={checked}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={() => toggleRow(id)}
+                          className="mr-2 align-middle"
+                        />
+                      )}
                       <DisplayName row={r} />
                     </td>
                     {cols.map((c) => {
@@ -608,7 +695,8 @@ function DataTableInner() {
                       )
                     })}
                   </tr>
-                ))
+                  )
+                })
               )}
             </tbody>
           </table>
@@ -627,6 +715,7 @@ function DataTableInner() {
           onDeleted={(deletedId) => {
             setEditing(null)
             setRows((rs) => rs.filter((r) => rowId(r, table) !== deletedId))
+            setSelected((s) => new Set([...s].filter((id) => id !== deletedId)))
             setTotal((t) => Math.max(0, t - 1))
             if (openId) router.replace(tableHref(name, query ? { q: query } : {}))
           }}
