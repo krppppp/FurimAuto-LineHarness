@@ -162,9 +162,11 @@ async function getCustomerCoupon(
   lineUserId: string,
   db?: D1Database,
 ): Promise<{ exists: boolean; customerId?: string; couponName?: string; percent?: number | null }> {
+  // Stripe顧客ID は D1（furim_customers → friends.metadata）で引く（段階2・Capsec #244）。
+  // Stripe の顧客取得が落ちても customerId は返す（Checkout で新しい顧客を作らせない・TB-949）
+  let customerId: string | null = null;
   try {
-    // Stripe顧客ID は D1（furim_customers → friends.metadata）を先に見る（段階2・Capsec #244）。無ければ GAS
-    const customerId = await resolveCustomerIdD1First(db, gasDeployId, lineUserId);
+    customerId = await resolveCustomerIdD1First(db, gasDeployId, lineUserId);
     if (!customerId) return { exists: false };
     const cust = (await stripeCall(secretKey, `customers/${customerId}`, undefined, 'GET')) as {
       discount?: { coupon?: { name?: string; percent_off?: number | null } };
@@ -174,7 +176,7 @@ async function getCustomerCoupon(
     return { exists: false, customerId };
   } catch (e) {
     console.log('plan-builder: customer coupon check skipped', e);
-    return { exists: false };
+    return customerId ? { exists: false, customerId } : { exists: false };
   }
 }
 
@@ -353,11 +355,13 @@ export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: Plan
     // 「初月=併用割引後価格の◯%OFF」となる合算onceクーポンを都度作成して渡し（旧システムと同額）、
     // comboはmetadataに退避して初回invoice後にwebhookがsubscriptionへ後付けする（2ヶ月目〜）。
     // 合算クーポンと顧客クーポンは初回invoice後にwebhookが削除する（一覧を汚さない・二重適用防止）
-    if (env.GAS_DEPLOY_ID) {
-      const cc = await getCustomerCoupon(secretKey, env.GAS_DEPLOY_ID, body.lineUserId);
+    {
+      // 顧客は D1 の furim_customers → friends.metadata の順で引く。DB を渡さないと furim_customers を
+      // 見られず、metadata に無い人は Checkout で新しい Stripe 顧客ができていた（TB-949）。
+      // GAS は顧客の解決に使っていないので GAS_DEPLOY_ID の有無で飛ばさない
+      const cc = await getCustomerCoupon(secretKey, env.GAS_DEPLOY_ID ?? '', body.lineUserId, env.DB);
       if (cc.customerId) params['customer'] = cc.customerId;
-      // GAS が一時的に落ちている（404等）と customerId が取れず、Stripe Checkout が新規顧客を
-      // 作ってしまう。すると以後の webhook が顧客IDでシート行を引けず、サブスク終了日時が
+      // 顧客IDが取れないと、以後の webhook が顧客IDで行を引けず、サブスク終了日時が
       // 更新されずキーコードが「有効期限切れ」になる（2026-09-13 あおいさん事案）。
       // D1 の friends.metadata.stripeCustomerId（友だち追加時に作成した顧客）で補う
       if (!params['customer'] && env.DB) {
@@ -366,7 +370,7 @@ export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: Plan
           const meta = JSON.parse((friend as { metadata?: string } | null)?.metadata || '{}') as { stripeCustomerId?: string };
           if (meta.stripeCustomerId) {
             params['customer'] = meta.stripeCustomerId;
-            console.warn('plan-builder: GAS customer lookup unavailable, using friends.metadata.stripeCustomerId', meta.stripeCustomerId);
+            console.warn('plan-builder: customer lookup empty, using friends.metadata.stripeCustomerId', meta.stripeCustomerId);
           }
         } catch (e) {
           console.error('plan-builder: D1 customer fallback failed', e);
