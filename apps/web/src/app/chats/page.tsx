@@ -809,6 +809,48 @@ export default function ChatsPage() {
     }
   }, [chatDetail?.id, chatDetail?.messages?.length])
 
+  // スクロール中、いま上端にあるメッセージの年月日を上部に固定表示する（LINE の日付ヘッダーと同じ）。
+  // その日の日付区切りが見えている間と、次の日の区切りが上端に近づいたら重ならないよう隠す。
+  const [stickyDate, setStickyDate] = useState<string | null>(null)
+  useEffect(() => {
+    const el = messagesScrollRef.current
+    const msgs = chatDetail?.messages ?? []
+    if (!el || msgs.length === 0) {
+      setStickyDate(null)
+      return
+    }
+    let frame = 0
+    const update = () => {
+      frame = 0
+      const top = el.getBoundingClientRect().top
+      const offset = (i: number) => {
+        const node = messageRefs.current[msgs[i].id]
+        return node ? node.getBoundingClientRect().top - top : Infinity
+      }
+      let idx = 0
+      for (let i = 0; i < msgs.length; i++) {
+        if (offset(i) <= 0) idx = i
+        else break
+      }
+      let first = idx
+      while (first > 0 && sameYmd(msgs[first - 1].createdAt, msgs[idx].createdAt)) first--
+      let next = idx + 1
+      while (next < msgs.length && sameYmd(msgs[next].createdAt, msgs[idx].createdAt)) next++
+      const separatorVisible = offset(first) >= 0
+      const nextSeparatorNear = next < msgs.length && offset(next) < 40
+      setStickyDate(separatorVisible || nextSeparatorNear ? null : formatYmdSlash(msgs[idx].createdAt))
+    }
+    const onScroll = () => {
+      if (!frame) frame = window.requestAnimationFrame(update)
+    }
+    update()
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame)
+      el.removeEventListener('scroll', onScroll)
+    }
+  }, [chatDetail?.id, chatDetail?.messages])
+
   // Auto-resize textarea as messageContent grows
   useEffect(() => {
     const el = textareaRef.current
@@ -1432,6 +1474,14 @@ export default function ChatsPage() {
               )}
 
               {/* Messages — LINE-style chat bubbles */}
+              <div className="relative flex-1 min-h-0 flex flex-col">
+              {stickyDate && (
+                <div className="absolute top-2 left-0 right-0 z-10 flex justify-center pointer-events-none">
+                  <span className="text-[11px] text-white/90 bg-black/30 px-2.5 py-0.5 rounded-full">
+                    {stickyDate}
+                  </span>
+                </div>
+              )}
               <div ref={messagesScrollRef} className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
                 {(!chatDetail.messages || chatDetail.messages.length === 0) ? (
                   <div className="text-center py-8">
@@ -1639,6 +1689,7 @@ export default function ChatsPage() {
                     )
                   })
                 )}
+              </div>
               </div>
 
               {/* Notes */}
