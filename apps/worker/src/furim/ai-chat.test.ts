@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FALLBACK_TEXT, buildAIChatPrompt, decodeBase64Utf8, howtoAnchorUrl, parseAIReply } from './ai-chat.js';
+import { FALLBACK_TEXT, JOIN_STEPS_TEXT, buildAIChatPrompt, decodeBase64Utf8, howtoAnchorUrl, parseAIReply } from './ai-chat.js';
 
 describe('AI チャットのプロンプト（Capsec #307）', () => {
   const history = [
@@ -34,6 +34,15 @@ describe('AI チャットのプロンプト（Capsec #307）', () => {
     const { prefix } = buildAIChatPrompt({ howtoText: '', faqText: 'F', history: [], queryText: 'Q' });
     expect(prefix).toContain('資料2（よくある質問）だけを根拠');
     expect(prefix).not.toContain('[[howto:その章のid]]');
+  });
+
+  it('入会方法を聞かれたら 4 ステップを書かせる。説明書が取れないときも同じ（TB-925）', () => {
+    for (const howtoText of ['H', '']) {
+      const { prefix } = buildAIChatPrompt({ howtoText, faqText: 'F', history: [], queryText: 'Q' });
+      expect(prefix).toContain(JOIN_STEPS_TEXT);
+    }
+    expect(JOIN_STEPS_TEXT).toContain('1. リッチメニューの「ガイド」タブ →「プラン診断」をタップ');
+    expect(JOIN_STEPS_TEXT).toContain('4. その後LINEに送られてくる決済URLからクレジットカード決済');
   });
 
   it('答えられないときの定型文は、長尺動画への誘導を外し、担当者への案内だけにする', () => {

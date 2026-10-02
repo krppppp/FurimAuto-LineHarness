@@ -1150,8 +1150,8 @@ async function scheduled(
       })
       .catch((err) => console.error('[cron] furim customer-sync error:', err)),
   );
-  // 週1セミナーの日程アンケート（Capsec #331）。日曜 9:00 JST に有料/未課金の2種を送る。
-  // 曜日・時刻の判定と二重送信の枠取りは sendSeminarSurvey の中で行う
+  // 週1セミナーの日程アンケート（Capsec #331 → TB-821）。土曜 9:00 JST に翌日曜からの週ぶんを有料/未課金の2種で送る。
+  // 曜日・時刻の判定と二重送信の枠取りは sendSeminarSurvey の中で行う（日曜 9:00 にはもう送らない）
   jobs.push(
     import('./furim/seminar.js')
       .then(({ sendSeminarSurvey }) => sendSeminarSurvey(env.DB, defaultLineClient, env, { nowMs: event.scheduledTime }))
@@ -1165,7 +1165,7 @@ async function scheduled(
       })
       .catch((err) => console.error('[cron] seminar survey error:', err)),
   );
-  // 同・日曜 17:00 の集計と告知＋開催 30 分前のリマインド（Capsec #332）
+  // 同・日曜 17:00 の集計と、日程アンケートに答えた人だけへの告知＋聞きたい内容アンケート（TB-821）
   jobs.push(
     import('./furim/seminar.js')
       .then(async ({ announceSeminar, countNoFitVotes }) => {
@@ -1174,7 +1174,7 @@ async function scheduled(
           const noFit = await countNoFitVotes(env.DB, r.weekId);
           const { notifyStaff } = await import('./furim/staff-notify.js');
           const lines = r.chosen.map((c, i) => `${i + 1}. ${c.starts_at.slice(0, 16)} … ${c.votes} 票`).join('\n');
-          await notifyStaff(env.DB, defaultLineClient, env, { title: `今週のセミナー日程が決まりました（${r.weekId}）`, body: `${lines}\n「どれも合わない」${noFit} 人。告知を配信しました。` }, 'furim/seminar');
+          await notifyStaff(env.DB, defaultLineClient, env, { title: `今週のセミナー日程が決まりました（${r.weekId}）`, body: `${lines}\n「どれも合わない」${noFit} 人。回答者 ${r.recipients} 人のうち ${r.delivered} 人へ告知と内容アンケートを送りました。` }, 'furim/seminar');
         } else if (r.reason === 'noVotes' || r.reason === 'noStreamUrl') {
           // 5 分ごとに鳴らさないよう :00 の tick だけ通知する
           if (isJstMinuteWindow(event.scheduledTime, 0)) {
@@ -1189,8 +1189,21 @@ async function scheduled(
   jobs.push(
     import('./furim/seminar.js')
       .then(({ remindSeminarSlots }) => remindSeminarSlots(env.DB, defaultLineClient, env, { nowMs: event.scheduledTime }))
-      .then((r) => { if (r.reminded.length > 0) console.log('[cron] seminar reminder', JSON.stringify(r)); })
-      .catch((err) => console.error('[cron] seminar reminder error:', err)),
+      .then((r) => { if (r.reminded.length > 0) console.log('[cron] seminar url', JSON.stringify(r)); })
+      .catch((err) => console.error('[cron] seminar url error:', err)),
+  );
+  // 同・各枠の開始 1 時間前に、聞きたい内容アンケートの集計（票数＋その他の本文）をくろさんへ（TB-821）
+  jobs.push(
+    import('./furim/seminar.js')
+      .then(({ collectSeminarTopicReports }) => collectSeminarTopicReports(env.DB, { nowMs: event.scheduledTime }))
+      .then(async (r) => {
+        if (r.reported.length === 0) return;
+        const { notifyStaff } = await import('./furim/staff-notify.js');
+        for (const x of r.reported) {
+          await notifyStaff(env.DB, defaultLineClient, env, { title: '生配信の聞きたい内容（集計）', body: x.text.split('\n').slice(0, 3).join(' / '), lineText: x.text }, 'furim/seminar');
+        }
+      })
+      .catch((err) => console.error('[cron] seminar topic report error:', err)),
   );
   if (event.cron !== '0 */6 * * *' && env.FURIM_EXT_CACHE) {
     const kv = env.FURIM_EXT_CACHE;

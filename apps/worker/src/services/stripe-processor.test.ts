@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@line-crm/db', () => ({
   getFriendByLineUserId: vi.fn(),
@@ -53,6 +53,7 @@ import {
   markStripeEventFailed,
   updateFriendPlanName,
 } from '@line-crm/db';
+import { LineClient } from '@line-crm/line-sdk';
 import { gasGet } from '../furim/gas-client.js';
 import { fireEvent } from './event-bus.js';
 import { processStripeEvent, sweepPendingStripeEvents } from './stripe-processor.js';
@@ -583,5 +584,108 @@ describe('processStripeEvent — customer.subscription.deleted（Capsec #263 (4)
     const cancel = calls.find((c) => /INSERT OR IGNORE INTO furim_cancellations/.test(c.sql));
     expect(cancel?.sql).toMatch(/canceled_at/);
     expect(cancel?.args).toEqual([expect.any(String), 'U-cancel', 'evt_del_1', 'sub_del_1', 'PBプラン:X', 'https://jp.mercari.com/user/profile/1', '2026-07-21T12:00:00.000+09:00']);
+  });
+});
+
+describe('processStripeEvent — customer.subscription.deleted の解約理由アンケート push（TB-740）', () => {
+  // 解約行の INSERT・automation（解約完了の通知）・アンケートの push の順序を1本の配列で見る。
+  // TB-756 案1: 顧客に届く順は「解約完了の通知 → アンケート」。push は必ず fireEvent の後
+  function traceFireEvent(trace: string[], ok = true) {
+    vi.mocked(fireEvent).mockImplementation(async (_db, name) => {
+      if (name === 'stripe_subscription_deleted') trace.push('fireEvent');
+      return ok;
+    });
+  }
+
+  afterEach(() => { vi.mocked(fireEvent).mockResolvedValue(true); });
+
+  function makeCancelDb(trace: string[], cancellationChanges = 1) {
+    return {
+      prepare: vi.fn().mockImplementation((sql: string) => {
+        const stmt = {
+          bind: () => stmt,
+          run: vi.fn().mockImplementation(async () => {
+            if (/INSERT OR IGNORE INTO furim_cancellations/.test(sql)) {
+              trace.push('insert');
+              return { meta: { changes: cancellationChanges } };
+            }
+            return { meta: { changes: 1 } };
+          }),
+          all: vi.fn().mockResolvedValue({ results: [] }),
+          first: vi.fn().mockImplementation(async () => (/FROM furim_customers WHERE stripe_customer_id/.test(sql) ? { line_user_id: 'U-cancel', plan_label: 'PBプラン:X' } : null)),
+        };
+        return stmt;
+      }),
+      batch: vi.fn().mockResolvedValue([]),
+    } as unknown as D1Database;
+  }
+
+  const deletedBody = {
+    id: 'evt_del_survey',
+    type: 'customer.subscription.deleted',
+    data: { object: { id: 'sub_del_survey', customer: 'cus_del_survey', metadata: {} } },
+  };
+
+  // TB-756 案1: 本番 D1 の automation（step 11）が送る「月額プランを解消しました」より後ろで push する。
+  // 逆だと顧客には「理由を教えてください」→「解消しました」の順で届く（F事業のリーダーが不可と決定）
+  test('解約完了の通知（automation）を送り切ってからアンケートを push する', async () => {
+    const trace: string[] = [];
+    const pushMessage = vi.fn().mockImplementation(async () => { trace.push('push'); });
+    vi.mocked(LineClient).mockImplementation(() => ({ pushMessage }) as never);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+    traceFireEvent(trace);
+
+    await processStripeEvent(makeCancelDb(trace), { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, deletedBody);
+
+    expect(trace).toEqual(['insert', 'fireEvent', 'push']);
+    expect(pushMessage).toHaveBeenCalledWith('U-cancel', expect.arrayContaining([expect.objectContaining({ type: 'flex' })]));
+  });
+
+  test('push が失敗しても解約処理は完走する（automation まで進む）', async () => {
+    const trace: string[] = [];
+    vi.mocked(LineClient).mockImplementation(() => ({ pushMessage: vi.fn().mockRejectedValue(new Error('LINE 429')) }) as never);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+    traceFireEvent(trace);
+
+    await expect(processStripeEvent(makeCancelDb(trace), { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, deletedBody)).resolves.toBeUndefined();
+
+    expect(trace).toEqual(['insert', 'fireEvent']);
+    expect(fireEvent).toHaveBeenCalledWith(expect.anything(), 'stripe_subscription_deleted', expect.objectContaining({ idempotencyKey: 'evt_del_survey' }), 'tok', null, expect.anything());
+  });
+
+  // TB-747: この関数は後段で throw して 2xx を返さないことがあり、Stripe は同じイベントを再送する。
+  // 解約行は stripe_event_id UNIQUE で増えないので、push も同じ条件で 1 回に抑える
+  test('再送（解約行が増えない＝changes 0）ではアンケートを push しない', async () => {
+    const trace: string[] = [];
+    const pushMessage = vi.fn().mockImplementation(async () => { trace.push('push'); });
+    vi.mocked(LineClient).mockImplementation(() => ({ pushMessage }) as never);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+    traceFireEvent(trace);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await processStripeEvent(makeCancelDb(trace, 0), { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, deletedBody);
+
+    expect(trace).toEqual(['insert', 'fireEvent']);
+    expect(pushMessage).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('push を見送った'), 'evt_del_survey', 'U-cancel');
+    // 解約処理そのものは今までどおり最後まで進む
+    expect(fireEvent).toHaveBeenCalledWith(expect.anything(), 'stripe_subscription_deleted', expect.objectContaining({ idempotencyKey: 'evt_del_survey' }), 'tok', null, expect.anything());
+    warn.mockRestore();
+  });
+
+  // automation が完走していない（= 解約完了の通知が届いたか分からない）ときにアンケートだけ出すと
+  // 順番が狂う。送らずに throw し、Stripe の再送に任せる（再送では changes 0 なのでアンケートは出ない）
+  test('automation が未完（fireEvent=false）ならアンケートを push せず throw する', async () => {
+    const trace: string[] = [];
+    const pushMessage = vi.fn().mockImplementation(async () => { trace.push('push'); });
+    vi.mocked(LineClient).mockImplementation(() => ({ pushMessage }) as never);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-c' } as never);
+    traceFireEvent(trace, false);
+
+    await expect(processStripeEvent(makeCancelDb(trace), { LINE_CHANNEL_ACCESS_TOKEN: 'tok' } as never, deletedBody))
+      .rejects.toThrow(/stripe_subscription_deleted automations incomplete/);
+
+    expect(trace).toEqual(['insert', 'fireEvent']);
+    expect(pushMessage).not.toHaveBeenCalled();
   });
 });

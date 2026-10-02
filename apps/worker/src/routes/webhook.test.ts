@@ -645,11 +645,11 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     GITHUB_PAT: 'github-pat',
   };
 
-  async function postText(text: string, opts: { exactAutoReplyKeyword?: string } = {}) {
+  async function postText(text: string, opts: { exactAutoReplyKeyword?: string; aiMode?: boolean } = {}) {
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getFriendByLineUserId).mockResolvedValue(aiModeFriend);
     vi.mocked(jstNow).mockReturnValue('2026-07-31T12:00:00.000+09:00');
-    vi.mocked(getAiMode).mockResolvedValue(true);
+    vi.mocked(getAiMode).mockResolvedValue(opts.aiMode ?? true);
     vi.mocked(handleFurimAction).mockResolvedValue(false);
 
     const exactRule = opts.exactAutoReplyKeyword
@@ -674,10 +674,10 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
           all: vi.fn(async () => ({
             results: exactRule && sql.includes('FROM auto_replies') ? [exactRule] : [],
           })),
-          // hasExactAutoReply の lookup。バインドしたキーワードと一致するときだけ行を返す
+          // findExactAutoReply の lookup。バインドしたキーワードと一致するときだけ行を返す
           first: vi.fn(async () =>
             exactRule && sql.includes("match_type = 'exact'") && stmt.args[0] === exactRule.keyword
-              ? { id: exactRule.id }
+              ? exactRule
               : null,
           ),
         };
@@ -756,6 +756,155 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     await postText('ライブ参加ってどうやるんですか？', { exactAutoReplyKeyword: 'ライブ参加' });
     expect(handleAIChat).toHaveBeenCalledTimes(1);
     expect(lineClientMocks.replyMessage).not.toHaveBeenCalled();
+  });
+
+  // TB-765: 【ボタン】付きの文は Worker の handleButtonAction → exact の auto_reply → 「準備中」の順で必ず返す
+  test('AIモードONでも handleButtonAction に無い【ボタン】xxx は exact の auto_reply が返る', async () => {
+    await postText('【ボタン】ライブ参加', { exactAutoReplyKeyword: '【ボタン】ライブ参加' });
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+    expect(lineClientMocks.replyMessage.mock.calls[0]?.[1]).not.toEqual([expect.objectContaining({ text: '現在急ピッチで準備中です！' })]);
+  });
+
+  test('AIモードOFFでも【ボタン】xxx は exact の auto_reply が返る', async () => {
+    await postText('【ボタン】ライブ参加', { exactAutoReplyKeyword: '【ボタン】ライブ参加', aiMode: false });
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('【ボタン】xxx がどこにも当たらなければ「準備中」を返す（黙って捨てない）', async () => {
+    await postText('【ボタン】まだ無いボタン');
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('reply-token', [expect.objectContaining({ text: '現在急ピッチで準備中です！' })]);
+  });
+
+  test('既存の【ボタン】アンケート開始 は auto_reply より handleButtonAction が先に答える', async () => {
+    await postText('【ボタン】アンケート開始', { exactAutoReplyKeyword: '【ボタン】アンケート開始' });
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fireEvent)).not.toHaveBeenCalled();
+  });
+});
+
+// TB-740 子2: 5択を押した直後の自由記述だけを reason_text に控え、その 1 通は AIチャットに流さない
+describe('POST /webhook — 解約理由の自由記述（TB-740）', () => {
+  const friend = {
+    id: 'friend-cx-1',
+    line_user_id: 'U-cx',
+    display_name: 'Cancelled',
+    picture_url: null,
+    status_message: null,
+    is_following: 1,
+    user_id: null,
+    line_account_id: null,
+    metadata: '{}',
+    first_tracked_link_id: null,
+    created_at: '2026-07-31T12:00:00.000+09:00',
+    updated_at: '2026-07-31T12:00:00.000+09:00',
+  };
+
+  const cxEnv = {
+    ...baseEnv,
+    GAS_DEPLOY_ID: 'gas-deploy-id',
+    STRIPE_SECRET_KEY: 'sk_test_dummy',
+    FIREBASE_DATABASE_URL: 'https://example.firebaseio.com',
+    GEMINI_API_KEY: 'gemini-key',
+    GITHUB_PAT: 'github-pat',
+  };
+
+  async function postFreeText(text: string, answeredAt: string | null) {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue(friend);
+    vi.mocked(jstNow).mockReturnValue('2026-07-31T12:00:00.000+09:00');
+    vi.mocked(getAiMode).mockResolvedValue(true);
+    vi.mocked(handleFurimAction).mockResolvedValue(false);
+
+    const updates: string[] = [];
+    const db = {
+      prepare: vi.fn((sql: string) => {
+        const stmt = {
+          bind: vi.fn(() => stmt),
+          run: vi.fn(async () => { updates.push(sql); return {}; }),
+          all: vi.fn(async () => ({ results: [] })),
+          first: vi.fn(async () =>
+            /FROM furim_cancellations/.test(sql)
+              ? { id: 'c1', reason_text: null, reason_answered_at: answeredAt }
+              : null,
+          ),
+        };
+        return stmt;
+      }),
+    } as unknown as D1Database;
+
+    const executionCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn(), props: {} } as unknown as ExecutionContext;
+    const app = setupApp();
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Line-Signature': 'A'.repeat(43) + '=' },
+        body: JSON.stringify({
+          destination: 'bot',
+          events: [
+            {
+              type: 'message',
+              replyToken: 'reply-token',
+              message: { type: 'text', id: 'message-cx-1', text },
+              timestamp: Date.now(),
+              source: { type: 'user', userId: 'U-cx' },
+              webhookEventId: 'event-cx',
+              deliveryContext: { isRedelivery: false },
+              mode: 'active',
+            },
+          ],
+        }),
+      },
+      { ...cxEnv, DB: db },
+      executionCtx,
+    );
+    expect(res.status).toBe(200);
+    await (vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>);
+    return { updates };
+  }
+
+  test('5択を押してから24時間以内の自由文は reason_text に入り、AIチャットに流れない', async () => {
+    const { updates } = await postFreeText('値上げがきつかったです', '2026-07-31T11:00:00.000+09:00');
+    expect(updates.some((s) => /UPDATE furim_cancellations SET reason_text/.test(s))).toBe(true);
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+  });
+
+  // TB-760: 返金・二重請求の問い合わせが混ざるので、お礼で閉じてもスタッフの受信箱には必ず残す
+  test('reason_text に入れた文もチャットを作成/更新する（unread になる）', async () => {
+    await postFreeText('返金してもらえますか', '2026-07-31T11:00:00.000+09:00');
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(expect.anything(), 'friend-cx-1');
+  });
+
+  test('お礼の返信が失敗してもチャットの作成/更新は通す', async () => {
+    lineClientMocks.replyMessage.mockRejectedValueOnce(new Error('reply token expired'));
+    await postFreeText('請求が二重になっています', '2026-07-31T11:00:00.000+09:00');
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(expect.anything(), 'friend-cx-1');
+  });
+
+  test('24時間を過ぎたテキストは記録せず、今までどおり AIチャットに流れる', async () => {
+    const { updates } = await postFreeText('別件の問い合わせです', '2026-07-29T12:00:00.000+09:00');
+    expect(updates.some((s) => /UPDATE furim_cancellations SET reason_text/.test(s))).toBe(false);
+    expect(handleAIChat).toHaveBeenCalledTimes(1);
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('5択に未回答（reason_answered_at が NULL）なら今までどおり AIチャットに流れる', async () => {
+    const { updates } = await postFreeText('こんにちは', null);
+    expect(updates.some((s) => /UPDATE furim_cancellations SET reason_text/.test(s))).toBe(false);
+    expect(handleAIChat).toHaveBeenCalledTimes(1);
+  });
+
+  // ボタンタップ（AUTO_KEYWORDS）は自由記述ではない。解約直後でも reason_text に入れず、
+  // 今までどおり auto_reply の経路へ落とす（unread にもしない）
+  test('窓の中でもボタンタップの定型文は reason_text に入れない', async () => {
+    const { updates } = await postFreeText('料金', '2026-07-31T11:00:00.000+09:00');
+    expect(updates.some((s) => /UPDATE furim_cancellations SET reason_text/.test(s))).toBe(false);
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
   });
 });
 

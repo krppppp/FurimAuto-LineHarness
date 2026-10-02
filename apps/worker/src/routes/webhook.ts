@@ -352,7 +352,18 @@ async function handleEvent(
 
     // セミナー日程アンケートの投票（Capsec #331）。auto_replies のマッチより前に処理する
     // （auto_replies は contains マッチもあるので、後ろに置くと取り違える）
-    const { parseSeminarVoteData, recordSeminarVote, voteReplyText } = await import('../furim/seminar.js');
+    const { parseSeminarVoteData, recordSeminarVote, voteReplyText, parseSeminarTopicData, recordSeminarTopicVote, topicReplyText } = await import('../furim/seminar.js');
+    // 聞きたい内容アンケート（TB-821）。日程の票と同じく auto_replies より前に処理する
+    const topic = parseSeminarTopicData(postbackData);
+    if (topic) {
+      try {
+        const result = await recordSeminarTopicVote(db, { weekId: topic.weekId, topicId: topic.topicId, friendId: friend.id, lineUserId: userId });
+        await lineClient.replyMessage(event.replyToken, [{ type: 'text', text: topicReplyText(result) }]);
+      } catch (err) {
+        console.error('[furim/seminar] topic vote failed', err);
+      }
+      return;
+    }
     const vote = parseSeminarVoteData(postbackData);
     if (vote) {
       try {
@@ -553,20 +564,29 @@ async function handleEvent(
       return;
     }
 
-    // 【ボタン】アクション
-    if (incomingText.includes('【ボタン】') && env?.GAS_DEPLOY_ID) {
-      // クロージャに渡すと env の絞り込みが外れるので、ここで確定させる
-      const gasDeployId = env.GAS_DEPLOY_ID;
-      await runHandlerSafely('handleButtonAction', loggingClient, userId, 'もう一度ボタンをタップしてください', () =>
-        handleButtonAction(loggingClient, userId, event.replyToken, incomingText, {
-          GAS_DEPLOY_ID: gasDeployId,
-          STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
-          FURIM_EXT_CACHE: env.FURIM_EXT_CACHE,
-          PLAN_BUILDER_LIFF_URL: env.PLAN_BUILDER_LIFF_URL,
-          WORKER_NAME: env.WORKER_NAME,
-          FURIM_TICKET_LIFF_URL: env.FURIM_TICKET_LIFF_URL,
-          FURIM_TICKET_PRICE_IDS: env.FURIM_TICKET_PRICE_IDS,
-        }, db), db);
+    // 【ボタン】アクション（TB-765）: Flex・リッチメニューのボタンが送る文。Worker だけで捌き、GAS の有無に依らない。
+    // handleButtonAction の分岐に無い語は、AIモード判定より前に exact の auto_reply を引いて返す
+    // （AIモード中でもボタンの返事が届くように）。どちらにも無ければ今までどおり「準備中」を返す
+    if (incomingText.includes('【ボタン】') && env) {
+      const buttonEnv = env;
+      await runHandlerSafely('handleButtonAction', loggingClient, userId, 'もう一度ボタンをタップしてください', async () => {
+        const handled = await handleButtonAction(loggingClient, userId, event.replyToken, incomingText, {
+          GAS_DEPLOY_ID: buttonEnv.GAS_DEPLOY_ID,
+          STRIPE_SECRET_KEY: buttonEnv.STRIPE_SECRET_KEY,
+          FURIM_EXT_CACHE: buttonEnv.FURIM_EXT_CACHE,
+          PLAN_BUILDER_LIFF_URL: buttonEnv.PLAN_BUILDER_LIFF_URL,
+          WORKER_NAME: buttonEnv.WORKER_NAME,
+          FURIM_TICKET_LIFF_URL: buttonEnv.FURIM_TICKET_LIFF_URL,
+          FURIM_TICKET_PRICE_IDS: buttonEnv.FURIM_TICKET_PRICE_IDS,
+        }, db);
+        if (handled) return;
+        const rule = await findExactAutoReply(db, incomingText, lineAccountId);
+        if (rule) {
+          await replyWithAutoReply(db, lineClient, event.replyToken, friend, rule, workerUrl);
+          return;
+        }
+        await loggingClient.replyMessage(event.replyToken, [{ type: 'text', text: '現在急ピッチで準備中です！' } as never]);
+      }, db);
       return;
     }
 
@@ -670,6 +690,60 @@ async function handleEvent(
       return;
     }
 
+    // ボタンタップ等の自動応答キーワードの判定（下のチャット作成/更新と解約理由の記録で共通に使う）
+    // 条件は furim/bot-routed-message.ts と共通（未対応の判定と揃える・Capsec #295）
+    const isRichMenuMessage = incomingText.startsWith(RICHMENU_MESSAGE_PREFIX);
+    const isAutoKeyword = AUTO_KEYWORDS.includes(incomingText);
+    const isTimeCommand = TIME_COMMAND_PATTERN.test(incomingText);
+    const isBotRoutedMessage = isAutoKeyword || isTimeCommand || isRichMenuMessage;
+
+    // 解約理由の自由記述（TB-740）: 5択を押してから24時間以内の最初のテキストだけを
+    // furim_cancellations.reason_text に控える。ここまで来た文は定型コマンドではない自由文。
+    // 拾えたらお礼を返して打ち切る（AIチャット・auto_reply へ流さない）。
+    // ただしチャットの作成/更新（unread）は必ず通す。2通目で「もう少し詳しく」と誘っている以上、
+    // 返ってくる文には「返金してもらえますか」等の問い合わせが混ざる。
+    // ここで return してスタッフの受信箱に残らなかったのが TB-760 の穴。
+    // 拾えなければ何もせず今までどおりの経路へ落とす（問い合わせの流れは変えない）
+    let cancellationFreeText = false;
+    if (!isBotRoutedMessage) {
+      try {
+        const { recordCancellationReasonText, CANCELLATION_FREE_TEXT_REPLY } = await import('../furim/cancellation-reason.js');
+        cancellationFreeText = await recordCancellationReasonText(db, userId, incomingText);
+        if (cancellationFreeText) {
+          await loggingClient.replyMessage(event.replyToken, [{ type: 'text', text: CANCELLATION_FREE_TEXT_REPLY } as never]);
+        }
+      } catch (e) {
+        console.error('[webhook] 解約理由（自由記述）の記録に失敗:', userId, e);
+      }
+    }
+    // 聞きたい内容アンケートの「6 その他」（TB-821）: 押してから 1 時間以内の最初の自由文を控える。
+    // 解約理由と同じく、拾えたらお礼を返し、チャットの作成/更新とスタッフ通知は通して打ち切る
+    let seminarTopicNote = false;
+    if (!isBotRoutedMessage && !cancellationFreeText) {
+      try {
+        const { recordSeminarTopicNote, TOPIC_NOTE_REPLY } = await import('../furim/seminar.js');
+        seminarTopicNote = await recordSeminarTopicNote(db, friend.id, incomingText);
+        if (seminarTopicNote) {
+          await loggingClient.replyMessage(event.replyToken, [{ type: 'text', text: TOPIC_NOTE_REPLY } as never]);
+        }
+      } catch (e) {
+        console.error('[webhook] セミナーの聞きたい内容（その他）の記録に失敗:', userId, e);
+      }
+    }
+    if (cancellationFreeText || seminarTopicNote) {
+      // お礼の送信が失敗していてもここは通す（人に届かないのが一番まずい）
+      await upsertChatOnMessage(db, friend.id);
+      if (env) {
+        await notifyStaffOfIncomingMessage(db, env, {
+          friendId: friend.id,
+          friendName: friend.display_name,
+          accountId: lineAccountId,
+          preview: incomingText,
+        });
+      }
+      return;
+    }
+
     // AIチャットモード
     // exact マッチの auto_replies（Flex・リッチメニューのボタン文言）は AIモード中でも素通りさせ、
     // 下の自動返信チェックで処理する。ai_mode は「AIチャットボットを終了する」を押すまで true の
@@ -677,7 +751,7 @@ async function handleEvent(
     // contains マッチは AIチャット中の自由文とぶつかるため対象外（今までどおり AI が答える）。
     if (env?.FIREBASE_DATABASE_URL && env?.GEMINI_API_KEY && env?.GITHUB_PAT) {
       const isAIMode = await getAiMode(env.FIREBASE_DATABASE_URL, userId);
-      if (isAIMode && !(await hasExactAutoReply(db, incomingText, lineAccountId))) {
+      if (isAIMode && !(await findExactAutoReply(db, incomingText, lineAccountId))) {
         await handleAIChat(loggingClient, userId, event.replyToken, incomingText, { GEMINI_API_KEY: env.GEMINI_API_KEY, GITHUB_PAT: env.GITHUB_PAT, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, DB: db });
         return;
       }
@@ -685,11 +759,7 @@ async function handleEvent(
 
     // チャットを作成/更新（ユーザーの自発的メッセージのみ unread にする）
     // ボタンタップ等の自動応答キーワードは除外
-    // 条件は furim/bot-routed-message.ts と共通（未対応の判定と揃える・Capsec #295）
-    const isRichMenuMessage = incomingText.startsWith(RICHMENU_MESSAGE_PREFIX);
-    const isAutoKeyword = AUTO_KEYWORDS.includes(incomingText);
-    const isTimeCommand = TIME_COMMAND_PATTERN.test(incomingText);
-    if (!isAutoKeyword && !isTimeCommand && !isRichMenuMessage) {
+    if (!isBotRoutedMessage) {
       await upsertChatOnMessage(db, friend.id);
       if (env) {
         await notifyStaffOfIncomingMessage(db, env, {
@@ -797,16 +867,7 @@ async function handleEvent(
       : `SELECT * FROM auto_replies WHERE is_active = 1 AND line_account_id IS NULL ORDER BY created_at ASC`;
     const autoReplyStmt = db.prepare(autoReplyQuery);
     const autoReplies = await (lineAccountId ? autoReplyStmt.bind(lineAccountId) : autoReplyStmt)
-      .all<{
-        id: string;
-        keyword: string;
-        match_type: 'exact' | 'contains';
-        response_type: string;
-        response_content: string;
-        template_id: string | null;
-        is_active: number;
-        created_at: string;
-      }>();
+      .all<AutoReplyRule>();
 
     let matched = false;
     let replyTokenConsumed = false;
@@ -817,33 +878,7 @@ async function handleEvent(
           : incomingText.includes(rule.keyword);
 
       if (isMatch) {
-        try {
-          const { resolveMetadata: resolveMeta2 } = await import('../services/step-delivery.js');
-          const resolvedMeta2 = await resolveMeta2(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
-          const resolved = await resolveAutoReplyContent(db, {
-            template_id: rule.template_id,
-            response_type: rule.response_type,
-            response_content: rule.response_content,
-          });
-          const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl, resolved.messageType);
-          const replyMsg = buildMessage(resolved.messageType, expandedContent);
-          await lineClient.replyMessage(event.replyToken, [replyMsg]);
-          replyTokenConsumed = true;
-
-          // 送信ログ（replyMessage = 無料）
-          const outLogId = crypto.randomUUID();
-          await db
-            .prepare(
-              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, created_at)
-               VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'reply', ?)`,
-            )
-            .bind(outLogId, friend.id, rule.response_type, rule.response_content, jstNow())
-            .run();
-        } catch (err) {
-          console.error('Failed to send auto-reply', err);
-          // replyToken may still be unused if replyMessage threw before LINE accepted it
-        }
-
+        replyTokenConsumed = await replyWithAutoReply(db, lineClient, event.replyToken, friend, rule, workerUrl);
         matched = true;
         break;
       }
@@ -870,21 +905,69 @@ async function handleEvent(
  * 受信文に exact マッチする有効な auto_reply があるか。AIチャットモードを素通りさせる判定に使う
  * （TB-718）。lookup が落ちても AIチャットの応答は止めない（false を返す）。
  */
-async function hasExactAutoReply(
+type AutoReplyRule = {
+  id: string;
+  keyword: string;
+  match_type: 'exact' | 'contains';
+  response_type: string;
+  response_content: string;
+  template_id: string | null;
+  is_active: number;
+  created_at: string;
+};
+
+async function findExactAutoReply(
   db: D1Database,
   text: string,
   lineAccountId: string | null,
-): Promise<boolean> {
+): Promise<AutoReplyRule | null> {
   try {
     const sql = lineAccountId
-      ? `SELECT id FROM auto_replies WHERE is_active = 1 AND match_type = 'exact' AND keyword = ? AND (line_account_id IS NULL OR line_account_id = ?) LIMIT 1`
-      : `SELECT id FROM auto_replies WHERE is_active = 1 AND match_type = 'exact' AND keyword = ? AND line_account_id IS NULL LIMIT 1`;
+      ? `SELECT * FROM auto_replies WHERE is_active = 1 AND match_type = 'exact' AND keyword = ? AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC LIMIT 1`
+      : `SELECT * FROM auto_replies WHERE is_active = 1 AND match_type = 'exact' AND keyword = ? AND line_account_id IS NULL ORDER BY created_at ASC LIMIT 1`;
     const stmt = db.prepare(sql);
     const bound = lineAccountId ? stmt.bind(text, lineAccountId) : stmt.bind(text);
-    const row = await bound.first<{ id: string }>();
-    return !!row;
+    return (await bound.first<AutoReplyRule>()) ?? null;
   } catch (err) {
     console.error('[webhook] exact auto_reply lookup failed', err);
+    return null;
+  }
+}
+
+/** auto_reply 1 行を replyMessage で返し、messages_log に残す。replyToken を使えたら true */
+async function replyWithAutoReply(
+  db: D1Database,
+  lineClient: LineClient,
+  replyToken: string,
+  friend: Friend,
+  rule: AutoReplyRule,
+  workerUrl: string | undefined,
+): Promise<boolean> {
+  try {
+    const { resolveMetadata: resolveMeta2 } = await import('../services/step-delivery.js');
+    const resolvedMeta2 = await resolveMeta2(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
+    const resolved = await resolveAutoReplyContent(db, {
+      template_id: rule.template_id,
+      response_type: rule.response_type,
+      response_content: rule.response_content,
+    });
+    const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl, resolved.messageType);
+    const replyMsg = buildMessage(resolved.messageType, expandedContent);
+    await lineClient.replyMessage(replyToken, [replyMsg]);
+
+    // 送信ログ（replyMessage = 無料）
+    const outLogId = crypto.randomUUID();
+    await db
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, created_at)
+         VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'reply', ?)`,
+      )
+      .bind(outLogId, friend.id, rule.response_type, rule.response_content, jstNow())
+      .run();
+    return true;
+  } catch (err) {
+    console.error('Failed to send auto-reply', err);
+    // replyToken may still be unused if replyMessage threw before LINE accepted it
     return false;
   }
 }

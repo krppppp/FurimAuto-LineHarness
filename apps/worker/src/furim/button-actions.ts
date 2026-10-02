@@ -9,10 +9,12 @@ import { upsertFeatureFlags } from './customer-sync.js';
 import { INVENTORY_PATROL_ALL_SITES } from './feature-flags.js';
 import { applyTicketDelta } from './ticket-ledger.js';
 import { grantTrialPromo, type TrialPromoResult } from './trial-promo.js';
+import { cancellationReasonCodeFromLabel, recordCancellationReason, CANCELLATION_REASON_REPLY_TEXT } from './cancellation-reason.js';
 import type { ExtCache } from './ext-auth.js';
 
 export type ButtonActionsEnv = {
-  GAS_DEPLOY_ID: string;
+  // シートへの鏡写しにだけ使う。無ければ鏡写しを飛ばす（ボタンの処理自体は Worker で完結・TB-765）
+  GAS_DEPLOY_ID?: string;
   STRIPE_SECRET_KEY?: string;
   FURIM_EXT_CACHE?: ExtCache;
   PLAN_BUILDER_LIFF_URL?: string;
@@ -68,6 +70,25 @@ async function switchSegmentTag(db: D1Database, friendId: string, newSeg: number
   }
   const newTag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(`セグメント${newSeg}`).first<{ id: string }>();
   if (newTag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friendId, newTag.id, jstNow()).run();
+}
+
+async function tagCancellationReason(db: D1Database, lineUserId: string, reason: string): Promise<void> {
+  const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
+  if (!friend) return;
+  const tagName = `解約理由:${reason}`;
+  let tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+  if (!tag) {
+    await db.prepare('INSERT OR IGNORE INTO tags (id, name, created_at) VALUES (?, ?, ?)').bind(crypto.randomUUID(), tagName, jstNow()).run();
+    tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
+  }
+  if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, tag.id, jstNow()).run();
+}
+
+function cancellationReasonFollowUpText(env: ButtonActionsEnv, reason: string): string {
+  if (reason === '物販休止' || reason === '他ツールへ乗り換え') {
+    return 'また物販を再開される際は、いつでもこのLINEからお待ちしております！';
+  }
+  return `💡【機能を絞って安く続ける選択肢も】\n\nFurimAutoは必要な機能だけを選べるビュッフェ式です🍽\nよく使う機能1つだけなら月980円(税抜)から再開できます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n${planBuilderUrl(env)}`;
 }
 
 export async function handleButtonAction(
@@ -163,39 +184,38 @@ export async function handleButtonAction(
       } catch (e) {
         console.error('[furim] furim_survey_answers insert failed:', lineUserId, e);
       }
-      await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'アンケート回答': surveyResult ?? '' });
+      if (env.GAS_DEPLOY_ID) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'アンケート回答': surveyResult ?? '' });
     }
     return true;
   }
 
-  // 解約理由アンケート（月額解約フローのFlexから）: タグで記録し、理由に応じて再開提案を返す
-  if (text.includes('解約理由:')) {
+  // 解約理由アンケート 6 択（TB-740・TB-825 で旧アンケートの 6 択に戻した。解約成立直後に push する Flex から）:
+  // 飛んでくるのは日本語の送信値。ここでコードへ直し、furim_cancellations の最新行に reason_code で記録する。
+  // 旧と同じタグ「解約理由:<送信値>」も付ける（過去の回答と同じ指標を続けるため）。
+  // 「月980円〜」の案内は旧どおり残す（TB-748 で F事業のリーダーが決定Aを改めた。測っていないものを消さない）。
+  // 旧の「ご回答ありがとうございます🙇…」は 2 通目（CANCELLATION_REASON_REPLY_TEXT）と重なるので出さない
+  const cancellationReasonCode = text.includes('解約理由:')
+    ? cancellationReasonCodeFromLabel(text.split(':')[1] ?? '')
+    : null;
+  if (cancellationReasonCode) {
+    const code = cancellationReasonCode;
     const reason = text.split(':')[1] ?? '';
-    if (db && reason) {
-      const friend = await db.prepare('SELECT id FROM friends WHERE line_user_id = ?').bind(lineUserId).first<{ id: string }>();
-      if (friend) {
-        const tagName = `解約理由:${reason}`;
-        let tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
-        if (!tag) {
-          await db.prepare('INSERT OR IGNORE INTO tags (id, name, created_at) VALUES (?, ?, ?)').bind(crypto.randomUUID(), tagName, jstNow()).run();
-          tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
-        }
-        if (tag) await db.prepare('INSERT OR IGNORE INTO friend_tags (friend_id, tag_id, assigned_at) VALUES (?, ?, ?)').bind(friend.id, tag.id, jstNow()).run();
+    if (db) {
+      try {
+        await recordCancellationReason(db, lineUserId, { code });
+      } catch (e) {
+        console.error('[furim] 解約理由の記録に失敗:', lineUserId, e);
       }
+      await tagCancellationReason(db, lineUserId, reason);
     }
-    const thanks = 'ご回答ありがとうございます🙇\n今後のサービス改善に活用させていただきます。';
-    if (reason === '物販休止' || reason === '他ツールへ乗り換え') {
-      await lineClient.replyMessage(replyToken, [
-        { type: 'text', text: `${thanks}\n\nまた物販を再開される際は、いつでもこのLINEからお待ちしております！` } as never,
-      ]);
-    } else {
-      await lineClient.replyMessage(replyToken, [
-        { type: 'text', text: thanks } as never,
-        { type: 'text', text: `💡【機能を絞って安く続ける選択肢も】\n\nFurimAutoは必要な機能だけを選べるビュッフェ式です🍽\nよく使う機能1つだけなら月980円(税抜)から再開できます。\n\n▼ 料金シミュレーション＆お申し込み ▼\n${planBuilderUrl(env)}` } as never,
-      ]);
-    }
+    await lineClient.replyMessage(replyToken, [
+      { type: 'text', text: CANCELLATION_REASON_REPLY_TEXT } as never,
+      { type: 'text', text: cancellationReasonFollowUpText(env, reason) } as never,
+    ]);
     return true;
   }
+  // 6 択に無い「解約理由:」（旧 5 択 TB-746 の値段 など）は reason_code もタグも書かない（TB-748 CTO の下限）。
+  // 下の分岐にも当たらず false で返り、webhook 側の auto_replies／「準備中」に任せる
 
   if (text === 'お友達向け説明書の発行') {
     await lineClient.replyMessage(replyToken, [{ type: 'image', originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/introduction.png', previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/introduction.png' } as never]);
@@ -282,7 +302,7 @@ export async function handleButtonAction(
       { type: 'text', text: 'メルカリToラクマコピー出品機能の説明書はこちらです。\nURL: https://furimauto.com/howto/#mCopyRakumaListing' } as never,
     ]);
     if (db && copyTickets != null) {
-      await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'Free30チケット': true, 'コピー出品チケット': copyTickets });
+      if (env.GAS_DEPLOY_ID) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'Free30チケット': true, 'コピー出品チケット': copyTickets });
     }
     return true;
   }
@@ -338,7 +358,7 @@ export async function handleButtonAction(
       type: 'text',
       text: '✅在庫管理シートを有効化しました！\n\nメルカリ・ラクマ・Shops・ヤフオク・ヤフフリの在庫を1枚のスプレッドシートでまとめて管理し、売れたら他サイトの出品を自動でお知らせ・削除できます📦\n\n【使い始め方】\n① FurimAuto拡張機能を最新版（v4.2.2以降）へ更新する\n更新方法: https://furimauto.com/howto/#checkVersion\n\n② キーコード入力画面にてバージョンが4.2.2であることを確認して、入力ボタンを一度押して成功になるまでそのまま待つ\n\n③ 出品一覧ページを一度更新してみると、新たに緑色の「在庫管理シートを作成」ボタンが現れる\n\n④ 説明書に沿ってセットアップする\nhttps://furimauto.com/howto/index.html#inventorySheet\n\nうまく表示されない時は一度拡張を開き直してキーコードを再取得してみてください🙏',
     } as never]);
-    if (db) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, {}, inventoryFlags);
+    if (db && env.GAS_DEPLOY_ID) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, {}, inventoryFlags);
     return true;
   }
 
@@ -373,7 +393,7 @@ export async function handleButtonAction(
       messages.push({ type: 'text', text: '申し訳ございません、付与処理に失敗しました🙇\n\nお手数ですが、このLINEにそのままご返信ください。担当者が確認して付与いたします。' });
     }
     await lineClient.replyMessage(replyToken, messages as never[]);
-    if (db && result.success) {
+    if (db && result.success && env.GAS_DEPLOY_ID) {
       await mirrorCustomerFieldsToGas(
         db,
         env.GAS_DEPLOY_ID,
@@ -385,6 +405,6 @@ export async function handleButtonAction(
     return true;
   }
 
-  await lineClient.replyMessage(replyToken, [{ type: 'text', text: '現在急ピッチで準備中です！' } as never]);
-  return true;
+  // ここに無い【ボタン】xxx は webhook 側で auto_replies（exact）を引き、それも無ければ「準備中」を返す（TB-765）
+  return false;
 }
