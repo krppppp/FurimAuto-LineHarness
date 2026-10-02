@@ -672,6 +672,7 @@ planBuilder.get('/plan-builder', async (c) => {
   const embed = c.req.query('embed') === '1';
   const liff = c.req.query('liff') === '1';
   const liffId = c.req.query('liffId') ?? '';
+  const loginRetryUrl = liffId ? `https://liff.line.me/${liffId}` : (c.env as { PLAN_BUILDER_LIFF_URL?: string }).PLAN_BUILDER_LIFF_URL ?? '';
 
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
@@ -821,6 +822,10 @@ ${liff ? '<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script
   .cta button:hover { opacity: .85; }
   .cta button:disabled { background: #ccc; cursor: not-allowed; box-shadow: none; }
   .cta .err { color: #ff0033; font-size: .85rem; margin-top: 8px; }
+  .login-err { max-width: 420px; margin: 48px auto; padding: 28px 22px; background: #fff; border-radius: 16px; box-shadow: 0 2px 12px rgba(0,0,0,.06); text-align: center; }
+  .login-err h2 { font-size: 1.1rem; margin-bottom: 14px; }
+  .login-err p { font-size: .9rem; color: #555; line-height: 1.8; margin-bottom: 22px; text-align: left; }
+  .login-err button { width: 100%; padding: 14px; border: none; border-radius: 12px; background: #06C755; color: #fff; font-size: 1rem; font-weight: bold; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -860,6 +865,11 @@ ${liff ? `<div id="pb-loading" style="position:fixed;inset:0;z-index:9999;backgr
     <div class="err" id="checkout-err"></div>
   </div>` : ''}
 </div>
+${liff ? `<div class="login-err" id="login-err" style="display:none;">
+  <h2>LINEのログインを確認できませんでした</h2>
+  <p>お申し込みにはLINEのログインが必要です。スマートフォンのLINEアプリから開き直すか、下のボタンからLINEにログインしてやり直してください。</p>
+  <button type="button" id="login-retry-btn">もう一度ログインする</button>
+</div>` : ''}
 <script>
 const FEATURES = ${JSON.stringify(master.features)};
 const PACKAGES = ${JSON.stringify(master.packages)};
@@ -870,6 +880,8 @@ const TAX = ${TAX_RATE_PERCENT} / 100;
 const EMBED = ${embed};
 const LIFF_MODE = ${liff};
 const LIFF_ID = ${JSON.stringify(liffId)};
+const LOGIN_RETRY_URL = ${JSON.stringify(loginRetryUrl)};
+const LOGIN_TRIED_KEY = 'pb_login_tried';
 
 const PLAN_LABELS = { full: '全自動化プラン', semi: '半自動化プラン', basic: '基本プラン', buffet: '機能別ビュッフェ式プラン' };
 const subsFeatures = FEATURES.filter(f => f.billing_type === 'subscription');
@@ -1350,9 +1362,9 @@ if (checkoutBtnEl) checkoutBtnEl.addEventListener('click', async () => {
   btn.textContent = changeMode ? '変更内容を確認中…' : '申し込み内容を送信中…';
   err.textContent = '';
   if (!lineUserId) {
-    err.textContent = 'LINEのログインを確認できませんでした。お手数ですが、スマートフォンのLINEアプリからもう一度開いてお申し込みください。';
     btn.disabled = false;
     btn.textContent = applyLabel();
+    showLoginError();
     return;
   }
   try {
@@ -1444,24 +1456,63 @@ function hidePbLoading() {
   setTimeout(function () { ld.remove(); }, 300);
 }
 
+function storageGet(key) { try { return sessionStorage.getItem(key); } catch (e) { return null; } }
+function storageSet(key, value) { try { sessionStorage.setItem(key, value); } catch (e) {} }
+function storageRemove(key) { try { sessionStorage.removeItem(key); } catch (e) {} }
+
+// lineUserId が取れないと intent が 400（lineUserId required）になるため、申し込み画面の代わりに出す（TB-951）
+function showLoginError() {
+  const sim = document.querySelector('.simulator');
+  const box = document.getElementById('login-err');
+  if (sim) sim.style.display = 'none';
+  if (box) box.style.display = 'block';
+  hidePbLoading();
+  window.scrollTo(0, 0);
+}
+
+const loginRetryBtnEl = document.getElementById('login-retry-btn');
+if (loginRetryBtnEl) loginRetryBtnEl.addEventListener('click', () => {
+  storageRemove(LOGIN_TRIED_KEY);
+  if (LOGIN_RETRY_URL) {
+    window.location.href = LOGIN_RETRY_URL;
+  } else {
+    window.location.reload();
+  }
+});
+
 (async () => {
   // 保険: 何かが固まってもローディングで操作不能のままにしない
   setTimeout(hidePbLoading, 15000);
-  if (LIFF_MODE && LIFF_ID && typeof liff !== 'undefined') {
+  if (LIFF_MODE) {
+    // LIFF ID 無しの直リンク・SDK の読み込み失敗・LIFF 初期化失敗・ログインのキャンセル/失敗は、
+    // どれも lineUserId が空のまま申し込みを押せてしまい「送信に失敗しました」になっていた（TB-951）
+    if (!LIFF_ID || typeof liff === 'undefined') { showLoginError(); return; }
     try {
       await liff.init({ liffId: LIFF_ID });
       if (liff.isLoggedIn()) {
         const profile = await liff.getProfile();
         lineUserId = profile.userId;
+        storageRemove(LOGIN_TRIED_KEY);
         showCouponBanner();
         await loadCurrentPlan(); // 既存契約者は現構成で初期化（プラン変更モード）
+      } else if (storageGet(LOGIN_TRIED_KEY) || new URLSearchParams(window.location.search).has('error')) {
+        // ログイン画面から戻ってもまだ未ログイン（キャンセル・失敗）。もう一度 liff.login すると堂々巡りになる
+        storageRemove(LOGIN_TRIED_KEY);
+        showLoginError();
+        return;
       } else {
         // PC版LINEなどからLINE外のブラウザで開くと未ログインのまま lineUserId が取れず、
         // 申し込みが intent の 400（lineUserId required）で必ず失敗していた（2026-10-02 Dりょうすけさん・TB-948）
+        storageSet(LOGIN_TRIED_KEY, '1');
         liff.login({ redirectUri: window.location.href });
         return;
       }
-    } catch (e) { console.log('liff init skipped:', e); }
+    } catch (e) {
+      console.log('liff init failed:', e);
+      showLoginError();
+      return;
+    }
+    if (!lineUserId) { showLoginError(); return; }
   }
   render();
   hidePbLoading();
