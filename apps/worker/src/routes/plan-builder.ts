@@ -921,6 +921,19 @@ const state = {
 let lineUserId = null;
 let changeMode = false;
 
+// 埋め込み先から初期選択を渡す（TB-964）。/service/ で到達時点に金額を出すため。
+// ?preset_site=mercari&preset_plan=basic → メルカリ＋基本プラン。知らない値は黙って無視する
+function applyEmbedPreset(search) {
+  const q = new URLSearchParams(search);
+  const siteId = q.get('preset_site') || '';
+  if (!Object.prototype.hasOwnProperty.call(SITE_NAMES, siteId)) return;
+  if (!state.sites.includes(siteId)) state.sites.push(siteId);
+  const planType = q.get('preset_plan') || '';
+  if (planType === 'buffet') { state.plan[siteId] = 'buffet'; return; }
+  const pkg = (pkgBySite[siteId] || []).find(p => p.plan_type === planType);
+  if (pkg) state.plan[siteId] = pkg.package_key;
+}
+
 function applyLabel() { return changeMode ? 'この内容にプラン変更する' : 'この内容で申し込む'; }
 
 function yen(n) { return n.toLocaleString('ja-JP') + '円'; }
@@ -1514,6 +1527,7 @@ if (loginRetryBtnEl) loginRetryBtnEl.addEventListener('click', () => {
     }
     if (!lineUserId) { showLoginError(); return; }
   }
+  if (EMBED && !LIFF_MODE && !lineUserId) applyEmbedPreset(window.location.search);
   render();
   hidePbLoading();
 })();
