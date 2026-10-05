@@ -161,3 +161,5 @@ FURIM_TICKET_PRICE_IDS = '{"15":"price_1SFCiyF2C7KcCkFfzJ7IuaTA","14":"price_1SF
 # 更新 7 日前の全機能開放（furim/renewal-unlock.ts）で開放も案内もしない subscription_id。
 # 二重課金の 2 名（TB-137・TB-865）を、Stripe で修正が効いたと確かめるまで外す（TB-1014）
 FURIM_RENEWAL_UNLOCK_EXCLUDE_SUBS = "sub_1NOIaAF2C7KcCkFfgwQUHq2t,sub_1UF5NbF2C7KcCkFf9FysLUR1"
+# 開放と案内の cron を動かす（くろさん文面 OK 確認カード 6965c69d・F事業リーダー決定 c89c8b58。止めるときはこの行を消してデプロイ）
+FURIM_RENEWAL_UNLOCK = "on"
