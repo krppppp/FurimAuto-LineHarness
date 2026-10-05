@@ -1,6 +1,6 @@
 import type { LineClient } from '@line-crm/line-sdk';
 import { jstNow } from '@line-crm/db';
-import { createPlanBuilderCheckout, type PlanCheckoutEnv } from '../routes/plan-builder.js';
+import { createPlanBuilderCheckout, existingSubscriptionBlock, getLiveSubscriptionForLine, type PlanCheckoutEnv } from '../routes/plan-builder.js';
 
 // LIFFの申込ボタン→liff.sendMessagesで届く「【プラン申し込み】PB-XXXXXX」を処理する。
 // コードで plan_builder_intents から選択内容を引き、Checkoutリンク（12時間有効）を
@@ -30,15 +30,17 @@ export async function handlePlanApplyMessage(
       multiChannelSites: string[];
     };
 
-    // 二重課金ガード: 既にアクティブなサブスクがある場合は新規Checkoutを作らない
+    // 二重課金ガード: 既に有効なサブスク（支払い失敗中なども含む・TB-1028）がある場合は新規Checkoutを作らない
     // （既存契約者のintentは【プラン変更】になるため、ここに来るのは古いコードの再送等）
-    const { getActiveSubscriptionForLine } = await import('../routes/plan-builder.js');
-    const existing = await getActiveSubscriptionForLine(env, lineUserId);
+    const existing = await getLiveSubscriptionForLine(env, lineUserId);
     if (existing) {
+      const block = existingSubscriptionBlock(existing.sub);
       await lineClient.replyMessage(replyToken, [
         {
           type: 'text',
-          text: '既にご契約中のプランがあります。プラン内容の変更をご希望の場合は、お手数ですがリッチメニューの「プラン診断」からもう一度お手続きください（差額のみのお支払いでプラン変更できます）。',
+          text:
+            block?.message ??
+            '既にご契約中のプランがあります。プラン内容の変更をご希望の場合は、お手数ですがリッチメニューの「プラン診断」からもう一度お手続きください（差額のみのお支払いでプラン変更できます）。',
         } as never,
       ]);
       return;

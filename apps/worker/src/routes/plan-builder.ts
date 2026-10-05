@@ -409,6 +409,14 @@ export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: Plan
 planBuilder.post('/plan-builder/checkout', async (c) => {
   try {
     const body = (await c.req.json()) as PlanSelectionInput;
+    // 既に有効なサブスクがある人に新規Checkoutを作らない（LINE外で開いた場合の二重契約。TB-1028）
+    if (body.lineUserId) {
+      const live = await getLiveSubscriptionForLine(c.env, body.lineUserId);
+      if (live) {
+        const block = existingSubscriptionBlock(live.sub);
+        return c.json({ success: false, blocked: block?.reason ?? 'existing', error: block?.message ?? EXISTING_SUB_CHECKOUT_MESSAGE }, 409);
+      }
+    }
     const result = await createPlanBuilderCheckout(c.env, body);
     return c.json({ success: true, url: result.url });
   } catch (e) {
@@ -436,6 +444,57 @@ export async function getActiveSubscriptionForLine(
   }
 }
 
+// 解約・未完了以外の「まだ生きている」サブスク。active 以外（支払い失敗中など）も既存契約として扱う（TB-1028）
+const LIVE_SUB_STATUSES = ['active', 'past_due', 'unpaid', 'trialing', 'paused'];
+
+// lineUserIdから有効なサブスクを引く（activeを優先）。新規決済に進めてよいかの判定用。
+// Stripeの読み取りに失敗したら例外を投げる（新規Checkoutに倒して二重契約を作らない）
+export async function getLiveSubscriptionForLine(
+  env: { STRIPE_SECRET_KEY?: string; DB?: D1Database },
+  lineUserId: string,
+): Promise<{ customerId: string; sub: Record<string, unknown> } | null> {
+  if (!env.STRIPE_SECRET_KEY) return null;
+  const customerId = (await resolveCustomerIdD1First(env.DB, lineUserId)) ?? '';
+  if (!customerId || !customerId.startsWith('cus_')) return null;
+  const list = (await stripeCall(env.STRIPE_SECRET_KEY, 'subscriptions', { customer: customerId, status: 'all', limit: '20' }, 'GET')) as unknown as { data: Array<Record<string, unknown>> };
+  const live = (list.data ?? []).filter((s) => LIVE_SUB_STATUSES.includes(String(s.status)));
+  const sub = live.find((s) => s.status === 'active') ?? live[0];
+  return sub ? { customerId, sub } : null;
+}
+
+export const EXISTING_SUB_CHECKOUT_MESSAGE =
+  '既にご契約中のプランがあります。新しいお申し込み（決済）は行わず、スマートフォンのLINEアプリでメニューの「プラン診断」を開いてお手続きください。';
+
+// 既存サブスクがあってもプラン診断で変更させない場合の理由と案内文。nullなら今の変更フローに進めてよい
+// - payment: 支払い失敗中（past_due・unpaid）。払うと2本目になるため、カード更新へ案内する
+// - status: その他active以外（trialing・paused）。有人で対応する
+// - legacy: プラン診断を通っていない旧プラン。今の契約を画面に読み込めず、変更すると今の機能が消える
+export function existingSubscriptionBlock(sub: Record<string, unknown>): { reason: 'payment' | 'status' | 'legacy'; message: string } | null {
+  const status = String(sub.status ?? '');
+  if (status === 'past_due' || status === 'unpaid') {
+    return {
+      reason: 'payment',
+      message:
+        'お支払いが確認できていないご契約があるため、ここからはお申し込み・プラン変更ができません。新しく決済はせず、ホームタブの「月額会員ページ」でカード情報を更新してください。ご不明な点はこのLINEでお知らせください（担当者がご案内します）。',
+    };
+  }
+  if (status !== 'active') {
+    return {
+      reason: 'status',
+      message: '現在のご契約はこの画面からは変更できません。新しく決済はせず、ご希望の内容をこのLINEでお知らせください（担当者がご案内します）。',
+    };
+  }
+  const m = (sub.metadata ?? {}) as Record<string, string>;
+  if (m.source !== 'plan-builder') {
+    return {
+      reason: 'legacy',
+      message:
+        '現在のご契約内容をこの画面に読み込めないため、ここからはプラン変更できません（このまま申し込むと、今お使いの機能が外れることがあります）。ご希望の内容をこのLINEでお知らせください（担当者がご案内します）。',
+    };
+  }
+  return null;
+}
+
 // サブスクの全discount（スタック対応）を読み取る。
 // 旧版のsub.discount（単数）はスタック中undefinedになるため、割引の読み取りは必ずこちらを使う。
 // ※読み取りは旧版（Discountにcouponが埋め込まれる形）。新版(dahlia)はsource.coupon=ID参照に
@@ -461,9 +520,17 @@ export async function getSubDiscounts(
 planBuilder.get('/plan-builder/current', async (c) => {
   const lineUserId = c.req.query('lineUserId') ?? '';
   if (!lineUserId) return c.json({ success: false, error: 'lineUserId required' }, 400);
-  const found = await getActiveSubscriptionForLine(c.env, lineUserId);
+  let found: Awaited<ReturnType<typeof getLiveSubscriptionForLine>>;
+  try {
+    found = await getLiveSubscriptionForLine(c.env, lineUserId);
+  } catch (e) {
+    console.error('[plan-builder] current lookup failed:', e);
+    return c.json({ success: false, error: 'subscription lookup failed' }, 502);
+  }
   if (!found) return c.json({ success: true, hasSubscription: false });
   const m = (found.sub.metadata ?? {}) as Record<string, string>;
+  const block = existingSubscriptionBlock(found.sub);
+  if (block) return c.json({ success: true, hasSubscription: true, blocked: block.reason, blockedMessage: block.message });
   return c.json({
     success: true,
     hasSubscription: true,
@@ -538,8 +605,13 @@ planBuilder.post('/plan-builder/intent', async (c) => {
     if (!body.lineUserId) return c.json({ success: false, error: 'lineUserId required' }, 400);
     const sel = await resolvePlanSelection(c.env.DB, body);
 
-    // 既存アクティブサブスクがあれば「プラン変更」intent（二重課金の防止）
-    const existing = await getActiveSubscriptionForLine(c.env, body.lineUserId);
+    // 既存アクティブサブスクがあれば「プラン変更」intent（二重課金の防止）。
+    // 支払い失敗中・旧プランなど変更フローに乗せられない契約は申込コードを出さず有人へ回す（TB-1028）
+    const existing = await getLiveSubscriptionForLine(c.env, body.lineUserId);
+    if (existing) {
+      const block = existingSubscriptionBlock(existing.sub);
+      if (block) return c.json({ success: false, blocked: block.reason, error: block.message }, 409);
+    }
     const code = 'PB-' + crypto.randomUUID().replace(/-/g, '').slice(0, 6).toUpperCase();
 
     if (existing && c.env.STRIPE_SECRET_KEY) {
@@ -917,6 +989,7 @@ const state = {
 };
 let lineUserId = null;
 let changeMode = false;
+let blockedMessage = '';
 
 // 埋め込み先から初期選択を渡す（TB-964）。/service/ で到達時点に金額を出すため。
 // ?preset_site=mercari&preset_plan=basic → メルカリ＋基本プラン。知らない値は黙って無視する
@@ -942,6 +1015,18 @@ async function loadCurrentPlan() {
     const res = await fetch('/plan-builder/current?lineUserId=' + encodeURIComponent(lineUserId));
     const cur = await res.json();
     if (!cur.success || !cur.hasSubscription) return;
+    if (cur.blocked) {
+      // 支払い失敗中・旧プランなど: 今の契約を読み込めない／変更に進めないことを出し、申込ボタンを止める（TB-1028）
+      blockedMessage = cur.blockedMessage || '現在のご契約はこの画面からは変更できません。このLINEでお知らせください（担当者がご案内します）。';
+      const banner = document.getElementById('current-plan-banner');
+      if (banner) {
+        banner.textContent = '⚠️ ' + blockedMessage;
+        banner.style.display = 'block';
+      }
+      const btn = document.getElementById('checkout-btn');
+      if (btn) btn.disabled = true;
+      return;
+    }
     changeMode = true;
     for (const key of cur.packages || []) {
       if (key === 'premium') { state.premium = true; continue; }
@@ -1321,7 +1406,7 @@ function renderResult() {
   }
   totalEl.textContent = '総支払額 ' + yen(total) + '/月';
   taxEl.textContent = '税抜（税込 ' + yen(Math.round(total * (1 + TAX))) + '）';
-  if (btn) btn.disabled = total <= 0;
+  if (btn) btn.disabled = total <= 0 || !!blockedMessage;
 }
 
 function renderPremiumBanner() {
@@ -1385,6 +1470,12 @@ if (checkoutBtnEl) checkoutBtnEl.addEventListener('click', async () => {
       body: JSON.stringify(payload),
     });
     const data = await res.json();
+    if (!data.success && data.blocked) {
+      blockedMessage = data.error;
+      err.textContent = data.error;
+      btn.textContent = applyLabel();
+      return;
+    }
     if (!data.success) throw new Error(data.error || 'intent failed');
     const inClient = typeof liff !== 'undefined' && liff.isInClient && liff.isInClient();
     if (data.change && !inClient) {
@@ -1424,6 +1515,12 @@ if (checkoutBtnEl) checkoutBtnEl.addEventListener('click', async () => {
         body: JSON.stringify(payload),
       });
       const data2 = await res2.json();
+      if (!data2.success && data2.blocked) {
+        blockedMessage = data2.error;
+        err.textContent = data2.error;
+        btn.textContent = applyLabel();
+        return;
+      }
       if (!data2.success) throw new Error(data2.error || 'checkout failed');
       window.location.href = data2.url;
     }
