@@ -367,6 +367,7 @@ export const SEMINAR_TOPIC_PREFIX = 'seminar_topic:';
 const TOPIC_NOTE_WINDOW_MS = 60 * 60_000;
 
 type FlexMessage = { type: 'flex'; altText: string; contents: FlexBubble };
+type TextMessage = { type: 'text'; text: string };
 
 /**
  * 日曜 17:00 に回答者へ送る 2 つの吹き出し（A 開催日時の告知／B 聞きたい内容アンケート）。
@@ -562,6 +563,45 @@ const URL_LEAD_MS = 5 * 60_000;
 const URL_GRACE_MS = 5 * 60_000;
 
 /**
+ * 配信 URL に 2 つ目の吹き出しで付ける拡張の更新報告（TB-997・10/5 の回だけ）。
+ * account_settings（line_account_id='system'・key=SEMINAR_URL_NOTE_KEY）の value が '1' のときだけ付ける。行が無ければ付けない
+ */
+export const SEMINAR_URL_NOTE_KEY = 'seminar_url_note_v434';
+export const SEMINAR_URL_NOTE_TEXT = `【FurimAuto を v4.3.4 に更新しました】
+・自動いいね対応の条件に「商品名のキーワード」を入れられるようになりました。条件の順番も「↑上へ」「↓下へ」で入れ替えられます
+・下書き予約出品で出品した商品が、在庫管理シートに自動で入るようになりました
+・メルカリの検索結果とショップ調査に、出品者の直近100件の評価が何日でたまったかが出るようになりました
+くわしくは説明書の更新履歴へ
+https://furimauto.com/howto/changelog.html`;
+
+async function seminarUrlNote(db: D1Database): Promise<TextMessage | null> {
+  try {
+    const row = await db
+      .prepare(`SELECT value FROM account_settings WHERE line_account_id = 'system' AND key = ?`)
+      .bind(SEMINAR_URL_NOTE_KEY)
+      .first<{ value: string }>();
+    return row?.value === '1' ? { type: 'text', text: SEMINAR_URL_NOTE_TEXT } : null;
+  } catch (err) {
+    console.error('[furim/seminar] url note setting read failed', err);
+    return null;
+  }
+}
+
+async function logSeminarNote(db: D1Database, friendId: string, note: TextMessage): Promise<void> {
+  try {
+    await db
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, created_at)
+         VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, 'push', 'seminar', ?)`,
+      )
+      .bind(crypto.randomUUID(), friendId, note.text, formatJstIso(Date.now()))
+      .run();
+  } catch (err) {
+    console.error('[furim/seminar] messages_log note insert failed', friendId, err);
+  }
+}
+
+/**
  * 開始 5 分前の配信 URL。友だち全員に送る（TB-977）。5 分 cron から呼ぶ。
  * その枠に投票した人は ?f= 付きで 1 人ずつ push（参加者の計測を残す・TB-449）、残りは 500 人ずつ multicast
  * （?f= なし。seminar_<week_id> の計測リンクは通す）。broadcasts キューに積むと同じ tick の
@@ -620,6 +660,7 @@ export async function remindSeminarSlots(
     const linkBase = await resolveSeminarLinkBase(db, env);
     const link = await ensureWeekTrackedLink(db, weekId, week.stream_url);
     const streamUrl = week.stream_url;
+    const note = await seminarUrlNote(db);
     // 投票者: 入口 URL に ?f=<friend_id> を入れるため 1 人ずつ push する（TB-449）。
     // 1 人の失敗（ブロック直後など）で残りを止めない。全員に失敗したときだけ枠取りを戻して投げ直す
     let sent = 0;
@@ -627,9 +668,10 @@ export async function remindSeminarSlots(
     for (const r of recipients) {
       const message = seminarUrlFlex(weekId, slot.starts_at, seminarEntryUrl(linkBase, link.short_code ?? link.id, streamUrl, r.friend_id));
       try {
-        await lineClient.pushMessage(r.line_user_id, [message]);
+        await lineClient.pushMessage(r.line_user_id, note ? [message, note] : [message]);
         sent++;
         await logSeminarPush(db, r.friend_id, message);
+        if (note) await logSeminarNote(db, r.friend_id, note);
       } catch (err) {
         lastErr = err;
         console.error('[furim/seminar] url push failed', r.friend_id, err);
@@ -649,7 +691,7 @@ export async function remindSeminarSlots(
         for (let i = 0; i < others.length; i += URL_MULTICAST_SIZE) {
           const batch = others.slice(i, i + URL_MULTICAST_SIZE);
           try {
-            await lineClient.multicast(batch.map((o) => o.line_user_id), [message]);
+            await lineClient.multicast(batch.map((o) => o.line_user_id), note ? [message, note] : [message]);
           } catch (err) {
             lastErr = err;
             console.error('[furim/seminar] url multicast failed', i, err);
@@ -669,6 +711,18 @@ export async function remindSeminarSlots(
                   .bind(crypto.randomUUID(), o.friend_id, content, at),
               ),
             );
+            if (note) {
+              await db.batch(
+                batch.map((o) =>
+                  db
+                    .prepare(
+                      `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, created_at)
+                       VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, 'push', 'seminar', ?)`,
+                    )
+                    .bind(crypto.randomUUID(), o.friend_id, note.text, at),
+                ),
+              );
+            }
           } catch (err) {
             console.error('[furim/seminar] messages_log batch insert failed', i, err);
           }

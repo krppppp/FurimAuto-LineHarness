@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { NO_FIT_SLOT_ID, OTHER_TOPIC_ID, SEMINAR_TOPICS, announceSeminar, collectSeminarTopicReports, parseSeminarTopicData, parseSeminarVoteData, pickTopSlots, recordSeminarTopicNote, recordSeminarTopicVote, recordSeminarVote, remindSeminarSlots, sendSeminarSurvey, seminarAnnounceMessages, seminarEntryUrl, seminarSurveyFlex, slotLabel, surveyWeekIdOf, topicReplyText, topicReportText, voteReplyText, weekIdOf } from './seminar.js';
+import { NO_FIT_SLOT_ID, OTHER_TOPIC_ID, SEMINAR_TOPICS, announceSeminar, collectSeminarTopicReports, parseSeminarTopicData, parseSeminarVoteData, pickTopSlots, recordSeminarTopicNote, recordSeminarTopicVote, recordSeminarVote, remindSeminarSlots, SEMINAR_URL_NOTE_TEXT, sendSeminarSurvey, seminarAnnounceMessages, seminarEntryUrl, seminarSurveyFlex, slotLabel, surveyWeekIdOf, topicReplyText, topicReportText, voteReplyText, weekIdOf } from './seminar.js';
 
 vi.mock('@line-crm/db', () => ({ createBroadcast: vi.fn(async () => ({ id: 'bc-1' })), createTrackedLink: vi.fn() }));
 vi.mock('../lib/link-base-url.js', () => ({ resolveTrackedLinkBaseUrl: async () => 'https://line-harness-prod.furimuato.workers.dev' }));
@@ -163,7 +163,7 @@ describe('5 分前の URL 案内（TB-449 → TB-821）', () => {
     { friend_id: 'fr-2', line_user_id: 'U2' },
   ];
 
-  function makeReminderDb(others: Array<{ friend_id: string; line_user_id: string }> = []) {
+  function makeReminderDb(others: Array<{ friend_id: string; line_user_id: string }> = [], noteValue: string | null = null) {
     const runs: Array<{ sql: string; binds: unknown[] }> = [];
     const batches: unknown[][] = [];
     const db = {
@@ -175,6 +175,7 @@ describe('5 分前の URL 案内（TB-449 → TB-821）', () => {
           async first() {
             if (sql.includes('FROM furim_seminar_weeks')) return { week_id: '2026-10-04', stream_url: 'https://www.youtube.com/@FurimAuto/live', survey_sent_at: null };
             if (sql.includes('FROM tracked_links')) return { id: 'link-1', short_code: 'abc123' };
+            if (sql.includes('FROM account_settings')) return noteValue === null ? null : { value: noteValue };
             return null;
           },
           async all() {
@@ -257,6 +258,34 @@ describe('5 分前の URL 案内（TB-449 → TB-821）', () => {
     expect(multicast).toHaveBeenCalledTimes(2);
     expect(r.reminded[0]).toMatchObject({ others: 600, othersSent: 100 });
     expect(runs.some((x) => x.sql.includes('reminded_at = NULL'))).toBe(false);
+  });
+
+  it('更新報告の設定が無い・1 以外なら配信 URL の 1 吹き出しだけ（TB-997）', async () => {
+    for (const v of [null, '0']) {
+      const { db } = makeReminderDb([], v);
+      const pushMessage = vi.fn().mockResolvedValue(undefined);
+      await remindSeminarSlots(db, { pushMessage }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW });
+      expect(pushMessage.mock.calls[0][1]).toHaveLength(1);
+    }
+  });
+
+  it('更新報告の設定が 1 なら push・multicast とも 2 つ目の吹き出しに報告を付け、messages_log にも残す（TB-997）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ type: 'none', totalUsage: 0 }))));
+    const others = Array.from({ length: 3 }, (_, i) => ({ friend_id: `o-${i}`, line_user_id: `UO${i}` }));
+    const { db, runs, batches } = makeReminderDb(others, '1');
+    const pushMessage = vi.fn().mockResolvedValue(undefined);
+    const multicast = vi.fn().mockResolvedValue(undefined);
+    await remindSeminarSlots(db, { pushMessage, multicast }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW });
+    vi.unstubAllGlobals();
+    const pushed = pushMessage.mock.calls[0][1] as Array<{ type: string; text?: string }>;
+    expect(pushed).toHaveLength(2);
+    expect(pushed[0].type).toBe('flex');
+    expect(pushed[1]).toEqual({ type: 'text', text: SEMINAR_URL_NOTE_TEXT });
+    expect(uriOf(pushed)).toBe('https://line-harness-prod.furimuato.workers.dev/t/abc123?openExternalBrowser=1&f=fr-1');
+    expect(multicast.mock.calls[0][1]).toHaveLength(2);
+    expect(multicast.mock.calls[0][1][1]).toEqual({ type: 'text', text: SEMINAR_URL_NOTE_TEXT });
+    expect(runs.filter((x) => x.sql.includes("'text'")).length).toBe(2);
+    expect(batches.map((b) => b.length)).toEqual([3, 3]);
   });
 
   it('全員に失敗したら枠取りを戻して投げ直す（次の tick で再送できるように）', async () => {
