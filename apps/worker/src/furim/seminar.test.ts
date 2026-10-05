@@ -284,7 +284,7 @@ describe('5 分前の URL 案内（TB-449 → TB-821）', () => {
     const pushedJson = JSON.stringify(pushed[0]);
     expect(pushedJson).toContain(SEMINAR_URL_UPDATE.title);
     for (const t of SEMINAR_URL_UPDATE.items) expect(pushedJson).toContain(t);
-    expect(pushedJson).toContain(SEMINAR_URL_UPDATE.url);
+    expect(pushedJson).not.toContain('更新内容を見る');
     expect(multicast.mock.calls[0][1]).toHaveLength(1);
     expect(JSON.stringify(multicast.mock.calls[0][1][0])).toContain(SEMINAR_URL_UPDATE.title);
     expect(runs.filter((x) => x.sql.includes("'text'")).length).toBe(0);
