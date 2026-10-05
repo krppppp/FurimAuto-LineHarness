@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FALLBACK_TEXT, JOIN_STEPS_TEXT, buildAIChatPrompt, decodeBase64Utf8, howtoAnchorUrl, parseAIReply } from './ai-chat.js';
+import { FALLBACK_TEXT, JOIN_STEPS_TEXT, PLAN_CHANGE_STEPS_TEXT, buildAIChatPrompt, decodeBase64Utf8, howtoAnchorUrl, parseAIReply } from './ai-chat.js';
 
 describe('AI チャットのプロンプト（Capsec #307）', () => {
   const history = [
@@ -43,6 +43,16 @@ describe('AI チャットのプロンプト（Capsec #307）', () => {
     }
     expect(JOIN_STEPS_TEXT).toContain('1. リッチメニューの「ガイド」タブ →「プラン診断」をタップ');
     expect(JOIN_STEPS_TEXT).toContain('4. その後LINEに送られてくる決済URLからクレジットカード決済');
+  });
+
+  it('プランの変更・機能の追加を聞かれたらプラン診断の 4 ステップを書かせ、解約して申し込み直す案内を禁じる（TB-1026）', () => {
+    for (const howtoText of ['H', '']) {
+      const { prefix } = buildAIChatPrompt({ howtoText, faqText: 'F', history: [], queryText: 'Q' });
+      expect(prefix).toContain(PLAN_CHANGE_STEPS_TEXT);
+      expect(prefix).toContain('一度解約（キャンセル）してから申し込み直す');
+    }
+    expect(PLAN_CHANGE_STEPS_TEXT).toContain('3. 変更したい内容に選び直して「この内容にプラン変更する」をタップし、確認画面の金額を見て確定');
+    expect(PLAN_CHANGE_STEPS_TEXT).toContain('決済URLは届きません');
   });
 
   it('答えられないときの定型文は、長尺動画への誘導を外し、担当者への案内だけにする', () => {
