@@ -1150,7 +1150,15 @@ async function scheduled(
   jobs.push(
     import('./furim/seminar.js')
       .then(({ remindSeminarSlots }) => remindSeminarSlots(env.DB, defaultLineClient, env, { nowMs: event.scheduledTime }))
-      .then((r) => { if (r.reminded.length > 0) console.log('[cron] seminar url', JSON.stringify(r)); })
+      .then(async (r) => {
+        if (r.reminded.length > 0) console.log('[cron] seminar url', JSON.stringify(r));
+        const short = r.reminded.filter((x) => x.quotaNote);
+        if (short.length > 0) {
+          const { notifyStaff } = await import('./furim/staff-notify.js');
+          const body = short.map((x) => `${x.slotId}: 投票者 ${x.recipients} 人だけに送り、残り ${x.others} 人には送っていません（${x.quotaNote}）`).join('\n');
+          await notifyStaff(env.DB, defaultLineClient, env, { title: '生配信の URL を全員には送れませんでした', body }, 'furim/seminar');
+        }
+      })
       .catch((err) => console.error('[cron] seminar url error:', err)),
   );
   // 同・各枠の開始 1 時間前に、聞きたい内容アンケートの集計（票数＋その他の本文）をくろさんへ（TB-821）

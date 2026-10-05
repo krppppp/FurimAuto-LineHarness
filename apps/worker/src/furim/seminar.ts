@@ -3,7 +3,7 @@
 // 週の流れ（TB-821・2026-09-30 くろさん決定。生配信の配信はこの 3 通だけ）:
 //   土曜 9:00  翌日曜からの週の日程アンケートを全員へ（有料/未課金の2種）
 //   日曜 17:00 集計し、日程アンケートに答えた人だけへ上位 2 枠の告知＋聞きたい内容アンケート（6 択）
-//   各枠の開始 5 分前 その枠に投票した人だけへ配信 URL
+//   各枠の開始 5 分前 友だち全員へ配信 URL（投票者は ?f= 付き push・残りは multicast。TB-977）
 // 内容アンケートの集計は各枠の開始 1 時間前にくろさんへ送る（お客様への配信ではない）。
 // 票は Flex の postback ボタンで受け、(week_id, slot_id, friend_id) の UNIQUE で二重押しを 1 票にする。
 //
@@ -541,7 +541,20 @@ async function ensureWeekTrackedLink(db: D1Database, weekId: string, streamUrl: 
   return { id: link.id, short_code: link.short_code ?? null };
 }
 
-export type ReminderResult = { reminded: Array<{ slotId: string; recipients: number }> };
+export type ReminderSlotResult = {
+  slotId: string;
+  /** その枠に投票した人（?f= 付きで 1 人ずつ push） */
+  recipients: number;
+  /** 投票していない友だち（multicast） */
+  others: number;
+  othersSent: number;
+  /** 送信量が足りない・確かめられないため others を送らなかったとき */
+  quotaNote?: string;
+};
+export type ReminderResult = { reminded: ReminderSlotResult[] };
+
+/** multicast 1 回の上限（LINE の仕様） */
+const URL_MULTICAST_SIZE = 500;
 
 /** 開始の何分前から URL を送るか。cron は 5 分刻みなので :55 の tick が拾う */
 const URL_LEAD_MS = 5 * 60_000;
@@ -549,7 +562,10 @@ const URL_LEAD_MS = 5 * 60_000;
 const URL_GRACE_MS = 5 * 60_000;
 
 /**
- * 開始 5 分前の配信 URL（その枠に投票した人だけ）。5 分 cron から呼ぶ。
+ * 開始 5 分前の配信 URL。友だち全員に送る（TB-977）。5 分 cron から呼ぶ。
+ * その枠に投票した人は ?f= 付きで 1 人ずつ push（参加者の計測を残す・TB-449）、残りは 500 人ずつ multicast
+ * （?f= なし。seminar_<week_id> の計測リンクは通す）。broadcasts キューに積むと同じ tick の
+ * processQueuedBroadcasts と並走して次の tick（開始時刻）にずれ得るので、ここで直接送る。
  * reminded_at の条件付き UPDATE で枠を取った実行だけが送る。
  */
 export async function remindSeminarSlots(
@@ -561,7 +577,7 @@ export async function remindSeminarSlots(
   const nowMs = opts.nowMs ?? Date.now();
   const weekId = weekIdOf(nowMs);
   const week = await getSeminarWeek(db, weekId);
-  const reminded: Array<{ slotId: string; recipients: number }> = [];
+  const reminded: ReminderSlotResult[] = [];
   if (!week?.stream_url) return { reminded };
 
   const due = await db
@@ -587,13 +603,24 @@ export async function remindSeminarSlots(
       .bind(weekId, slot.slot_id)
       .all<{ friend_id: string; line_user_id: string }>();
     const recipients = (voters.results ?? []).filter((v) => v.line_user_id);
-    reminded.push({ slotId: slot.slot_id, recipients: recipients.length });
-    if (recipients.length === 0 || !lineClient) continue;
+    const othersRes = await db
+      .prepare(
+        `SELECT f.id AS friend_id, f.line_user_id AS line_user_id
+           FROM friends f
+          WHERE f.is_following = 1 AND f.line_user_id IS NOT NULL AND f.line_user_id != ''
+            AND f.id NOT IN (SELECT friend_id FROM furim_seminar_votes WHERE week_id = ? AND slot_id = ?)`,
+      )
+      .bind(weekId, slot.slot_id)
+      .all<{ friend_id: string; line_user_id: string }>();
+    const others = othersRes.results ?? [];
+    const result: ReminderSlotResult = { slotId: slot.slot_id, recipients: recipients.length, others: others.length, othersSent: 0 };
+    reminded.push(result);
+    if ((recipients.length === 0 && others.length === 0) || !lineClient) continue;
 
     const linkBase = await resolveSeminarLinkBase(db, env);
     const link = await ensureWeekTrackedLink(db, weekId, week.stream_url);
     const streamUrl = week.stream_url;
-    // 入口 URL に ?f=<friend_id> を入れるため、multicast をやめて 1 人ずつ push する（TB-449）。
+    // 投票者: 入口 URL に ?f=<friend_id> を入れるため 1 人ずつ push する（TB-449）。
     // 1 人の失敗（ブロック直後など）で残りを止めない。全員に失敗したときだけ枠取りを戻して投げ直す
     let sent = 0;
     let lastErr: unknown = null;
@@ -606,6 +633,46 @@ export async function remindSeminarSlots(
       } catch (err) {
         lastErr = err;
         console.error('[furim/seminar] url push failed', r.friend_id, err);
+      }
+    }
+
+    // 投票していない友だち: 送信量の枠を確かめてから 500 人ずつ multicast。
+    // 枠が足りない・確かめられないときは投票者だけに送った状態で止め、quotaNote で上げる。
+    // 1 バッチの失敗は再送しない（reminded_at は立てたままなので、再送すると届いた分が二重になる）
+    if (others.length > 0 && lineClient.multicast) {
+      const quota = await checkMessageQuota(env.LINE_CHANNEL_ACCESS_TOKEN, others.length);
+      if (!quota.ok) {
+        result.quotaNote = quota.note;
+      } else {
+        const message = seminarUrlFlex(weekId, slot.starts_at, seminarEntryUrl(linkBase, link.short_code ?? link.id, streamUrl));
+        const content = JSON.stringify(message.contents);
+        for (let i = 0; i < others.length; i += URL_MULTICAST_SIZE) {
+          const batch = others.slice(i, i + URL_MULTICAST_SIZE);
+          try {
+            await lineClient.multicast(batch.map((o) => o.line_user_id), [message]);
+          } catch (err) {
+            lastErr = err;
+            console.error('[furim/seminar] url multicast failed', i, err);
+            continue;
+          }
+          sent += batch.length;
+          result.othersSent += batch.length;
+          try {
+            const at = formatJstIso(Date.now());
+            await db.batch(
+              batch.map((o) =>
+                db
+                  .prepare(
+                    `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, created_at)
+                     VALUES (?, ?, 'outgoing', 'flex', ?, NULL, NULL, 'push', 'seminar', ?)`,
+                  )
+                  .bind(crypto.randomUUID(), o.friend_id, content, at),
+              ),
+            );
+          } catch (err) {
+            console.error('[furim/seminar] messages_log batch insert failed', i, err);
+          }
+        }
       }
     }
     if (sent === 0 && lastErr) {
