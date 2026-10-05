@@ -59,3 +59,5 @@
 - TB-363 (2026-09-27): `index.ts` / `routes/liff.ts` / `client/main.ts` のクリック ID 引き継ぎ、`packages/db/src/entry-routes.ts` の保存・取得、`services/ad-conversion.ts` の Google payload・ログ・catch-up に gbraid / wbraid を追加。Google は gclid > gbraid > wbraid の 1 個のみ。migration 086 と合わせて保持する。
 
 - TB-367 (2026-09-27): `services/ad-conversion.ts` の Google builder に friendId/eventName を渡し、決定的な transactionId を送信・request_body 許可リストへ追加。braid/gclid 共通で保持する。
+
+- TB-1009 (2026-10-05): `index.ts` の 5 分 cron に `runRenewalUnlock`（furim/renewal-unlock.ts・更新 7 日前の全機能開放と案内 3 通）を追加。Env Bindings に FURIM_RENEWAL_UNLOCK / PLAN_BUILDER_LIFF_URL / FURIM_RENEWAL_UNLOCK_EXCLUDE_SUBS（TB-1014）。cron は FURIM_RENEWAL_UNLOCK=on の環境だけ動く。migration 089 と合わせて保持する。

@@ -153,11 +153,14 @@ describe('Furimanです（Youtube クーポン）', () => {
 
   it('登録 1 週間以内は半額クーポン: Stripe 適用 → D1 youtube_coupon＋適用履歴 → 返信 → シートへ鏡写し', async () => {
     const fetchStub = stubStripe();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(Date.parse('2026-09-14T12:00:00+09:00')));
     const client = makeClient();
     const { db, writes } = makeDb({ customer: { line_user_id: 'Uxxx', stripe_customer_id: 'cus_1', youtube_coupon: null }, friend: { id: 'friend1', display_name: '太郎', created_at: '2026-09-12T10:00:00.000+09:00', metadata: '{}' } });
     try {
       await actionFurimanCoupon(client as never, 'Uxxx', 'rt', env as never, db);
     } finally {
+      vi.useRealTimers();
       vi.unstubAllGlobals();
     }
     const apply = fetchStub.mock.calls.find((c) => (c[1] as RequestInit | undefined)?.method === 'POST');
