@@ -598,7 +598,7 @@ export const SEMINAR_URL_UPDATE = {
     '下書き予約出品で出品した商品が、在庫管理シートに自動で入るようになりました',
     'メルカリの検索結果とショップ調査に、出品者の直近100件の評価が何日でたまったかが出るようになりました',
   ],
-  url: 'https://furimauto.com/howto/changelog.html',
+  url: 'https://chromewebstore.google.com/detail/furimauto%E3%83%95%E3%83%AA%E3%83%9E%E3%83%BC%E3%83%88/ieogmhpajeapjjikkdbkkkapgjfkhign',
 };
 
 async function seminarUrlNote(db: D1Database): Promise<boolean> {
