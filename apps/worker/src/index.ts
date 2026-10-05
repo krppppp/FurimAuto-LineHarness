@@ -154,6 +154,10 @@ export type Env = {
     // コピー出品チケット決済 LIFF と単価別 PriceID（furim/ticket-checkout.ts。環境ごとに別値）
     FURIM_TICKET_LIFF_URL?: string;
     FURIM_TICKET_PRICE_IDS?: string;
+    // 更新 7 日前の全機能開放（furim/renewal-unlock.ts）。'on' の環境だけ cron が開放と案内を行う
+    FURIM_RENEWAL_UNLOCK?: string;
+    PLAN_BUILDER_LIFF_URL?: string;
+    FURIM_RENEWAL_UNLOCK_EXCLUDE_SUBS?: string;
     FIREBASE_DATABASE_URL?: string;
     FIREBASE_DB_SECRET?: string;
     STRIPE_SECRET_KEY?: string;
@@ -1174,6 +1178,15 @@ async function scheduled(
       })
       .catch((err) => console.error('[cron] seminar topic report error:', err)),
   );
+  // 更新 7 日前の全機能開放と案内 3 通（TB-1009）。FURIM_RENEWAL_UNLOCK=on の環境だけ動く
+  if (event.cron !== '0 */6 * * *') {
+    jobs.push(
+      import('./furim/renewal-unlock.js')
+        .then(({ runRenewalUnlock }) => runRenewalUnlock(env.DB, defaultLineClient, env.FURIM_EXT_CACHE, env, { nowMs: event.scheduledTime }))
+        .then((r) => { if (r.granted.length || r.sent.length || r.rejected.length) console.log('[cron] renewal-unlock', JSON.stringify(r)); })
+        .catch((err) => console.error('[cron] renewal-unlock error:', err)),
+    );
+  }
 
   await Promise.allSettled(jobs);
 

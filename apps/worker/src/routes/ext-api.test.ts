@@ -177,6 +177,17 @@ describe('共通（ヘッダ・入力・JSON）', () => {
 });
 
 describe('POST /api/ext/v1/key-code-set', () => {
+  it('更新 7 日前の開放が期限内なら、機能フラグに上乗せして返す（TB-1009）', async () => {
+    const unlock = { mSetBottomPrice: '1', rChangePrice: '1', AutoMultiChannel: 'メルカリ/ラクマ/Shops/ヤフオク/ヤフフリ' };
+    const { db, statements } = makeDb(customerRouter(customer({ device_code: 'dev-1' }), (sql) =>
+      /FROM furim_renewal_unlocks/.test(sql) ? { first: { flags: JSON.stringify(unlock) } } : undefined,
+    ));
+    const res = await call(envWith(db), 'key-code-set', { keyCode: 'pb_abc', discriminationCode: 'dev-1' });
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.funcObject).toMatchObject({ mChangePrice: true, mSetBottomPrice: true, rChangePrice: true, AutoMultiChannel: 'メルカリ/ラクマ/Shops/ヤフオク/ヤフフリ', InventorySheet: true });
+    expect(statements.some((s) => /furim_feature_flags/.test(s.sql) && /INSERT|UPDATE/.test(s.sql))).toBe(false);
+  });
+
   it('初回認証: 端末判定文字列を発行して保存し、GAS と同じ形で返す', async () => {
     const { db, statements } = makeDb(customerRouter(customer()));
     const res = await call(envWith(db), 'key-code-set', { keyCode: 'pb_abc', mercariAccountUrl: 'https://jp.mercari.com/user/profile/1', version: '4.3.2' });

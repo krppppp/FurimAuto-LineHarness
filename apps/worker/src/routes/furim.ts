@@ -764,4 +764,28 @@ furim.post('/api/furim/ticket-consumed', async (c) => {
   }
 });
 
+/**
+ * POST /api/furim/renewal-unlock/run
+ * 更新 7 日前の全機能開放を手動で 1 回走らせる（FURIM_RENEWAL_UNLOCK と :00 のゲートを無視・9〜23 時の制限は残る）。
+ * body: { lineUserId?, dryRun?, push?, skipStripeCheck? }。skipStripeCheck は dev の確認用
+ */
+furim.post('/api/furim/renewal-unlock/run', async (c) => {
+  try {
+    const body = await c.req.json<{ lineUserId?: string; dryRun?: boolean; push?: boolean; skipStripeCheck?: boolean }>().catch(() => ({} as Record<string, never>));
+    const { runRenewalUnlock } = await import('../furim/renewal-unlock.js');
+    const lineClient = c.env.LINE_CHANNEL_ACCESS_TOKEN ? new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN) : null;
+    const result = await runRenewalUnlock(c.env.DB, lineClient, c.env.FURIM_EXT_CACHE, c.env, {
+      manual: true,
+      onlyLineUserId: body.lineUserId || undefined,
+      dryRun: body.dryRun !== false,
+      push: body.push === true,
+      skipStripeCheck: body.skipStripeCheck === true,
+    });
+    return c.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[furim/renewal-unlock/run] error:', err);
+    return c.json({ success: false, error: String(err) }, 500);
+  }
+});
+
 export { furim };
