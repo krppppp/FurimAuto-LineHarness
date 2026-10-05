@@ -158,3 +158,8 @@ FURIM_AMBASSADOR_OFFER_ID = "5468b932-575d-454e-8628-9f2d32402f10"
 # コピー出品チケット決済 LIFF と単価別 PriceID（prod=本番 Stripe。本番シート「チケット単価一覧」と同値。Capsec #243）
 FURIM_TICKET_LIFF_URL = "https://liff.line.me/1660804123-VgnRNDJm"
 FURIM_TICKET_PRICE_IDS = '{"15":"price_1SFCiyF2C7KcCkFfzJ7IuaTA","14":"price_1SFpOcF2C7KcCkFfZlbmPgiW","13":"price_1SFpOjF2C7KcCkFfR6lqZEo0","10":"price_1SFpOpF2C7KcCkFf27Ygjrl2"}'
+# 更新 7 日前の全機能開放（furim/renewal-unlock.ts）で開放も案内もしない subscription_id。
+# 二重課金の 2 名（TB-137・TB-865）を、Stripe で修正が効いたと確かめるまで外す（TB-1014）
+FURIM_RENEWAL_UNLOCK_EXCLUDE_SUBS = "sub_1NOIaAF2C7KcCkFfgwQUHq2t,sub_1UF5NbF2C7KcCkFf9FysLUR1"
+# 開放と案内の cron を動かす（くろさん文面 OK 確認カード 6965c69d・F事業リーダー決定 c89c8b58。止めるときはこの行を消してデプロイ）
+FURIM_RENEWAL_UNLOCK = "on"

@@ -4,6 +4,7 @@
 // 判定の順序・救済条件・エラー文字列は GAS getKeyCodeSet.js と同じ（content.js / popup.js の判定を変えないため）。
 import { jstNow } from '@line-crm/db';
 import { parseJstDateTime, type FurimCustomer, type FurimCustomerPatch } from './customer-store.js';
+import { loadActiveUnlockFlags, overlayUnlockFlags } from './renewal-unlock.js';
 
 export const EXT_CACHE_TTL_SECONDS = 60;
 
@@ -22,7 +23,9 @@ async function readCustomerFromDb(db: D1Database, keyCode: string): Promise<ExtC
     .all<{ feature_key: string; value: string }>();
   const flags: Record<string, string> = {};
   for (const r of rows.results ?? []) flags[r.feature_key] = r.value;
-  return { customer, flags };
+  // 更新 7 日前の全機能開放（TB-1009）。フラグ本体は書き換えず、期限内だけ上乗せする
+  const unlock = await loadActiveUnlockFlags(db, customer.line_user_id);
+  return { customer, flags: unlock ? overlayUnlockFlags(flags, unlock) : flags };
 }
 
 /** KV → D1 の順で顧客行＋機能フラグを読む。fresh=true なら KV を飛ばして D1 を読み、KV を更新する */

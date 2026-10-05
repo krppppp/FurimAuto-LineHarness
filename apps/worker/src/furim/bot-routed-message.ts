@@ -62,7 +62,8 @@ const KEYWORD_MESSAGE_PREFIX = '【キーワード】';
  * 本番で「キーコード発行」（接頭辞なし・改行付き）や「キーコード　リセット」（全角スペース）に返信が出ていなかった。
  *
  * - 空白（半角・全角・改行）とかぎ括弧を除いた結果がメニュー名と一致すれば「【リッチメニュー】<名前>」にする
- * - 空白とかぎ括弧・【キーワード】を除いた結果が「キーコードリセット」と完全一致するときだけ「キーコードリセット」にする。
+ * - 空白とかぎ括弧・【キーワード】・隅付き括弧【】を除いた結果が「キーコードリセット」と完全一致するときだけ「キーコードリセット」にする。
+ *   「【キーコード】リセット」（接頭辞の位置違い）も拾う（TB-864）。
  *   「キーコード リセットしたのに入れません」のような質問を、空白を詰めてリセットに回すと、本人の意図と関係なく
  *   端末の紐付けが外れる（統括指摘 2026-09-17）。自由文はそのまま AI チャットか人の対応に残す
  * - それ以外は受け取ったまま返す（自由文には触らない）
@@ -75,7 +76,7 @@ export function normalizeBotCommand(text: string): string {
     if (name.startsWith(prefix)) name = name.slice(prefix.length);
   }
   if (RICHMENU_COMMANDS.includes(name)) return `${RICHMENU_MESSAGE_PREFIX}${name}`;
-  if (name === KEYCODE_RESET && !text.includes(KEYCODE_RESET)) return KEYCODE_RESET;
+  if (name.replace(/[【】]/g, '') === KEYCODE_RESET && !text.includes(KEYCODE_RESET)) return KEYCODE_RESET;
   return text;
 }
 
