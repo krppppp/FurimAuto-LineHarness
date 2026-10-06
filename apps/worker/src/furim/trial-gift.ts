@@ -22,16 +22,6 @@ export function trialGiftFlexMessage(heroUrl: string | null = TRIAL_GIFT_HERO_UR
     contents: {
       type: 'bubble',
       ...(heroUrl ? { hero: { type: 'image', url: heroUrl, size: 'full', aspectRatio: '3:4', aspectMode: 'cover' } } : {}),
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        backgroundColor: '#E8473F',
-        paddingAll: '16px',
-        contents: [
-          { type: 'text', text: '🎁【本日限定】21:00締切', color: '#FFFFFF', size: 'sm', weight: 'bold' },
-          { type: 'text', text: '全機能 1週間 無料プレゼント', color: '#FFFFFF', size: 'xl', weight: 'bold', wrap: true, margin: 'sm' },
-        ],
-      },
       body: {
         type: 'box',
         layout: 'vertical',
