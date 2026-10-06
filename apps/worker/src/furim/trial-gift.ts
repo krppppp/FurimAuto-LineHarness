@@ -3,7 +3,8 @@
 // - Flex のボタンが「【ボタン】1週間無料プレゼントを受け取る」を送り、button-actions → grantTrialPromo が受ける
 //   （ACTIVE_TRIAL_PROMO '2026-10-06': 受付は当日 21 時まで・押した時点から 7 日・新しいキーコード）
 // - 対象: 友だち（ブロックなし）で、furim_customers の終了日時が過ぎていて、有料の契約（subscription_id）が無く、
-//   プラン欄が空か「可能性あり」「なし」で始まる人（解約者・サブアカは入れない）
+//   プラン欄が空か「可能性あり」「なし」で始まる人。プラン欄が「キャンセル済み」で始まる元会員も入れる
+//   （くろさん TB-25 786cc267。subscription_id が残っていても終了日時が過ぎていれば対象）。サブアカは入れない
 import { formatJstIso } from './customer-store.js';
 import { ACTIVE_TRIAL_PROMO, TRIAL_PROMOS } from './trial-promo.js';
 
@@ -72,8 +73,11 @@ export async function selectTrialGiftTargets(db: D1Database, nowMs = Date.now())
       `SELECT c.line_user_id FROM furim_customers c JOIN friends f ON f.line_user_id = c.line_user_id
        WHERE f.is_following = 1
          AND c.subscription_end_at IS NOT NULL AND c.subscription_end_at < ?
-         AND (c.subscription_id IS NULL OR c.subscription_id = '')
-         AND (c.plan_label IS NULL OR c.plan_label = '' OR c.plan_label LIKE '可能性あり%' OR c.plan_label LIKE 'なし%')
+         AND (
+           ((c.subscription_id IS NULL OR c.subscription_id = '')
+             AND (c.plan_label IS NULL OR c.plan_label = '' OR c.plan_label LIKE '可能性あり%' OR c.plan_label LIKE 'なし%'))
+           OR c.plan_label LIKE 'キャンセル済み%'
+         )
          AND (c.key_code IS NULL OR c.key_code NOT LIKE ?)
        ORDER BY c.line_user_id`,
     )
