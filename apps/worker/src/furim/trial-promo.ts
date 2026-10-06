@@ -4,7 +4,7 @@
 //
 // - キャンペーンは TRIAL_PROMOS に 1 行足すだけで増やせる。keyCodePrefix はキャンペーンごとに必ず変える
 //   （1 回きりの判定にこの接頭語を使う。友だち登録時に配る 2weektrial_ は使えない）
-// - 期限はキャンペーン終了日時（押した時点からの N 日ではない）
+// - 期限はキャンペーン終了日時。durationDays があるキャンペーンだけ、endAt は受付の締切で、期限は押した時点から N 日
 // - プラン名は書き換えない（解約履歴を消さない・getKeyCodeSet は終了日時で判定）
 // - 全機能開放 = マスタの全機能キー＋既存フラグキーを ON・在庫管理シートを ON・自動併売は全サイト
 import { formatJstDateTime, formatJstIso, getFurimCustomer, parseJstDateTime, upsertFurimCustomer } from './customer-store.js';
@@ -12,12 +12,14 @@ import { upsertFeatureFlags } from './customer-sync.js';
 import { ALWAYS_ENABLED_FEATURE_KEYS, INVENTORY_PATROL_ALL_SITES, loadFurimMaster } from './feature-flags.js';
 import { invalidateExtCache, type ExtCache } from './ext-auth.js';
 
-export type TrialPromo = { keyCodePrefix: string; endAt: string; label: string };
+export type TrialPromo = { keyCodePrefix: string; endAt: string; label: string; durationDays?: number };
 
 export const TRIAL_PROMOS: Record<string, TrialPromo> = {
   '2026-08': { keyCodePrefix: '1wtrial423_', endAt: '2026-08-31T12:00:00+09:00', label: '無料開放(2026-08)' },
+  // 試用が終わった見込み客への 1 週間プレゼント（TB-25・くろさん 2026-10-06）。受付は当日 21 時まで
+  '2026-10-06': { keyCodePrefix: 'gift1006_', endAt: '2026-10-06T21:00:00+09:00', label: '1週間プレゼント(2026-10-06)', durationDays: 7 },
 };
-export const ACTIVE_TRIAL_PROMO = '2026-08';
+export const ACTIVE_TRIAL_PROMO = '2026-10-06';
 
 const CANCELLED_PLAN_NAME = 'キャンセル済み';
 
@@ -81,9 +83,10 @@ export async function grantTrialPromo(
   for (const k of keys) flags[k] = k === 'AutoMultiChannel' ? INVENTORY_PATROL_ALL_SITES : '1';
 
   const keyCode = promo.keyCodePrefix + randomSuffix();
-  const expiryJst = formatJstDateTime(endMs);
+  const accessEndMs = promo.durationDays ? nowMs + promo.durationDays * 24 * 60 * 60_000 : endMs;
+  const expiryJst = formatJstDateTime(accessEndMs);
   await upsertFurimCustomer(db, lineUserId, {
-    subscription_end_at: formatJstIso(endMs),
+    subscription_end_at: formatJstIso(accessEndMs),
     key_code: keyCode,
     key_code_issued: 1,
     device_code: null,
@@ -93,5 +96,5 @@ export async function grantTrialPromo(
   await invalidateExtCache(kv, existing || null);
   await invalidateExtCache(kv, keyCode);
   console.log('[furim/trial-promo] granted', JSON.stringify({ promoId, lineUserId, keyCode, expiry: expiryJst }));
-  return { success: true, promoId, keyCode, expiry: expiryText(endMs), expiryJst, flags, previousKeyCode: existing || null };
+  return { success: true, promoId, keyCode, expiry: expiryText(accessEndMs), expiryJst, flags, previousKeyCode: existing || null };
 }

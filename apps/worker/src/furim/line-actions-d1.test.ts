@@ -141,7 +141,12 @@ describe('【ボタン】無料開放プレゼント', () => {
   it('キャンペーン終了後は終了案内を返し、GAS は呼ばない', async () => {
     const client = makeClient();
     const { db } = makeDb({ customer: { line_user_id: 'Uxxx', key_code: 'pb_1', plan_label: '', subscription_end_at: null } });
-    await handleButtonAction(client as never, 'Uxxx', 'rt', '【ボタン】無料開放プレゼント', env, db);
+    vi.useFakeTimers({ now: Date.parse('2026-10-07T00:00:00+09:00'), toFake: ['Date'] });
+    try {
+      await handleButtonAction(client as never, 'Uxxx', 'rt', '【ボタン】無料開放プレゼント', env, db);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(client.replyMessage.mock.calls[0][1][0].text).toContain('このキャンペーンは終了しました');
     expect(gasCalls()).toHaveLength(0);
   });

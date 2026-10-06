@@ -31,29 +31,29 @@ const AFTER_END = Date.parse('2026-09-14T10:00:00+09:00');
 describe('grantTrialPromo（GAS grantOneWeekTrial の移植）', () => {
   it('終了済みキャンペーンは expired', async () => {
     const { db } = makeDb({ line_user_id: 'U1', key_code: null, plan_label: null, subscription_end_at: null });
-    expect(await grantTrialPromo(db, undefined, 'U1', { nowMs: AFTER_END })).toEqual({ success: false, reason: 'expired', promoId: '2026-08' });
+    expect(await grantTrialPromo(db, undefined, 'U1', { promoId: '2026-08', nowMs: AFTER_END })).toEqual({ success: false, reason: 'expired', promoId: '2026-08' });
   });
 
   it('顧客行が無ければ notFound', async () => {
     const { db } = makeDb(null);
-    expect((await grantTrialPromo(db, undefined, 'U1', { nowMs: BEFORE_END })).success).toBe(false);
+    expect((await grantTrialPromo(db, undefined, 'U1', { promoId: '2026-08', nowMs: BEFORE_END })).success).toBe(false);
   });
 
   it('継続中の有料会員は paid（解約済みは通す）', async () => {
     const { db } = makeDb({ line_user_id: 'U1', key_code: 'pb_x', plan_label: 'PBプラン:メルカリ', subscription_end_at: '2026-12-01 00:00:00' });
-    expect(await grantTrialPromo(db, undefined, 'U1', { nowMs: BEFORE_END })).toMatchObject({ success: false, reason: 'paid' });
+    expect(await grantTrialPromo(db, undefined, 'U1', { promoId: '2026-08', nowMs: BEFORE_END })).toMatchObject({ success: false, reason: 'paid' });
     const { db: db2 } = makeDb({ line_user_id: 'U1', key_code: null, plan_label: 'キャンセル済み(商材が合わない)', subscription_end_at: '2026-12-01 00:00:00' });
-    expect((await grantTrialPromo(db2, undefined, 'U1', { nowMs: BEFORE_END })).success).toBe(true);
+    expect((await grantTrialPromo(db2, undefined, 'U1', { promoId: '2026-08', nowMs: BEFORE_END })).success).toBe(true);
   });
 
   it('同じキャンペーンの接頭語なら already', async () => {
     const { db } = makeDb({ line_user_id: 'U1', key_code: '1wtrial423_abcdefgh', plan_label: '', subscription_end_at: '2026-08-31 12:00:00' });
-    expect(await grantTrialPromo(db, undefined, 'U1', { nowMs: BEFORE_END })).toMatchObject({ success: false, reason: 'already', keyCode: '1wtrial423_abcdefgh' });
+    expect(await grantTrialPromo(db, undefined, 'U1', { promoId: '2026-08', nowMs: BEFORE_END })).toMatchObject({ success: false, reason: 'already', keyCode: '1wtrial423_abcdefgh' });
   });
 
   it('付与: 期限＝キャンペーン終了日時・キーコード刷新・端末判定クリア・全機能 ON（自動併売は全サイト）', async () => {
     const { db, writes } = makeDb({ line_user_id: 'U1', key_code: '2weektrial_old', plan_label: '', subscription_end_at: '2026-08-10 00:00:00' }, ['mChangePrice', 'AutoMultiChannel', 'yfRelist']);
-    const r = await grantTrialPromo(db, undefined, 'U1', { nowMs: BEFORE_END });
+    const r = await grantTrialPromo(db, undefined, 'U1', { promoId: '2026-08', nowMs: BEFORE_END });
     if (!r.success) throw new Error('expected success');
     expect(r.keyCode).toMatch(/^1wtrial423_[0-9a-z]{8}$/);
     expect(r.expiry).toBe('2026/08/31 12:00');
@@ -63,6 +63,17 @@ describe('grantTrialPromo（GAS grantOneWeekTrial の移植）', () => {
     expect(upsert?.args).toContain('2026-08-31T12:00:00.000+09:00');
     expect(upsert?.sql).toMatch(/device_code = excluded.device_code/);
     expect(writes.filter((w) => /INSERT INTO furim_feature_flags/.test(w.sql)).length).toBe(Object.keys(r.flags).length);
+  });
+
+  it('1 週間プレゼント（2026-10-06）: 期限は押した時点から 7 日・受付は当日 21 時まで', async () => {
+    const pressed = Date.parse('2026-10-06T15:30:00+09:00');
+    const { db } = makeDb({ line_user_id: 'U1', key_code: '1weektrial_old', plan_label: null, subscription_end_at: '2025-05-01 00:00:00' });
+    const r = await grantTrialPromo(db, undefined, 'U1', { nowMs: pressed });
+    if (!r.success) throw new Error('expected success');
+    expect(r.keyCode).toMatch(/^gift1006_[0-9a-z]{8}$/);
+    expect(r.expiryJst).toBe('2026-10-13 15:30:00');
+    const { db: late } = makeDb({ line_user_id: 'U1', key_code: '1weektrial_old', plan_label: null, subscription_end_at: '2025-05-01 00:00:00' });
+    expect(await grantTrialPromo(late, undefined, 'U1', { nowMs: Date.parse('2026-10-06T21:00:00+09:00') })).toMatchObject({ success: false, reason: 'expired' });
   });
 });
 

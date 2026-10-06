@@ -788,4 +788,25 @@ furim.post('/api/furim/renewal-unlock/run', async (c) => {
   }
 });
 
+/**
+ * POST /api/furim/trial-gift/send
+ * 試用が終わった見込み客へ 1 週間プレゼントの Flex を送る（TB-25）。既定は dryRun（対象を数えるだけ）。
+ * body: { dryRun?, lineUserIds? }。lineUserIds があればその人だけに送る（テスト送信）
+ */
+furim.post('/api/furim/trial-gift/send', async (c) => {
+  try {
+    const body = await c.req.json<{ dryRun?: boolean; lineUserIds?: string[] }>().catch(() => ({} as Record<string, never>));
+    if (!c.env.LINE_CHANNEL_ACCESS_TOKEN) return c.json({ success: false, error: 'LINE_CHANNEL_ACCESS_TOKEN not configured' }, 500);
+    const { sendTrialGift } = await import('../furim/trial-gift.js');
+    const result = await sendTrialGift(c.env.DB, new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN), {
+      dryRun: body.dryRun !== false,
+      lineUserIds: Array.isArray(body.lineUserIds) ? body.lineUserIds : undefined,
+    });
+    return c.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[furim/trial-gift/send] error:', err);
+    return c.json({ success: false, error: String(err) }, 500);
+  }
+});
+
 export { furim };

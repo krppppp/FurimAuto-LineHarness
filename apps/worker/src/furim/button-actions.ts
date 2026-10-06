@@ -361,7 +361,7 @@ export async function handleButtonAction(
     if (result && result.success) {
       messages.push({
         type: 'text',
-        text: `🎁無料開放を適用しました！\n\n${result.expiry ? `ご利用期限: ${result.expiry} まで\n\n` : ''}期限までの間、フリマサイト自動化・自動コピー出品・自動併売在庫管理のすべてをお使いいただけます。\n\n早く始めるほど長く使えますので、今日から動かしてみてください！\n\n導入方法はこちらの1分動画を参考にしてください！\n\nうまくいかないときは、このLINEにそのままご返信ください🙇`,
+        text: `🎁無料開放を適用しました！\n\n${result.expiry ? `ご利用期限: ${result.expiry} まで\n\n` : ''}あなたの新しいキーコード:\n${result.keyCode}\n\nFurimAutoの拡張機能を開いて、このキーコードを入力し、認証ボタンを一度クリックするとすぐに使えます。\n\n期限までの間、フリマサイト自動化・自動コピー出品・自動併売在庫管理のすべてをお使いいただけます。\n\n早く始めるほど長く使えますので、今日から動かしてみてください！\n\n導入方法はこちらの1分動画を参考にしてください！\n\nうまくいかないときは、このLINEにそのままご返信ください🙇`,
       });
       messages.push({
         type: 'video',
