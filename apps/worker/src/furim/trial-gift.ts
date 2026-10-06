@@ -12,8 +12,8 @@ const MULTICAST_LIMIT = 500;
 
 type LineClientLike = { multicast(to: string[], messages: unknown[]): Promise<unknown> };
 
-// デザイン部のバナー（TB-1053 v2・1040×1387・本番 R2 に置いた）
-export const TRIAL_GIFT_HERO_URL: string | null = 'https://line-harness-prod.furimuato.workers.dev/images/17666d0f-c2d1-4bc3-b114-5eabec3c7293.png';
+// デザイン部のバナー（TB-1066 v3・CDO レビュー合格・1040×1387・本番 R2 に置いた）
+export const TRIAL_GIFT_HERO_URL: string | null = 'https://line-harness-prod.furimuato.workers.dev/images/109e7c0c-7d21-4ff1-8f26-a9f8d975e9cf.png';
 
 export function trialGiftFlexMessage(heroUrl: string | null = TRIAL_GIFT_HERO_URL) {
   return {
@@ -44,6 +44,7 @@ export function trialGiftFlexMessage(heroUrl: string | null = TRIAL_GIFT_HERO_UR
           },
           { type: 'text', text: '年末年始に向けてイベントが続く今が、一年でいちばんの商戦です。ライバルより先に、販路を広げておきましょう！', size: 'sm', wrap: true },
           { type: 'text', text: '⏰受付は本日21:00まで。ボタンを押した時から1週間、追加料金は一切かかりません。', size: 'sm', color: '#E8473F', weight: 'bold', wrap: true },
+          { type: 'text', text: '※1週間たっても自動で課金されることはありません。PCのChromeで動く拡張機能です。', size: 'xs', color: '#888888', wrap: true },
         ],
       },
       footer: {
@@ -81,7 +82,7 @@ export async function selectTrialGiftTargets(db: D1Database, nowMs = Date.now())
   return (rows.results ?? []).map((r) => r.line_user_id);
 }
 
-export type TrialGiftSendResult = { dryRun: boolean; targets: number; sent: number; failedBatches: number };
+export type TrialGiftSendResult = { dryRun: boolean; targets: number; sent: number; failedBatches: number; heroUrl: string | null };
 
 /** lineUserIds を渡せばその人だけ（テスト送信）。dryRun なら数えるだけ */
 export async function sendTrialGift(
@@ -91,7 +92,7 @@ export async function sendTrialGift(
 ): Promise<TrialGiftSendResult> {
   const nowMs = opts.nowMs ?? Date.now();
   const to = opts.lineUserIds?.length ? opts.lineUserIds : await selectTrialGiftTargets(db, nowMs);
-  const result: TrialGiftSendResult = { dryRun: opts.dryRun, targets: to.length, sent: 0, failedBatches: 0 };
+  const result: TrialGiftSendResult = { dryRun: opts.dryRun, targets: to.length, sent: 0, failedBatches: 0, heroUrl: TRIAL_GIFT_HERO_URL };
   if (opts.dryRun || to.length === 0) return result;
   const message = trialGiftFlexMessage();
   for (let i = 0; i < to.length; i += MULTICAST_LIMIT) {
