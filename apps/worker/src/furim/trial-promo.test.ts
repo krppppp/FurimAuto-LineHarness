@@ -65,7 +65,7 @@ describe('grantTrialPromo（GAS grantOneWeekTrial の移植）', () => {
     expect(writes.filter((w) => /INSERT INTO furim_feature_flags/.test(w.sql)).length).toBe(Object.keys(r.flags).length);
   });
 
-  it('1 週間プレゼント（2026-10-06）: 期限は押した時点から 7 日・受付は当日 21 時まで', async () => {
+  it('1 週間プレゼント（2026-10-06）: 期限は押した時点から 7 日・受付は当日 24 時まで', async () => {
     const pressed = Date.parse('2026-10-06T15:30:00+09:00');
     const { db } = makeDb({ line_user_id: 'U1', key_code: '1weektrial_old', plan_label: null, subscription_end_at: '2025-05-01 00:00:00' });
     const r = await grantTrialPromo(db, undefined, 'U1', { nowMs: pressed });
@@ -73,7 +73,7 @@ describe('grantTrialPromo（GAS grantOneWeekTrial の移植）', () => {
     expect(r.keyCode).toMatch(/^gift1006_[0-9a-z]{8}$/);
     expect(r.expiryJst).toBe('2026-10-13 15:30:00');
     const { db: late } = makeDb({ line_user_id: 'U1', key_code: '1weektrial_old', plan_label: null, subscription_end_at: '2025-05-01 00:00:00' });
-    expect(await grantTrialPromo(late, undefined, 'U1', { nowMs: Date.parse('2026-10-06T21:00:00+09:00') })).toMatchObject({ success: false, reason: 'expired' });
+    expect(await grantTrialPromo(late, undefined, 'U1', { nowMs: Date.parse('2026-10-07T00:00:00+09:00') })).toMatchObject({ success: false, reason: 'expired' });
   });
 });
 

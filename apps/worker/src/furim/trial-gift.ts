@@ -1,7 +1,7 @@
 // 試用が終わった見込み客への 1 週間プレゼント（TB-25・くろさん 2026-10-06）。
 //
 // - Flex のボタンが「【ボタン】1週間無料プレゼントを受け取る」を送り、button-actions → grantTrialPromo が受ける
-//   （ACTIVE_TRIAL_PROMO '2026-10-06': 受付は当日 21 時まで・押した時点から 7 日・新しいキーコード）
+//   （ACTIVE_TRIAL_PROMO '2026-10-06': 受付は当日 24 時まで・押した時点から 7 日・新しいキーコード）
 // - 対象: 友だち（ブロックなし）で、furim_customers の終了日時が過ぎていて、有料の契約（subscription_id）が無く、
 //   プラン欄が空か「可能性あり」「なし」で始まる人。プラン欄が「キャンセル済み」で始まる元会員も入れる
 //   （くろさん TB-25 786cc267。subscription_id が残っていても終了日時が過ぎていれば対象）。サブアカは入れない
@@ -19,7 +19,7 @@ export const TRIAL_GIFT_HERO_URL: string | null = 'https://line-harness-prod.fur
 export function trialGiftFlexMessage(heroUrl: string | null = TRIAL_GIFT_HERO_URL) {
   return {
     type: 'flex',
-    altText: '【本日21時まで】FurimAuto全機能 1週間無料プレゼント🎁',
+    altText: '【本日24時まで】FurimAuto全機能 1週間無料プレゼント🎁',
     contents: {
       type: 'bubble',
       ...(heroUrl ? { hero: { type: 'image', url: heroUrl, size: 'full', aspectRatio: '3:4', aspectMode: 'cover' } } : {}),
@@ -44,7 +44,7 @@ export function trialGiftFlexMessage(heroUrl: string | null = TRIAL_GIFT_HERO_UR
             ],
           },
           { type: 'text', text: '年末年始に向けてイベントが続く今が、一年でいちばんの商戦です。ライバルより先に、販路を広げておきましょう！', size: 'sm', wrap: true },
-          { type: 'text', text: '⏰受付は本日21:00まで。ボタンを押した時から1週間、追加料金は一切かかりません。', size: 'sm', color: '#E8473F', weight: 'bold', wrap: true },
+          { type: 'text', text: '⏰受付は本日24:00まで。ボタンを押した時から1週間、追加料金は一切かかりません。', size: 'sm', color: '#E8473F', weight: 'bold', wrap: true },
           { type: 'text', text: '※1週間たっても自動で課金されることはありません。PCのChromeで動く拡張機能です。', size: 'xs', color: '#888888', wrap: true },
         ],
       },

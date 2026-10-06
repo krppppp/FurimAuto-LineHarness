@@ -16,8 +16,8 @@ export type TrialPromo = { keyCodePrefix: string; endAt: string; label: string; 
 
 export const TRIAL_PROMOS: Record<string, TrialPromo> = {
   '2026-08': { keyCodePrefix: '1wtrial423_', endAt: '2026-08-31T12:00:00+09:00', label: '無料開放(2026-08)' },
-  // 試用が終わった見込み客への 1 週間プレゼント（TB-25・くろさん 2026-10-06）。受付は当日 21 時まで
-  '2026-10-06': { keyCodePrefix: 'gift1006_', endAt: '2026-10-06T21:00:00+09:00', label: '1週間プレゼント(2026-10-06)', durationDays: 7 },
+  // 試用が終わった見込み客への 1 週間プレゼント（TB-25・くろさん 2026-10-06）。受付は当日 24 時まで（くろさん 85d88256 で 21 時から延長）
+  '2026-10-06': { keyCodePrefix: 'gift1006_', endAt: '2026-10-07T00:00:00+09:00', label: '1週間プレゼント(2026-10-06)', durationDays: 7 },
 };
 export const ACTIVE_TRIAL_PROMO = '2026-10-06';
 
