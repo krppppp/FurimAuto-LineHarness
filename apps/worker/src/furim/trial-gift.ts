@@ -12,20 +12,24 @@ const MULTICAST_LIMIT = 500;
 
 type LineClientLike = { multicast(to: string[], messages: unknown[]): Promise<unknown> };
 
-export function trialGiftFlexMessage() {
+// デザイン部のバナー（TB-1053）。決まるまでは null（hero なし）
+export const TRIAL_GIFT_HERO_URL: string | null = null;
+
+export function trialGiftFlexMessage(heroUrl: string | null = TRIAL_GIFT_HERO_URL) {
   return {
     type: 'flex',
-    altText: '【本日21時まで】FurimAuto全機能を1週間プレゼント',
+    altText: '【本日21時まで】FurimAuto全機能 1週間無料プレゼント🎁',
     contents: {
       type: 'bubble',
+      ...(heroUrl ? { hero: { type: 'image', url: heroUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' } } : {}),
       header: {
         type: 'box',
         layout: 'vertical',
         backgroundColor: '#E8473F',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: '本日21:00まで', color: '#FFFFFF', size: 'sm', weight: 'bold' },
-          { type: 'text', text: '全機能を1週間プレゼント', color: '#FFFFFF', size: 'xl', weight: 'bold', wrap: true, margin: 'sm' },
+          { type: 'text', text: '🎁【本日限定】21:00締切', color: '#FFFFFF', size: 'sm', weight: 'bold' },
+          { type: 'text', text: '全機能 1週間 無料プレゼント', color: '#FFFFFF', size: 'xl', weight: 'bold', wrap: true, margin: 'sm' },
         ],
       },
       body: {
@@ -33,23 +37,23 @@ export function trialGiftFlexMessage() {
         layout: 'vertical',
         spacing: 'md',
         contents: [
-          { type: 'text', text: '以前FurimAutoをお試しいただき、ありがとうございました。', size: 'sm', wrap: true },
-          { type: 'text', text: '今日だけ、FurimAutoの全機能を1週間まるごとプレゼントします！', size: 'md', weight: 'bold', wrap: true },
+          { type: 'text', text: '以前FurimAutoをお試しいただいた方だけへの、今日限りの特別キャンペーンです！', size: 'md', weight: 'bold', wrap: true },
+          { type: 'text', text: '通常は有料の全機能を、1週間まるごと0円でお使いいただけます。', size: 'sm', wrap: true },
           {
             type: 'box',
             layout: 'vertical',
             spacing: 'sm',
-            backgroundColor: '#F5F5F5',
+            backgroundColor: '#FFF4E5',
             cornerRadius: '8px',
             paddingAll: '12px',
             contents: [
-              { type: 'text', text: '・メルカリの全自動化', size: 'sm', wrap: true },
-              { type: 'text', text: '・ラクマ／メルカリShops／ヤフオク／ヤフフリへの多販路自動化', size: 'sm', wrap: true },
-              { type: 'text', text: '・在庫管理シートで、1つ売れたら他の販路は自動で取り下げ', size: 'sm', wrap: true },
+              { type: 'text', text: '✓ 再出品・値下げ・取引まで、メルカリを全自動化', size: 'sm', weight: 'bold', wrap: true },
+              { type: 'text', text: '✓ ラクマ／Shops／ヤフオク／ヤフフリへ自動で多販路出品', size: 'sm', weight: 'bold', wrap: true },
+              { type: 'text', text: '✓ 在庫管理シートで、1つ売れたら他の販路は自動で取り下げ', size: 'sm', weight: 'bold', wrap: true },
             ],
           },
-          { type: 'text', text: '年末年始に向けてイベントが続く今が商戦です。\nボタンを押した時から1週間、追加の料金なしでお使いいただけます。', size: 'sm', color: '#555555', wrap: true },
-          { type: 'text', text: '※本日21:00までにボタンを押した方が対象です', size: 'xs', color: '#E8473F', wrap: true },
+          { type: 'text', text: '年末年始に向けてイベントが続く今が、一年でいちばんの商戦です。ライバルより先に、販路を広げておきましょう！', size: 'sm', wrap: true },
+          { type: 'text', text: '⏰受付は本日21:00まで。ボタンを押した時から1週間、追加料金は一切かかりません。', size: 'sm', color: '#E8473F', weight: 'bold', wrap: true },
         ],
       },
       footer: {
@@ -60,7 +64,8 @@ export function trialGiftFlexMessage() {
             type: 'button',
             style: 'primary',
             color: '#E8473F',
-            action: { type: 'message', label: '1週間プレゼントを受け取る', text: TRIAL_GIFT_BUTTON_TEXT },
+            height: 'md',
+            action: { type: 'message', label: '今すぐ無料で受け取る', text: TRIAL_GIFT_BUTTON_TEXT },
           },
         ],
       },
