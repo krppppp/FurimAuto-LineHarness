@@ -1405,7 +1405,7 @@ function renderResult() {
     section('自動併売在庫管理サービス', inv);
   }
   totalEl.textContent = '総支払額 ' + yen(total) + '/月';
-  taxEl.textContent = '税抜（税込 ' + yen(Math.round(total * (1 + TAX))) + '）';
+  taxEl.textContent = '税抜';
   if (btn) btn.disabled = total <= 0 || !!blockedMessage;
 }
 
