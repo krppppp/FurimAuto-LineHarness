@@ -12,8 +12,8 @@ const MULTICAST_LIMIT = 500;
 
 type LineClientLike = { multicast(to: string[], messages: unknown[]): Promise<unknown> };
 
-// デザイン部のバナー（TB-1053）。決まるまでは null（hero なし）
-export const TRIAL_GIFT_HERO_URL: string | null = null;
+// デザイン部のバナー（TB-1053 v2・1040×1387・本番 R2 に置いた）
+export const TRIAL_GIFT_HERO_URL: string | null = 'https://line-harness-prod.furimuato.workers.dev/images/17666d0f-c2d1-4bc3-b114-5eabec3c7293.png';
 
 export function trialGiftFlexMessage(heroUrl: string | null = TRIAL_GIFT_HERO_URL) {
   return {
