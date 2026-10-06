@@ -21,7 +21,7 @@ export function trialGiftFlexMessage(heroUrl: string | null = TRIAL_GIFT_HERO_UR
     altText: '【本日21時まで】FurimAuto全機能 1週間無料プレゼント🎁',
     contents: {
       type: 'bubble',
-      ...(heroUrl ? { hero: { type: 'image', url: heroUrl, size: 'full', aspectRatio: '20:13', aspectMode: 'cover' } } : {}),
+      ...(heroUrl ? { hero: { type: 'image', url: heroUrl, size: 'full', aspectRatio: '3:4', aspectMode: 'cover' } } : {}),
       header: {
         type: 'box',
         layout: 'vertical',
