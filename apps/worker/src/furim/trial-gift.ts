@@ -12,8 +12,8 @@ const MULTICAST_LIMIT = 500;
 
 type LineClientLike = { multicast(to: string[], messages: unknown[]): Promise<unknown> };
 
-// デザイン部のバナー（TB-1066 v3・CDO レビュー合格・1040×1387・本番 R2 に置いた）
-export const TRIAL_GIFT_HERO_URL: string | null = 'https://line-harness-prod.furimuato.workers.dev/images/109e7c0c-7d21-4ff1-8f26-a9f8d975e9cf.png';
+// デザイン部のバナー（TB-1066 v4・デザインレビュー担当 合格・1040×1387・本番 R2 に置いた）
+export const TRIAL_GIFT_HERO_URL: string | null = 'https://line-harness-prod.furimuato.workers.dev/images/fe0e10ae-b3dc-4df8-bb4b-faed6317e96a.png';
 
 export function trialGiftFlexMessage(heroUrl: string | null = TRIAL_GIFT_HERO_URL) {
   return {
