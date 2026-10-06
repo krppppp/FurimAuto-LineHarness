@@ -56,6 +56,7 @@ const EXPORT_LIMIT = 50000;
 const IN_CHUNK = 100;
 const AUDIT_INSERT = '(insert)';
 const AUDIT_DELETE = '(delete)';
+const BULK_DELETE_MAX = 100;
 
 type Row = Record<string, unknown>;
 
@@ -958,6 +959,64 @@ furimAdmin.delete('/api/furim/admin/:table/:id', requireRole('owner', 'admin'), 
   }
   console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${table.name}/${id} を削除`);
   return c.json({ success: true, data: snapshot, meta: { id } });
+});
+
+// POST /api/furim/admin/:table/bulk-delete {ids:[行 id]} — チェックした行をまとめて削除（owner/admin・TB-927）。
+// 1 回 BULK_DELETE_MAX 件まで。見つからない行は飛ばして missing で返す。消す行と監査 (delete) は 1 つの batch で入れる
+furimAdmin.post('/api/furim/admin/:table/bulk-delete', requireRole('owner', 'admin'), async (c) => {
+  const table = requireTable(c.req.param('table')!);
+  if (!table) return c.json({ success: false, error: 'このテーブルは扱えません' }, 404);
+  if (!isDeletable(table)) return c.json({ success: false, error: 'このテーブルの行は削除できません' }, 400);
+
+  let body: { ids?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: 'JSON が不正です' }, 400);
+  }
+  const raw = body?.ids;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.some((v) => typeof v !== 'string' || v === '')) {
+    return c.json({ success: false, error: 'ids を行 id の配列で指定してください' }, 400);
+  }
+  const ids = [...new Set(raw as string[])];
+  if (ids.length > BULK_DELETE_MAX) return c.json({ success: false, error: `1 回に削除できるのは ${BULK_DELETE_MAX} 件までです` }, 400);
+  const pks = ids.map((id) => ({ id, pk: pkWhere(table, id) }));
+  if (pks.some((p) => !p.pk)) return c.json({ success: false, error: '行 id の形式が不正です' }, 400);
+
+  const found: Array<{ id: string; pk: { where: string; binds: string[] }; snapshot: Row }> = [];
+  const missing: string[] = [];
+  for (const { id, pk } of pks) {
+    const before = await fetchRow(c.env.DB, table, id);
+    if (!before) {
+      missing.push(id);
+      continue;
+    }
+    const { _id: _ignored, ...snapshot } = before;
+    void _ignored;
+    found.push({ id, pk: pk!, snapshot });
+  }
+  if (found.length === 0) return c.json({ success: false, error: '行が見つかりません', meta: { deleted: [], missing } }, 404);
+
+  const staff = c.get('staff');
+  const now = jstNow();
+  try {
+    await c.env.DB.batch(
+      found.flatMap(({ id, pk, snapshot }) => [
+        c.env.DB.prepare(`DELETE FROM ${table.name} WHERE ${pk.where}`).bind(...pk.binds),
+        c.env.DB.prepare(
+          `INSERT INTO furim_admin_audit (id, staff_id, staff_name, table_name, row_id, column_name, old_value, new_value, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(crypto.randomUUID(), staff.id, staff.name, table.name, id, AUDIT_DELETE, JSON.stringify(snapshot), null, now),
+      ]),
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[furim-admin] bulk-delete ${table.name} (${found.length} 件) failed: ${msg}`);
+    return c.json({ success: false, error: `削除に失敗しました: ${msg}` }, 400);
+  }
+  const deleted = found.map((f) => f.id);
+  console.log(`[furim-admin] ${staff.name}(${staff.id}) が ${table.name} を ${deleted.length} 件まとめて削除（見つからず ${missing.length} 件）`);
+  return c.json({ success: true, data: found.map((f) => f.snapshot), meta: { deleted, missing } });
 });
 
 export { furimAdmin };

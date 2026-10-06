@@ -32,7 +32,7 @@ import { getAiMode } from '../furim/firebase-client.js';
 import { withOutgoingLog } from '../utils/message-log.js';
 import { notifyStaffOfIncomingMessage } from '../services/push-notify.js';
 
-type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GAS_DEPLOY_ID?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; WORKER_NAME?: string; FURIM_TICKET_LIFF_URL?: string; FURIM_TICKET_PRICE_IDS?: string; FURIM_EXT_CACHE?: KVNamespace };
+type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; WORKER_NAME?: string; FURIM_TICKET_LIFF_URL?: string; FURIM_TICKET_PRICE_IDS?: string; FURIM_EXT_CACHE?: KVNamespace };
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -318,7 +318,6 @@ async function handleEvent(
       ...(isNewUser ? { conversionEventName: 'line_friend_add' } : {}),
     }, lineAccessToken, lineAccountId, {
       lineAccessToken,
-      gasDeployId: env?.GAS_DEPLOY_ID,
       stripeSecretKey: env?.STRIPE_SECRET_KEY,
     });
     return;
@@ -535,16 +534,14 @@ async function handleEvent(
 
     // 【プラン変更】PB-XXXXXX: 既存契約者のLIFF申込。新規Checkoutではなく
     // 既存サブスクをin-place更新し、残り期間の差額を日割りで即時決済する
-    if (incomingText.startsWith('【プラン変更】') && env?.STRIPE_SECRET_KEY && env?.GAS_DEPLOY_ID) {
+    if (incomingText.startsWith('【プラン変更】') && env?.STRIPE_SECRET_KEY) {
       const { handlePlanChangeMessage } = await import('../furim/plan-change.js');
       // handler 自身も失敗を記録・通知するが、その外側（import や record）で落ちた場合も
       // 本人に push が届くように runHandlerSafely で包む（Capsec #240）
       const stripeKey = env.STRIPE_SECRET_KEY;
-      const gasDeployId = env.GAS_DEPLOY_ID;
       await runHandlerSafely('handlePlanChangeMessage', loggingClient, userId, 'リッチメニューの「プラン診断」からもう一度お手続きください', () =>
         handlePlanChangeMessage(db, loggingClient, userId, event.replyToken, incomingText, {
           STRIPE_SECRET_KEY: stripeKey,
-          GAS_DEPLOY_ID: gasDeployId,
           WORKER_PUBLIC_URL: workerUrl,
           FURIM_EXT_CACHE: env.FURIM_EXT_CACHE,
         }), db);
@@ -553,11 +550,10 @@ async function handleEvent(
 
     // 【プラン申し込み】PB-XXXXXX: plan-builder LIFFの申込ボタンから送られる申込メッセージ。
     // 申込コードで選択内容を引き、Checkoutリンク（12時間有効）をFlexで返信する
-    if (incomingText.startsWith('【プラン申し込み】') && env?.STRIPE_SECRET_KEY && env?.GAS_DEPLOY_ID) {
+    if (incomingText.startsWith('【プラン申し込み】') && env?.STRIPE_SECRET_KEY) {
       const { handlePlanApplyMessage } = await import('../furim/plan-apply.js');
       await handlePlanApplyMessage(db, loggingClient, userId, event.replyToken, incomingText, {
         STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
-        GAS_DEPLOY_ID: env.GAS_DEPLOY_ID,
         WORKER_PUBLIC_URL: workerUrl,
         DB: db,
       });
@@ -571,7 +567,6 @@ async function handleEvent(
       const buttonEnv = env;
       await runHandlerSafely('handleButtonAction', loggingClient, userId, 'もう一度ボタンをタップしてください', async () => {
         const handled = await handleButtonAction(loggingClient, userId, event.replyToken, incomingText, {
-          GAS_DEPLOY_ID: buttonEnv.GAS_DEPLOY_ID,
           STRIPE_SECRET_KEY: buttonEnv.STRIPE_SECRET_KEY,
           FURIM_EXT_CACHE: buttonEnv.FURIM_EXT_CACHE,
           PLAN_BUILDER_LIFF_URL: buttonEnv.PLAN_BUILDER_LIFF_URL,
@@ -596,11 +591,9 @@ async function handleEvent(
       if (richMenuHandled) return;
     }
 
-    // FurimAutoアクション: GAS連携等の業務処理
-    if (env?.GAS_DEPLOY_ID) {
-      const gasDeployId = env.GAS_DEPLOY_ID;
+    // FurimAutoアクション: キーコード発行・会員ページ等の業務処理
+    if (env) {
       const furimHandled = await runHandlerSafely('handleFurimAction', loggingClient, userId, 'もう一度お試しください', () => handleFurimAction(loggingClient, userId, event.replyToken, incomingText, {
-        GAS_DEPLOY_ID: gasDeployId,
         FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL,
         STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
         PLAN_BUILDER_LIFF_URL: env.PLAN_BUILDER_LIFF_URL,
@@ -616,13 +609,12 @@ async function handleEvent(
     // 長い文に「キーコードリセット」が含まれても、ここに入れず未返信に残して人が判断する
     const keycodeReset = isKeycodeResetRequest(incomingText);
     const keywordOnly = incomingText.includes('【キーワード】') && !incomingText.includes('キーコードリセット');
-    if ((keywordOnly || keycodeReset) && env?.GAS_DEPLOY_ID) {
+    if ((keywordOnly || keycodeReset) && env) {
       const retryHint = keycodeReset
         ? 'もう一度「キーコードリセット」と送信してください'
         : 'もう一度お試しください';
-      const gasDeployId = env.GAS_DEPLOY_ID;
       await runHandlerSafely('handleKeywordAction', loggingClient, userId, retryHint, () =>
-        handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { GAS_DEPLOY_ID: gasDeployId, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, LIFF_URL: env.LIFF_URL, WORKER_NAME: env.WORKER_NAME }, db), db);
+        handleKeywordAction(loggingClient, userId, event.replyToken, incomingText, { STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, LIFF_URL: env.LIFF_URL, WORKER_NAME: env.WORKER_NAME }, db), db);
       return;
     }
 
@@ -657,9 +649,9 @@ async function handleEvent(
     }
 
     // Furimanですクーポン（AIチャットモード中でも通す）
-    if ((incomingText.includes('furimanです') || incomingText.includes('Furimanです')) && env?.GAS_DEPLOY_ID && env?.STRIPE_SECRET_KEY) {
+    if ((incomingText.includes('furimanです') || incomingText.includes('Furimanです')) && env?.STRIPE_SECRET_KEY) {
       try {
-        await actionFurimanCoupon(loggingClient, userId, event.replyToken, { GAS_DEPLOY_ID: env.GAS_DEPLOY_ID, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
+        await actionFurimanCoupon(loggingClient, userId, event.replyToken, { FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
       } catch (err) {
         // GAS/Stripeの一時障害で無言のまま終わらせない（2026-08-02 すがやさんの事例）。
         // replyTokenは消費済みの可能性があるためpushで通知する
@@ -674,9 +666,9 @@ async function handleEvent(
     }
 
     // 解説見た/解説みたキーワード（AIチャットモード中でも通す）
-    if ((incomingText.trim() === '解説見た' || incomingText.trim() === '解説みた') && env?.GAS_DEPLOY_ID) {
+    if ((incomingText.trim() === '解説見た' || incomingText.trim() === '解説みた') && env) {
       try {
-        await actionExtendTrial(loggingClient, userId, event.replyToken, env.GAS_DEPLOY_ID, db, env.FURIM_EXT_CACHE);
+        await actionExtendTrial(loggingClient, userId, event.replyToken, db, env.FURIM_EXT_CACHE);
       } catch (err) {
         // GASの応答遅延でreplyTokenが失効すると延長成功後でも無言死する
         // (2026-08-05 すがやさんの事例)。pushで結果を届ける
@@ -892,7 +884,6 @@ async function handleEvent(
       replyToken: replyTokenConsumed ? undefined : event.replyToken,
     }, lineAccessToken, lineAccountId, {
       lineAccessToken,
-      gasDeployId: env?.GAS_DEPLOY_ID,
       stripeSecretKey: env?.STRIPE_SECRET_KEY,
     });
 

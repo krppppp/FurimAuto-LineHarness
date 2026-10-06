@@ -1,6 +1,5 @@
 import type { LineClient } from '@line-crm/line-sdk';
 import { jstNow } from '@line-crm/db';
-import { mirrorCustomerFieldsToGas } from './gas-retry-queue.js';
 import { getSentGiftBatches, setSentGiftBatches } from './firebase-client.js';
 import { recordBotHandlerError } from './bot-routed-message.js';
 import { getFurimCustomer, upsertFurimCustomer, resolveStripeCustomerId, deriveGiftStatus, parseJstDateTime, formatJstDateTime, formatJstIso } from './customer-store.js';
@@ -18,7 +17,6 @@ import {
 } from '@line-crm/db';
 
 export type FurimActionsEnv = {
-  GAS_DEPLOY_ID?: string;
   FIREBASE_DATABASE_URL?: string;
   STRIPE_SECRET_KEY?: string;
   // plan-builder LIFF（プラン診断・申込UI）。未設定時はdevのLIFFにフォールバック
@@ -201,27 +199,25 @@ export async function handleFurimAction(
   lineUserId: string,
   replyToken: string,
   text: string,
-  env: ResolvedEnv,
+  env: FurimActionsEnv,
   db?: D1Database,
 ): Promise<boolean> {
   if (!text.startsWith(PREFIX)) return false;
-  if (!env.GAS_DEPLOY_ID) return false;
   const action = text.slice(PREFIX.length);
-  const resolvedEnv = env as Required<Pick<FurimActionsEnv, 'GAS_DEPLOY_ID'>> & FurimActionsEnv;
 
   try {
     switch (action) {
       case 'キーコード発行':
-        await actionKeycodeIssue(lineClient, lineUserId, replyToken, resolvedEnv, db);
+        await actionKeycodeIssue(lineClient, lineUserId, replyToken, env, db);
         return true;
       case 'チケット注文':
         await lineClient.replyMessage(replyToken, [ticketOrderTemplate as never]);
         return true;
       case '月額会員ページ':
-        await actionMemberPage(lineClient, lineUserId, replyToken, resolvedEnv, db);
+        await actionMemberPage(lineClient, lineUserId, replyToken, env, db);
         return true;
       case '限定特典GET':
-        await actionLimitedGift(lineClient, lineUserId, replyToken, resolvedEnv, db);
+        await actionLimitedGift(lineClient, lineUserId, replyToken, env, db);
         return true;
       case '利用方法説明書':
         await lineClient.replyMessage(replyToken, [{
@@ -233,10 +229,10 @@ export async function handleFurimAction(
         } as never]);
         return true;
       case 'アンバサダー制度':
-        await actionAmbassador(lineClient, lineUserId, replyToken, resolvedEnv, db);
+        await actionAmbassador(lineClient, lineUserId, replyToken, env, db);
         return true;
       case 'Meet予約':
-        await actionMeetReservation(lineClient, lineUserId, replyToken, resolvedEnv, db);
+        await actionMeetReservation(lineClient, lineUserId, replyToken, env, db);
         return true;
       case '簡単解説1分動画':
         await lineClient.replyMessage(replyToken, [carouselTemplate as never]);
@@ -277,7 +273,7 @@ export async function handleFurimAction(
         // ガイドタブの「プラン診断」ボタンから。
         // 'プラン確認' はガイドタブv2（旧文言）を開いたままのユーザー向けの互換
         // フォールバックはDEVではなく本番URL（DEVを顧客へ送る事故の防止・2026-08-20）
-        const liffUrl = resolvedEnv.PLAN_BUILDER_LIFF_URL || 'https://liff.line.me/1660804123-ZfTZnrBV';
+        const liffUrl = env.PLAN_BUILDER_LIFF_URL || 'https://liff.line.me/1660804123-ZfTZnrBV';
         await lineClient.replyMessage(replyToken, [
           {
             type: 'text',
@@ -315,8 +311,6 @@ export async function handleFurimAction(
 
 // ── 個別アクション実装 ────────────────────────────────────────
 
-type ResolvedEnv = FurimActionsEnv & { GAS_DEPLOY_ID: string };
-
 // reply を試み、失敗（GAS遅延による replyToken 失効等）なら push で確実に届ける。
 // 2026-07-16: キーコード発行タップの約7%が GAS の遅延起因で無応答になっていた対策
 async function replyOrPush(
@@ -337,11 +331,11 @@ async function actionKeycodeIssue(
   lineClient: LineClient,
   lineUserId: string,
   replyToken: string,
-  env: ResolvedEnv,
+  env: FurimActionsEnv,
   db?: D1Database,
 ) {
   // キーコードは D1 furim_customers から返す（Capsec #243）。GAS getKeyCode は呼ばない。
-  // 友だち追加時に Worker が生成し、Stripe 起点の再発行は absorbGasKeyCode で取り込まれている
+  // 友だち追加時に Worker が生成し、プラン構成の変更による再発行も Worker が D1 に書く
   const customer = db ? await getFurimCustomer(db, lineUserId) : null;
   const keyCode = (customer?.key_code ?? '').trim();
   console.log('[furim] keycode from D1:', lineUserId, keyCode ? 'hit' : 'miss');
@@ -360,15 +354,13 @@ async function actionKeycodeIssue(
 
   await replyOrPush(lineClient, replyToken, lineUserId, messages as never[]);
 
-  // 「初回発行」フラグ（限定特典②の解放判定）: D1 を先に立て、シートへは返信後に 1 回だけ試して
-  // 失敗なら再実行キュー（GAS getKeyCode が持っていた副作用の鏡写し）
+  // 「初回発行」フラグ（限定特典②の解放判定）
   if (db && customer?.key_code_issued !== 1) {
     try {
       await upsertFurimCustomer(db, lineUserId, { key_code_issued: 1 });
     } catch (err) {
       console.error('[furim] key_code_issued upsert failed:', lineUserId, err);
     }
-    await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { '初回発行': true });
   }
 
   // セグメント3 へ昇格（キーコード発行済み）
@@ -386,7 +378,7 @@ async function actionMemberPage(
   lineClient: LineClient,
   lineUserId: string,
   replyToken: string,
-  env: ResolvedEnv,
+  env: FurimActionsEnv,
   db?: D1Database,
 ) {
   if (!env.STRIPE_SECRET_KEY) {
@@ -433,7 +425,7 @@ async function actionLimitedGift(
   lineClient: LineClient,
   lineUserId: string,
   replyToken: string,
-  env: ResolvedEnv,
+  env: FurimActionsEnv,
   db?: D1Database,
 ) {
   // 解放判定の 6 フラグは D1 furim_customers から（Capsec #243。派生式は GAS getLimitedGiftStatus と同じ）。
@@ -487,7 +479,7 @@ async function actionAmbassador(
   lineClient: LineClient,
   lineUserId: string,
   replyToken: string,
-  env: ResolvedEnv,
+  env: FurimActionsEnv,
   db?: D1Database,
 ) {
   // 段階2（Capsec #244）: アンバサダーコードと紹介数は D1（affiliates.code / furim_referrals）。GAS は呼ばない
@@ -565,7 +557,7 @@ async function actionMeetReservation(
   lineClient: LineClient,
   lineUserId: string,
   replyToken: string,
-  _env: ResolvedEnv,
+  _env: FurimActionsEnv,
   db?: D1Database,
 ) {
   // 延長キーワード送信済みか（旧 GAS checkExtendKeyword。段階2.5・Capsec #250 で D1 furim_customers.extend_keyword を見る）
@@ -583,7 +575,7 @@ export async function actionFurimanCoupon(
   lineClient: LineClient,
   lineUserId: string,
   replyToken: string,
-  env: ResolvedEnv,
+  env: FurimActionsEnv,
   db?: D1Database,
 ): Promise<void> {
   if (!env.STRIPE_SECRET_KEY) {
@@ -638,8 +630,6 @@ export async function actionFurimanCoupon(
   }
 
   await lineClient.replyMessage(replyToken, [{ type: 'text', text: `【自動送信】\nYoutubeのキーワードありがとうございます！\n\n"${data.eligibleCouponName}"\nを付与いたしました！\n\n有料会員のお客様はリッチメニューの月額会員ページから、\n次回の支払額についてクーポン値引きが適用されているのを確認してください😄\n\n無料期間中のお客様は、\n初月料金をお得にご利用いただき\nFurimAutoを最大限活用して\nプラン選択に役立ててください💰💰💰` } as never]);
-  // シートの Youtubeクーポン列へ鏡写し（旧拡張の間はシートも残す。失敗は再実行キューが完遂させる）
-  if (db) await mirrorCustomerFieldsToGas(db, env.GAS_DEPLOY_ID, lineUserId, { 'Youtubeクーポン': data.eligibleCouponName });
 }
 
 // 「Furimanです」クーポンの適用判定（GAS getFurimanCouponInfo / checkCouponEligibility の移植）。
@@ -704,7 +694,6 @@ export async function actionExtendTrial(
   lineClient: LineClient,
   lineUserId: string,
   replyToken: string,
-  gasDeployId: string,
   db?: D1Database,
   kv?: ExtCache,
 ): Promise<void> {
@@ -717,9 +706,6 @@ export async function actionExtendTrial(
   };
   const text = messages[result.result] ?? '申し訳ございません。処理中にエラーが発生しました。';
   await lineClient.replyMessage(replyToken, [{ type: 'text', text } as never]);
-
-  // シートへ鏡写し（サブスク終了日時・延長キーワード・チケット残。旧拡張は GAS 経路でシートの期限を読む）
-  if (db && result.mirror) await mirrorCustomerFieldsToGas(db, gasDeployId, lineUserId, result.mirror);
 
   // kaisetsu フラグを書き込む（extended1w / extended3d のみ）
   if (db && (result?.result === 'extended1w' || result?.result === 'extended3d')) {

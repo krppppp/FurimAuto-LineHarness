@@ -10,14 +10,8 @@ const dbMocks = {
 };
 vi.mock('@line-crm/db', () => dbMocks);
 
-const gasGet = vi.fn();
-vi.mock('./gas-client.js', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  gasGet,
-}));
-
 const worker = (await import('../index.js')).default;
-const { fixDatetimes, classifyFixRows, judgeSevenDay, tagSourceKind, isMigratedTagAssignedAt, FIX_STAFF_NAME, SUB_LINE_USER_ID } = await import('./fix-datetimes.js');
+const { fixDatetimes, classifyFixRows, tagSourceKind, isMigratedTagAssignedAt, FIX_STAFF_NAME } = await import('./fix-datetimes.js');
 
 type Row = Record<string, unknown>;
 type Tables = Record<string, Row[]>;
@@ -43,13 +37,6 @@ function makeDb(tables: Tables) {
   };
   const select = (sql: string, args: unknown[]): Row[] => {
     switch (sql) {
-      case 'SELECT line_user_id, created_at FROM furim_customers':
-        return t('furim_customers').map((r) => ({ line_user_id: r.line_user_id, created_at: r.created_at }));
-      case 'SELECT id, code, created_at FROM affiliates':
-        return t('affiliates').map((r) => ({ id: r.id, code: r.code, created_at: r.created_at }));
-      case 'SELECT id, line_user_id, created_at FROM friends WHERE line_user_id = ?':
-      case 'SELECT created_at FROM friends WHERE line_user_id = ?':
-        return t('friends').filter((r) => r.line_user_id === args[0]);
       case 'SELECT id, friend_id, created_at FROM chats':
         return t('chats');
       case "SELECT friend_id, MIN(replace(created_at, ' ', 'T')) AS at FROM messages_log GROUP BY friend_id":
@@ -81,11 +68,6 @@ function makeDb(tables: Tables) {
         .filter((r) => r[col] != null && !String(r[col]).endsWith('+09:00'))
         .map((r) => ({ ...Object.fromEntries(pks.map((k) => [k, r[k]])), v: r[col] }));
     }
-    if (sql.includes('FROM furim_customers c LEFT JOIN friends f')) {
-      return t('furim_customers')
-        .filter((r) => String(r.key_code ?? '').slice(0, args[0] as number) === args[1] && (r.subscription_end_at == null || r.subscription_end_at === ''))
-        .map((r) => ({ line_user_id: r.line_user_id, subscription_start_at: r.subscription_start_at ?? null, subscription_end_at: r.subscription_end_at ?? null, friend_created_at: t('friends').find((f) => f.line_user_id === r.line_user_id)?.created_at ?? null }));
-    }
     throw new Error(`unexpected select: ${sql}`);
   };
   const apply = (sql: string, args: unknown[]): number => {
@@ -98,14 +80,6 @@ function makeDb(tables: Tables) {
       const oldValue = rest[rest.length - 1];
       const hits = t(table).filter((r) => pkCols.every((c, i) => r[c] === rest[i]) && r[col] === oldValue);
       for (const r of hits) r[col] = newValue;
-      lastChanges = hits.length;
-      return hits.length;
-    }
-    const fill = sql.match(/^UPDATE furim_customers SET (\w+) = \? WHERE line_user_id = \? AND \((\w+) IS NULL OR (\w+) = ''\)$/);
-    if (fill) {
-      const col = fill[1];
-      const hits = t('furim_customers').filter((r) => r.line_user_id === args[1] && (r[col] == null || r[col] === ''));
-      for (const r of hits) r[col] = args[0];
       lastChanges = hits.length;
       return hits.length;
     }
@@ -133,19 +107,10 @@ function makeDb(tables: Tables) {
   return { db, tables, writes };
 }
 
-function sheets(opts: { customers?: Row[]; ambassadors?: Row[] }) {
-  gasGet.mockImplementation(async (_id: string, params: Record<string, string>) => {
-    if (params.sheet === '顧客情報-サブスク情報-キーコード') return { success: true, rows: [{ LINE_ID: 'String', 友達登録日時: 'Date' }, ...(opts.customers ?? [])] };
-    if (params.sheet === 'アンバサダー') return { success: true, rows: [{ 登録日時: 'String', アンバサダーコード: 'String' }, ...(opts.ambassadors ?? [])] };
-    throw new Error(`unexpected sheet ${params.sheet}`);
-  });
-}
-
-const run = (db: D1Database, target: Parameters<typeof fixDatetimes>[2], dryRun: boolean) =>
-  fixDatetimes(db, 'gas', target, { dryRun, staffId: 'staff-1', now: NOW, nowMs: NOW_MS });
+const run = (db: D1Database, target: Parameters<typeof fixDatetimes>[1], dryRun: boolean) =>
+  fixDatetimes(db, target, { dryRun, staffId: 'staff-1', now: NOW, nowMs: NOW_MS });
 
 beforeEach(() => {
-  gasGet.mockReset();
   dbMocks.getStaffByApiKey.mockReset();
 });
 
@@ -186,15 +151,7 @@ describe('tagSourceKind / isMigratedTagAssignedAt', () => {
   });
 });
 
-describe('judgeSevenDay', () => {
-  it('actions.ts と同じ式: 7 日未満→半額、1 週間以内→+7 日', () => {
-    expect(judgeSevenDay('2026-09-10T12:00:00.000+09:00', NOW_MS)).toMatchObject({ daysSinceRegistration: 4, furimanCoupon: '7日未満（半額）', extendTrial: '1週間以内（+7日）' });
-    expect(judgeSevenDay('2025-10-19T07:13:48.000+09:00', NOW_MS)).toMatchObject({ furimanCoupon: '経過済み（20%OFF）', extendTrial: '経過済み（+3日）' });
-    expect(judgeSevenDay(null, NOW_MS)).toMatchObject({ daysSinceRegistration: null, furimanCoupon: '経過済み（20%OFF）', extendTrial: '経過済み（+3日）' });
-  });
-});
-
-async function expectIdempotent(db: D1Database, tables: Tables, target: Parameters<typeof fixDatetimes>[2], expected: { candidates: number; skippedNoSource: number; skippedAlreadyFixed: number }) {
+async function expectIdempotent(db: D1Database, tables: Tables, target: Parameters<typeof fixDatetimes>[1], expected: { candidates: number; skippedNoSource: number; skippedAlreadyFixed: number }) {
   const snapshot = JSON.stringify(tables);
   const dry = await run(db, target, true);
   expect(dry).toMatchObject({ dryRun: true, updated: 0, auditRows: 0, ...expected });
@@ -205,69 +162,6 @@ async function expectIdempotent(db: D1Database, tables: Tables, target: Paramete
   expect(second).toMatchObject({ candidates: 0, updated: 0, auditRows: 0, skippedNoSource: expected.skippedNoSource, skippedAlreadyFixed: expected.skippedAlreadyFixed + expected.candidates });
   return first;
 }
-
-describe('fixDatetimes customers', () => {
-  it('09-13 19:54 の行だけを友達登録日時に直し、監査ログを残し、2 回目は 0', async () => {
-    const { db, tables } = makeDb({
-      furim_customers: [
-        { line_user_id: uid('1'), created_at: '2026-09-13T19:54:32.847' },
-        { line_user_id: uid('2'), created_at: '2026-09-13T19:54:32.847' },
-        { line_user_id: uid('3'), created_at: '2026-09-13T23:34:17.615+09:00' },
-      ],
-    });
-    sheets({ customers: [{ LINE_ID: uid('1'), 友達登録日時: '2026-07-08T14:29:37.000Z' }, { LINE_ID: uid('3'), 友達登録日時: '2026-09-13T14:34:17.000Z' }] });
-    const first = await expectIdempotent(db, tables, 'customers', { candidates: 1, skippedNoSource: 1, skippedAlreadyFixed: 1 });
-    expect(first.samples).toEqual([{ table: 'furim_customers', column: 'created_at', rowId: uid('1'), oldValue: '2026-09-13T19:54:32.847', newValue: '2026-07-08T23:29:37.000+09:00' }]);
-    expect(tables.furim_customers[0].created_at).toBe('2026-07-08T23:29:37.000+09:00');
-    expect(tables.furim_customers[1].created_at).toBe('2026-09-13T19:54:32.847');
-    expect(tables.furim_admin_audit).toEqual([
-      { id: expect.any(String), staff_id: 'staff-1', staff_name: FIX_STAFF_NAME, table_name: 'furim_customers', row_id: uid('1'), column_name: 'created_at', old_value: '2026-09-13T19:54:32.847', new_value: '2026-07-08T23:29:37.000+09:00', created_at: NOW },
-    ]);
-  });
-});
-
-describe('fixDatetimes affiliates', () => {
-  it('シートと 2 秒以上ずれた行を直し、1 秒差の行とシートに無い行は触らない', async () => {
-    const { db, tables } = makeDb({
-      affiliates: [
-        { id: 'a1', code: '7BRXFZS7', created_at: '2026-09-13T22:54:22.413' },
-        { id: 'a2', code: '975MEQXN', created_at: '2026-07-17T17:59:52.939+09:00' },
-        { id: 'a3', code: '66JUDIU6', created_at: '2026-08-07T11:13:35.957+09:00' },
-        { id: 'a4', code: 'NOSHEET1', created_at: '2026-09-13T22:54:22.413' },
-      ],
-    });
-    sheets({
-      ambassadors: [
-        { 登録日時: '2024-04-07T11:21:08.000Z', アンバサダーコード: '7BRXFZS7' },
-        { 登録日時: '2025-03-01T00:00:00.000Z', アンバサダーコード: '975MEQXN' },
-        { 登録日時: '2026-08-07T02:13:34.000Z', アンバサダーコード: '66JUDIU6' },
-      ],
-    });
-    await expectIdempotent(db, tables, 'affiliates', { candidates: 2, skippedNoSource: 1, skippedAlreadyFixed: 1 });
-    expect(tables.affiliates.map((a) => a.created_at)).toEqual(['2024-04-07T20:21:08.000+09:00', '2025-03-01T09:00:00.000+09:00', '2026-08-07T11:13:35.957+09:00', '2026-09-13T22:54:22.413']);
-    expect(tables.furim_admin_audit.map((a) => [a.table_name, a.row_id, a.old_value])).toEqual([['affiliates', 'a1', '2026-09-13T22:54:22.413'], ['affiliates', 'a2', '2026-07-17T17:59:52.939+09:00']]);
-  });
-});
-
-describe('fixDatetimes friend-sub', () => {
-  it('「サブ」だけを 2025/10/19 に戻し、7 日系の判定の前後を返す', async () => {
-    const { db, tables } = makeDb({
-      friends: [
-        { id: 'f-sub', line_user_id: SUB_LINE_USER_ID, created_at: '2026-09-10T16:54:44.210+09:00' },
-        { id: 'f-other', line_user_id: uid('9'), created_at: '2026-09-13T00:00:00.000+09:00' },
-      ],
-    });
-    sheets({ customers: [{ LINE_ID: SUB_LINE_USER_ID, 友達登録日時: '2025-10-18T22:13:48.000Z' }, { LINE_ID: uid('9'), 友達登録日時: '2020-01-01T00:00:00.000Z' }] });
-    const dry = await run(db, 'friend-sub', true);
-    expect(dry.judgeBefore).toMatchObject({ friendCreatedAt: '2026-09-10T16:54:44.210+09:00', furimanCoupon: '7日未満（半額）', extendTrial: '1週間以内（+7日）' });
-    expect(dry.judgeAfter).toMatchObject({ friendCreatedAt: '2025-10-19T07:13:48.000+09:00', furimanCoupon: '経過済み（20%OFF）', extendTrial: '経過済み（+3日）' });
-    const first = await expectIdempotent(db, tables, 'friend-sub', { candidates: 1, skippedNoSource: 0, skippedAlreadyFixed: 0 });
-    expect(first.judgeAfter).toMatchObject({ friendCreatedAt: '2025-10-19T07:13:48.000+09:00', furimanCoupon: '経過済み（20%OFF）', extendTrial: '経過済み（+3日）' });
-    expect(tables.friends[1].created_at).toBe('2026-09-13T00:00:00.000+09:00');
-    expect(tables.furim_admin_audit).toHaveLength(1);
-    expect(tables.furim_admin_audit[0]).toMatchObject({ table_name: 'friends', row_id: 'f-sub', column_name: 'created_at', new_value: '2025-10-19T07:13:48.000+09:00' });
-  });
-});
 
 describe('fixDatetimes chats', () => {
   it('2026-07-14 15:20 の行だけを最初のメッセージの日時にし、メッセージの無い行は数える', async () => {
@@ -342,87 +236,15 @@ describe('fixDatetimes friend-tags', () => {
   });
 });
 
-describe('fixDatetimes trial-dates（Capsec #262）', () => {
-  const fixture = () =>
-    makeDb({
-      furim_customers: [
-        { line_user_id: uid('1'), key_code: '2weektrial_aaaaaaaa', subscription_start_at: null, subscription_end_at: null },
-        { line_user_id: uid('2'), key_code: '2weektrial_bbbbbbbb', subscription_start_at: null, subscription_end_at: '' },
-        { line_user_id: uid('3'), key_code: '2weektrial_cccccccc', subscription_start_at: '2026-09-01T10:00:00.000+09:00', subscription_end_at: '2026-09-15T10:00:00.000+09:00' },
-        { line_user_id: uid('4'), key_code: 'pb_dddddddd', subscription_start_at: null, subscription_end_at: null },
-      ],
-      friends: [{ id: 'f2', line_user_id: uid('2'), created_at: '2026-09-14T12:12:33.925+09:00' }],
-    });
-  const sheet = () =>
-    sheets({
-      customers: [
-        { LINE_ID: uid('1'), サブスク登録日時: '2026-09-13T14:34:17.000Z', サブスク終了日時: '2026-09-27T14:34:17.000Z' },
-        { LINE_ID: uid('2'), サブスク登録日時: '', サブスク終了日時: '' },
-        { LINE_ID: uid('4'), サブスク登録日時: '2026-01-01T00:00:00.000Z', サブスク終了日時: '2026-02-01T00:00:00.000Z' },
-      ],
-    });
-
-  it('期限が空の試用顧客だけをシートの値で補い、監査に残し、2 回目は 0。シートに無い顧客は補わず missing で返す', async () => {
-    const { db, tables, writes } = fixture();
-    sheet();
-    const snapshot = JSON.stringify(tables);
-    const dry = await run(db, 'trial-dates', true);
-    expect(dry).toMatchObject({ dryRun: true, candidates: 2, updated: 0, auditRows: 0, skippedNoSource: 2 });
-    expect(dry.missing).toEqual([
-      { lineUserId: uid('2'), column: 'subscription_start_at', friendCreatedAt: '2026-09-14T12:12:33.925+09:00' },
-      { lineUserId: uid('2'), column: 'subscription_end_at', friendCreatedAt: '2026-09-14T12:12:33.925+09:00' },
-    ]);
-    expect(writes).toHaveLength(0);
-    expect(JSON.stringify(tables)).toBe(snapshot);
-
-    const first = await run(db, 'trial-dates', false);
-    expect(first).toMatchObject({ candidates: 2, updated: 2, auditRows: 2 });
-    expect(tables.furim_customers[0]).toMatchObject({ subscription_start_at: '2026-09-13T23:34:17.000+09:00', subscription_end_at: '2026-09-27T23:34:17.000+09:00' });
-    expect(tables.furim_customers[1]).toMatchObject({ subscription_start_at: null, subscription_end_at: '' });
-    expect(tables.furim_customers[2].subscription_end_at).toBe('2026-09-15T10:00:00.000+09:00');
-    expect(tables.furim_customers[3].subscription_end_at).toBeNull();
-    expect(tables.furim_admin_audit).toEqual([
-      { id: expect.any(String), staff_id: 'staff-1', staff_name: FIX_STAFF_NAME, table_name: 'furim_customers', row_id: uid('1'), column_name: 'subscription_start_at', old_value: null, new_value: '2026-09-13T23:34:17.000+09:00', created_at: NOW },
-      { id: expect.any(String), staff_id: 'staff-1', staff_name: FIX_STAFF_NAME, table_name: 'furim_customers', row_id: uid('1'), column_name: 'subscription_end_at', old_value: null, new_value: '2026-09-27T23:34:17.000+09:00', created_at: NOW },
-    ]);
-
-    const second = await run(db, 'trial-dates', false);
-    expect(second).toMatchObject({ candidates: 0, updated: 0, auditRows: 0, skippedNoSource: 2 });
-    expect(tables.furim_admin_audit).toHaveLength(2);
-  });
-
-  it('読んだ後に期限が入った列は上書きせず、監査にも残さない', async () => {
-    const { db, tables } = fixture();
-    sheet();
-    const origBatch = db.batch.bind(db);
-    (db as unknown as { batch: typeof db.batch }).batch = async (stmts) => {
-      tables.furim_customers[0].subscription_end_at = '2026-10-01T00:00:00.000+09:00';
-      return origBatch(stmts);
-    };
-    const r = await run(db, 'trial-dates', false);
-    expect(r).toMatchObject({ candidates: 2, updated: 1, auditRows: 1 });
-    expect(tables.furim_customers[0].subscription_end_at).toBe('2026-10-01T00:00:00.000+09:00');
-    expect(tables.furim_admin_audit.map((a) => a.column_name)).toEqual(['subscription_start_at']);
-  });
-
-  it('対象が 0 人ならシートを読まない', async () => {
-    const { db } = makeDb({ furim_customers: [{ line_user_id: uid('3'), key_code: '2weektrial_cccccccc', subscription_end_at: '2026-09-15T10:00:00.000+09:00' }] });
-    const r = await run(db, 'trial-dates', false);
-    expect(r).toMatchObject({ candidates: 0, updated: 0, missing: [] });
-    expect(gasGet).not.toHaveBeenCalled();
-  });
-});
-
 describe('UPDATE は変更前の値を条件にする', () => {
   it('読んだ後に値が変わった行は更新されず、監査ログも残らない', async () => {
-    const { db, tables } = makeDb({ affiliates: [{ id: 'a1', code: 'C1', created_at: '2026-09-13T22:54:22.413' }] });
-    sheets({ ambassadors: [{ 登録日時: '2024-04-07T11:21:08.000Z', アンバサダーコード: 'C1' }] });
+    const { db, tables } = makeDb({ chats: [{ id: 'c1', friend_id: 'f1', created_at: '2026-07-14T15:20:33.200' }], messages_log: [{ friend_id: 'f1', created_at: '2026-07-09 00:50:27' }] });
     const origBatch = db.batch.bind(db);
     (db as unknown as { batch: typeof db.batch }).batch = async (stmts) => {
-      tables.affiliates[0].created_at = '2026-09-14T00:00:00.000+09:00';
+      tables.chats[0].created_at = '2026-09-14T00:00:00.000+09:00';
       return origBatch(stmts);
     };
-    const r = await run(db, 'affiliates', false);
+    const r = await run(db, 'chats', false);
     expect(r).toMatchObject({ candidates: 1, updated: 0, auditRows: 0 });
     expect(tables.furim_admin_audit ?? []).toHaveLength(0);
   });
@@ -430,7 +252,7 @@ describe('UPDATE は変更前の値を条件にする', () => {
 
 describe('POST /api/furim/fix-datetimes', () => {
   function envWith(db: D1Database, workerName: string) {
-    return { DB: db, API_KEY: 'owner-key', WORKER_NAME: workerName, GAS_DEPLOY_ID: 'gas', LINE_LOGIN_CHANNEL_ID: '2000000000', WORKER_URL: 'https://worker.example.com' } as unknown as import('../index.js').Env['Bindings'];
+    return { DB: db, API_KEY: 'owner-key', WORKER_NAME: workerName, LINE_LOGIN_CHANNEL_ID: '2000000000', WORKER_URL: 'https://worker.example.com' } as unknown as import('../index.js').Env['Bindings'];
   }
   function call(db: D1Database, workerName: string, method: string, body?: unknown, query = '') {
     return worker.fetch(
@@ -443,31 +265,28 @@ describe('POST /api/furim/fix-datetimes', () => {
       { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext,
     );
   }
-  const fixture = () => makeDb({ affiliates: [{ id: 'a1', code: 'C1', created_at: '2026-09-13T22:54:22.413' }] });
+  const fixture = () => makeDb({ chats: [{ id: 'c1', friend_id: 'f1', created_at: '2026-07-14T15:20:33.200' }], messages_log: [{ friend_id: 'f1', created_at: '2026-07-09 00:50:27' }] });
 
   it('本番 worker で confirmProd なしの実行は 403 で何も書かない', async () => {
     const { db, tables, writes } = fixture();
-    sheets({ ambassadors: [{ 登録日時: '2024-04-07T11:21:08.000Z', アンバサダーコード: 'C1' }] });
-    const res = await call(db, 'line-harness-prod', 'POST', { target: 'affiliates', dryRun: false });
+    const res = await call(db, 'line-harness-prod', 'POST', { target: 'chats', dryRun: false });
     expect(res.status).toBe(403);
     expect(writes).toHaveLength(0);
-    expect(tables.affiliates[0].created_at).toBe('2026-09-13T22:54:22.413');
+    expect(tables.chats[0].created_at).toBe('2026-07-14T15:20:33.200');
   });
 
   it('dryRun は既定で true・本番でも読むだけ', async () => {
     const { db, writes } = fixture();
-    sheets({ ambassadors: [{ 登録日時: '2024-04-07T11:21:08.000Z', アンバサダーコード: 'C1' }] });
-    const res = await call(db, 'line-harness-prod', 'POST', { target: 'affiliates' });
+    const res = await call(db, 'line-harness-prod', 'POST', { target: 'chats' });
     expect(res.status).toBe(200);
     const json = (await res.json()) as Record<string, unknown>;
-    expect(json).toMatchObject({ success: true, target: 'affiliates', dryRun: true, candidates: 1, updated: 0, auditRows: 0 });
+    expect(json).toMatchObject({ success: true, target: 'chats', dryRun: true, candidates: 1, updated: 0, auditRows: 0 });
     expect(writes).toHaveLength(0);
   });
 
   it('本番で confirmProd: true なら実行し、staff の id で監査ログを残す', async () => {
     const { db, tables } = fixture();
-    sheets({ ambassadors: [{ 登録日時: '2024-04-07T11:21:08.000Z', アンバサダーコード: 'C1' }] });
-    const res = await call(db, 'line-harness-prod', 'POST', { target: 'affiliates', dryRun: false, confirmProd: true });
+    const res = await call(db, 'line-harness-prod', 'POST', { target: 'chats', dryRun: false, confirmProd: true });
     expect(await res.json()).toMatchObject({ success: true, dryRun: false, updated: 1, auditRows: 1 });
     expect(tables.furim_admin_audit[0]).toMatchObject({ staff_id: 'env-owner', staff_name: FIX_STAFF_NAME });
   });
@@ -480,11 +299,10 @@ describe('POST /api/furim/fix-datetimes', () => {
 
   it('GET は target ごとの件数と例を返し、書き込まない', async () => {
     const { db, writes } = fixture();
-    sheets({ ambassadors: [{ 登録日時: '2024-04-07T11:21:08.000Z', アンバサダーコード: 'C1' }] });
-    const res = await call(db, 'line-harness-prod', 'GET', undefined, '?target=affiliates');
+    const res = await call(db, 'line-harness-prod', 'GET', undefined, '?target=chats');
     const json = (await res.json()) as { targets: Array<Record<string, unknown>> };
     expect(json.targets).toHaveLength(1);
-    expect(json.targets[0]).toMatchObject({ target: 'affiliates', dryRun: true, candidates: 1, samples: [{ rowId: 'a1', newValue: '2024-04-07T20:21:08.000+09:00' }] });
+    expect(json.targets[0]).toMatchObject({ target: 'chats', dryRun: true, candidates: 1, samples: [{ rowId: 'c1', newValue: '2026-07-09T00:50:27.000+09:00' }] });
     expect(writes).toHaveLength(0);
   });
 });
@@ -523,7 +341,7 @@ describe('format-unify（Capsec #260）', () => {
       automations: [{ id: 'a1', created_at: '2026-08-01 00:00:00' }],
     };
     const { db, writes } = makeDb(tables);
-    const dry = await fixDatetimes(db, undefined, 'format-unify', { dryRun: true, staffId: 'staff-1', now: NOW, nowMs: NOW_MS });
+    const dry = await fixDatetimes(db, 'format-unify', { dryRun: true, staffId: 'staff-1', now: NOW, nowMs: NOW_MS });
     expect(writes).toHaveLength(0);
     expect(dry.candidates).toBe(8);
     expect(dry.skippedNoSource).toBe(1);
@@ -533,7 +351,7 @@ describe('format-unify（Capsec #260）', () => {
     expect(col(dry, 'friend_tags', 'assigned_at')).toMatchObject({ candidates: 1, space: 1, skipped: 1 });
     expect(col(dry, 'broadcast_insights', 'fetched_at')).toMatchObject({ candidates: 1, z: 1 });
 
-    const run = await fixDatetimes(db, undefined, 'format-unify', { dryRun: false, staffId: 'staff-1', now: NOW, nowMs: NOW_MS });
+    const run = await fixDatetimes(db, 'format-unify', { dryRun: false, staffId: 'staff-1', now: NOW, nowMs: NOW_MS });
     expect(run.updated).toBe(8);
     expect(run.auditRows).toBe(8);
     expect(tables.furim_customers[0]).toMatchObject({ subscription_start_at: '2026-09-14T13:40:05.000+09:00', subscription_end_at: '2026-10-15T13:40:05.000+09:00', sheet_synced_at: '2026-09-13T19:54:32.847+09:00' });
@@ -549,7 +367,7 @@ describe('format-unify（Capsec #260）', () => {
     expect(audit.every((a) => a.staff_name === FIX_STAFF_NAME && a.staff_id === 'staff-1')).toBe(true);
     expect(audit.find((a) => a.table_name === 'friend_tags')).toMatchObject({ row_id: 'f1|t1', old_value: '2026-09-14 13:40:57', new_value: '2026-09-14T13:40:57.000+09:00' });
 
-    const again = await fixDatetimes(db, undefined, 'format-unify', { dryRun: false, staffId: 'staff-1', now: NOW, nowMs: NOW_MS });
+    const again = await fixDatetimes(db, 'format-unify', { dryRun: false, staffId: 'staff-1', now: NOW, nowMs: NOW_MS });
     expect(again.candidates).toBe(0);
     expect(again.updated).toBe(0);
     expect(tables.furim_admin_audit).toHaveLength(8);

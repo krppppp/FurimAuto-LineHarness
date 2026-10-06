@@ -143,7 +143,7 @@ export async function ensureComboCoupon(secretKey: string, nFull: number, nSemi:
 
 // 顧客レベルのクーポン（「Furimanです」キーワードで付与される旧来フロー）を確認する。
 // Stripe顧客ID の解決は D1（furim_customers → friends.metadata）だけ（GAS getStripeIDwithLINEID は段階2.5 で削除・Capsec #244）
-async function resolveCustomerIdD1First(db: D1Database | undefined, _gasDeployId: string | undefined, lineUserId: string): Promise<string | null> {
+async function resolveCustomerIdD1First(db: D1Database | undefined, lineUserId: string): Promise<string | null> {
   if (!db) return null;
   try {
     const { resolveStripeCustomerId } = await import('../furim/customer-store.js');
@@ -158,13 +158,14 @@ async function resolveCustomerIdD1First(db: D1Database | undefined, _gasDeployId
 // 「既に付いているか」を見るだけ（LIFFバナー表示と、checkoutでcombo割引に潰されない制御に使う）
 async function getCustomerCoupon(
   secretKey: string,
-  gasDeployId: string,
   lineUserId: string,
   db?: D1Database,
 ): Promise<{ exists: boolean; customerId?: string; couponName?: string; percent?: number | null }> {
+  // Stripe顧客ID は D1（furim_customers → friends.metadata）で引く（段階2・Capsec #244）。
+  // Stripe の顧客取得が落ちても customerId は返す（Checkout で新しい顧客を作らせない・TB-949）
+  let customerId: string | null = null;
   try {
-    // Stripe顧客ID は D1（furim_customers → friends.metadata）を先に見る（段階2・Capsec #244）。無ければ GAS
-    const customerId = await resolveCustomerIdD1First(db, gasDeployId, lineUserId);
+    customerId = await resolveCustomerIdD1First(db, lineUserId);
     if (!customerId) return { exists: false };
     const cust = (await stripeCall(secretKey, `customers/${customerId}`, undefined, 'GET')) as {
       discount?: { coupon?: { name?: string; percent_off?: number | null } };
@@ -174,7 +175,7 @@ async function getCustomerCoupon(
     return { exists: false, customerId };
   } catch (e) {
     console.log('plan-builder: customer coupon check skipped', e);
-    return { exists: false };
+    return customerId ? { exists: false, customerId } : { exists: false };
   }
 }
 
@@ -192,8 +193,8 @@ planBuilder.get('/plan-builder/features', async (c) => {
 // 顧客に付与済みのクーポン確認（LIFF UIのバナー表示用。付与は「Furimanです」キーワードで）
 planBuilder.get('/plan-builder/coupon-status', async (c) => {
   const lineUserId = c.req.query('lineUserId') ?? '';
-  if (!lineUserId || !c.env.GAS_DEPLOY_ID || !c.env.STRIPE_SECRET_KEY) return c.json({ success: true, eligible: false });
-  const s = await getCustomerCoupon(c.env.STRIPE_SECRET_KEY, c.env.GAS_DEPLOY_ID, lineUserId, c.env.DB);
+  if (!lineUserId || !c.env.STRIPE_SECRET_KEY) return c.json({ success: true, eligible: false });
+  const s = await getCustomerCoupon(c.env.STRIPE_SECRET_KEY, lineUserId, c.env.DB);
   return c.json({ success: true, eligible: s.exists, couponName: s.couponName ?? null, percent: s.percent ?? null });
 });
 
@@ -208,7 +209,6 @@ export type PlanSelectionInput = {
 
 export type PlanCheckoutEnv = {
   STRIPE_SECRET_KEY?: string;
-  GAS_DEPLOY_ID?: string;
   WORKER_PUBLIC_URL?: string;
   // GAS の顧客ID照合が落ちたときのフォールバック用（friends.metadata.stripeCustomerId）
   DB?: D1Database;
@@ -353,11 +353,12 @@ export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: Plan
     // 「初月=併用割引後価格の◯%OFF」となる合算onceクーポンを都度作成して渡し（旧システムと同額）、
     // comboはmetadataに退避して初回invoice後にwebhookがsubscriptionへ後付けする（2ヶ月目〜）。
     // 合算クーポンと顧客クーポンは初回invoice後にwebhookが削除する（一覧を汚さない・二重適用防止）
-    if (env.GAS_DEPLOY_ID) {
-      const cc = await getCustomerCoupon(secretKey, env.GAS_DEPLOY_ID, body.lineUserId);
+    {
+      // 顧客は D1 の furim_customers → friends.metadata の順で引く。DB を渡さないと furim_customers を
+      // 見られず、metadata に無い人は Checkout で新しい Stripe 顧客ができていた（TB-949）。
+      const cc = await getCustomerCoupon(secretKey, body.lineUserId, env.DB);
       if (cc.customerId) params['customer'] = cc.customerId;
-      // GAS が一時的に落ちている（404等）と customerId が取れず、Stripe Checkout が新規顧客を
-      // 作ってしまう。すると以後の webhook が顧客IDでシート行を引けず、サブスク終了日時が
+      // 顧客IDが取れないと、以後の webhook が顧客IDで行を引けず、サブスク終了日時が
       // 更新されずキーコードが「有効期限切れ」になる（2026-09-13 あおいさん事案）。
       // D1 の friends.metadata.stripeCustomerId（友だち追加時に作成した顧客）で補う
       if (!params['customer'] && env.DB) {
@@ -366,7 +367,7 @@ export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: Plan
           const meta = JSON.parse((friend as { metadata?: string } | null)?.metadata || '{}') as { stripeCustomerId?: string };
           if (meta.stripeCustomerId) {
             params['customer'] = meta.stripeCustomerId;
-            console.warn('plan-builder: GAS customer lookup unavailable, using friends.metadata.stripeCustomerId', meta.stripeCustomerId);
+            console.warn('plan-builder: customer lookup empty, using friends.metadata.stripeCustomerId', meta.stripeCustomerId);
           }
         } catch (e) {
           console.error('plan-builder: D1 customer fallback failed', e);
@@ -408,6 +409,14 @@ export async function createPlanBuilderCheckout(env: PlanCheckoutEnv, body: Plan
 planBuilder.post('/plan-builder/checkout', async (c) => {
   try {
     const body = (await c.req.json()) as PlanSelectionInput;
+    // 既に有効なサブスクがある人に新規Checkoutを作らない（LINE外で開いた場合の二重契約。TB-1028）
+    if (body.lineUserId) {
+      const live = await getLiveSubscriptionForLine(c.env, body.lineUserId);
+      if (live) {
+        const block = existingSubscriptionBlock(live.sub);
+        return c.json({ success: false, blocked: block?.reason ?? 'existing', error: block?.message ?? EXISTING_SUB_CHECKOUT_MESSAGE }, 409);
+      }
+    }
     const result = await createPlanBuilderCheckout(c.env, body);
     return c.json({ success: true, url: result.url });
   } catch (e) {
@@ -419,12 +428,12 @@ planBuilder.post('/plan-builder/checkout', async (c) => {
 // lineUserIdからアクティブなStripeサブスクを引く（プラン変更フロー用）。
 // スプシでStripe顧客IDを逆引き→activeサブスクの先頭を返す。無ければnull
 export async function getActiveSubscriptionForLine(
-  env: { GAS_DEPLOY_ID?: string; STRIPE_SECRET_KEY?: string; DB?: D1Database },
+  env: { STRIPE_SECRET_KEY?: string; DB?: D1Database },
   lineUserId: string,
 ): Promise<{ customerId: string; sub: Record<string, unknown> } | null> {
   if (!env.STRIPE_SECRET_KEY) return null;
   try {
-    const customerId = (await resolveCustomerIdD1First(env.DB, env.GAS_DEPLOY_ID, lineUserId)) ?? '';
+    const customerId = (await resolveCustomerIdD1First(env.DB, lineUserId)) ?? '';
     if (!customerId || !customerId.startsWith('cus_')) return null;
     const list = (await stripeCall(env.STRIPE_SECRET_KEY, 'subscriptions', { customer: customerId, status: 'active', limit: '3' }, 'GET')) as unknown as { data: Array<Record<string, unknown>> };
     const sub = list.data?.[0];
@@ -433,6 +442,57 @@ export async function getActiveSubscriptionForLine(
     console.error('[plan-builder] getActiveSubscriptionForLine failed:', e);
     return null;
   }
+}
+
+// 解約・未完了以外の「まだ生きている」サブスク。active 以外（支払い失敗中など）も既存契約として扱う（TB-1028）
+const LIVE_SUB_STATUSES = ['active', 'past_due', 'unpaid', 'trialing', 'paused'];
+
+// lineUserIdから有効なサブスクを引く（activeを優先）。新規決済に進めてよいかの判定用。
+// Stripeの読み取りに失敗したら例外を投げる（新規Checkoutに倒して二重契約を作らない）
+export async function getLiveSubscriptionForLine(
+  env: { STRIPE_SECRET_KEY?: string; DB?: D1Database },
+  lineUserId: string,
+): Promise<{ customerId: string; sub: Record<string, unknown> } | null> {
+  if (!env.STRIPE_SECRET_KEY) return null;
+  const customerId = (await resolveCustomerIdD1First(env.DB, lineUserId)) ?? '';
+  if (!customerId || !customerId.startsWith('cus_')) return null;
+  const list = (await stripeCall(env.STRIPE_SECRET_KEY, 'subscriptions', { customer: customerId, status: 'all', limit: '20' }, 'GET')) as unknown as { data: Array<Record<string, unknown>> };
+  const live = (list.data ?? []).filter((s) => LIVE_SUB_STATUSES.includes(String(s.status)));
+  const sub = live.find((s) => s.status === 'active') ?? live[0];
+  return sub ? { customerId, sub } : null;
+}
+
+export const EXISTING_SUB_CHECKOUT_MESSAGE =
+  '既にご契約中のプランがあります。新しいお申し込み（決済）は行わず、スマートフォンのLINEアプリでメニューの「プラン診断」を開いてお手続きください。';
+
+// 既存サブスクがあってもプラン診断で変更させない場合の理由と案内文。nullなら今の変更フローに進めてよい
+// - payment: 支払い失敗中（past_due・unpaid）。払うと2本目になるため、カード更新へ案内する
+// - status: その他active以外（trialing・paused）。有人で対応する
+// - legacy: プラン診断を通っていない旧プラン。今の契約を画面に読み込めず、変更すると今の機能が消える
+export function existingSubscriptionBlock(sub: Record<string, unknown>): { reason: 'payment' | 'status' | 'legacy'; message: string } | null {
+  const status = String(sub.status ?? '');
+  if (status === 'past_due' || status === 'unpaid') {
+    return {
+      reason: 'payment',
+      message:
+        'お支払いが確認できていないご契約があるため、ここからはお申し込み・プラン変更ができません。新しく決済はせず、ホームタブの「月額会員ページ」でカード情報を更新してください。ご不明な点はこのLINEでお知らせください（担当者がご案内します）。',
+    };
+  }
+  if (status !== 'active') {
+    return {
+      reason: 'status',
+      message: '現在のご契約はこの画面からは変更できません。新しく決済はせず、ご希望の内容をこのLINEでお知らせください（担当者がご案内します）。',
+    };
+  }
+  const m = (sub.metadata ?? {}) as Record<string, string>;
+  if (m.source !== 'plan-builder') {
+    return {
+      reason: 'legacy',
+      message:
+        '現在のご契約内容をこの画面に読み込めないため、ここからはプラン変更できません（このまま申し込むと、今お使いの機能が外れることがあります）。ご希望の内容をこのLINEでお知らせください（担当者がご案内します）。',
+    };
+  }
+  return null;
 }
 
 // サブスクの全discount（スタック対応）を読み取る。
@@ -460,9 +520,17 @@ export async function getSubDiscounts(
 planBuilder.get('/plan-builder/current', async (c) => {
   const lineUserId = c.req.query('lineUserId') ?? '';
   if (!lineUserId) return c.json({ success: false, error: 'lineUserId required' }, 400);
-  const found = await getActiveSubscriptionForLine(c.env, lineUserId);
+  let found: Awaited<ReturnType<typeof getLiveSubscriptionForLine>>;
+  try {
+    found = await getLiveSubscriptionForLine(c.env, lineUserId);
+  } catch (e) {
+    console.error('[plan-builder] current lookup failed:', e);
+    return c.json({ success: false, error: 'subscription lookup failed' }, 502);
+  }
   if (!found) return c.json({ success: true, hasSubscription: false });
   const m = (found.sub.metadata ?? {}) as Record<string, string>;
+  const block = existingSubscriptionBlock(found.sub);
+  if (block) return c.json({ success: true, hasSubscription: true, blocked: block.reason, blockedMessage: block.message });
   return c.json({
     success: true,
     hasSubscription: true,
@@ -537,8 +605,13 @@ planBuilder.post('/plan-builder/intent', async (c) => {
     if (!body.lineUserId) return c.json({ success: false, error: 'lineUserId required' }, 400);
     const sel = await resolvePlanSelection(c.env.DB, body);
 
-    // 既存アクティブサブスクがあれば「プラン変更」intent（二重課金の防止）
-    const existing = await getActiveSubscriptionForLine(c.env, body.lineUserId);
+    // 既存アクティブサブスクがあれば「プラン変更」intent（二重課金の防止）。
+    // 支払い失敗中・旧プランなど変更フローに乗せられない契約は申込コードを出さず有人へ回す（TB-1028）
+    const existing = await getLiveSubscriptionForLine(c.env, body.lineUserId);
+    if (existing) {
+      const block = existingSubscriptionBlock(existing.sub);
+      if (block) return c.json({ success: false, blocked: block.reason, error: block.message }, 409);
+    }
     const code = 'PB-' + crypto.randomUUID().replace(/-/g, '').slice(0, 6).toUpperCase();
 
     if (existing && c.env.STRIPE_SECRET_KEY) {
@@ -668,6 +741,7 @@ planBuilder.get('/plan-builder', async (c) => {
   const embed = c.req.query('embed') === '1';
   const liff = c.req.query('liff') === '1';
   const liffId = c.req.query('liffId') ?? '';
+  const loginRetryUrl = liffId ? `https://liff.line.me/${liffId}` : (c.env as { PLAN_BUILDER_LIFF_URL?: string }).PLAN_BUILDER_LIFF_URL ?? '';
 
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
@@ -817,6 +891,10 @@ ${liff ? '<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script
   .cta button:hover { opacity: .85; }
   .cta button:disabled { background: #ccc; cursor: not-allowed; box-shadow: none; }
   .cta .err { color: #ff0033; font-size: .85rem; margin-top: 8px; }
+  .login-err { max-width: 420px; margin: 48px auto; padding: 28px 22px; background: #fff; border-radius: 16px; box-shadow: 0 2px 12px rgba(0,0,0,.06); text-align: center; }
+  .login-err h2 { font-size: 1.1rem; margin-bottom: 14px; }
+  .login-err p { font-size: .9rem; color: #555; line-height: 1.8; margin-bottom: 22px; text-align: left; }
+  .login-err button { width: 100%; padding: 14px; border: none; border-radius: 12px; background: #06C755; color: #fff; font-size: 1rem; font-weight: bold; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -856,6 +934,11 @@ ${liff ? `<div id="pb-loading" style="position:fixed;inset:0;z-index:9999;backgr
     <div class="err" id="checkout-err"></div>
   </div>` : ''}
 </div>
+${liff ? `<div class="login-err" id="login-err" style="display:none;">
+  <h2>LINEのログインを確認できませんでした</h2>
+  <p>お申し込みにはLINEのログインが必要です。スマートフォンのLINEアプリから開き直すか、下のボタンからLINEにログインしてやり直してください。</p>
+  <button type="button" id="login-retry-btn">もう一度ログインする</button>
+</div>` : ''}
 <script>
 const FEATURES = ${JSON.stringify(master.features)};
 const PACKAGES = ${JSON.stringify(master.packages)};
@@ -866,6 +949,8 @@ const TAX = ${TAX_RATE_PERCENT} / 100;
 const EMBED = ${embed};
 const LIFF_MODE = ${liff};
 const LIFF_ID = ${JSON.stringify(liffId)};
+const LOGIN_RETRY_URL = ${JSON.stringify(loginRetryUrl)};
+const LOGIN_TRIED_KEY = 'pb_login_tried';
 
 const PLAN_LABELS = { full: '全自動化プラン', semi: '半自動化プラン', basic: '基本プラン', buffet: '機能別ビュッフェ式プラン' };
 const subsFeatures = FEATURES.filter(f => f.billing_type === 'subscription');
@@ -904,6 +989,20 @@ const state = {
 };
 let lineUserId = null;
 let changeMode = false;
+let blockedMessage = '';
+
+// 埋め込み先から初期選択を渡す（TB-964）。/service/ で到達時点に金額を出すため。
+// ?preset_site=mercari&preset_plan=basic → メルカリ＋基本プラン。知らない値は黙って無視する
+function applyEmbedPreset(search) {
+  const q = new URLSearchParams(search);
+  const siteId = q.get('preset_site') || '';
+  if (!Object.prototype.hasOwnProperty.call(SITE_NAMES, siteId)) return;
+  if (!state.sites.includes(siteId)) state.sites.push(siteId);
+  const planType = q.get('preset_plan') || '';
+  if (planType === 'buffet') { state.plan[siteId] = 'buffet'; return; }
+  const pkg = (pkgBySite[siteId] || []).find(p => p.plan_type === planType);
+  if (pkg) state.plan[siteId] = pkg.package_key;
+}
 
 function applyLabel() { return changeMode ? 'この内容にプラン変更する' : 'この内容で申し込む'; }
 
@@ -916,6 +1015,18 @@ async function loadCurrentPlan() {
     const res = await fetch('/plan-builder/current?lineUserId=' + encodeURIComponent(lineUserId));
     const cur = await res.json();
     if (!cur.success || !cur.hasSubscription) return;
+    if (cur.blocked) {
+      // 支払い失敗中・旧プランなど: 今の契約を読み込めない／変更に進めないことを出し、申込ボタンを止める（TB-1028）
+      blockedMessage = cur.blockedMessage || '現在のご契約はこの画面からは変更できません。このLINEでお知らせください（担当者がご案内します）。';
+      const banner = document.getElementById('current-plan-banner');
+      if (banner) {
+        banner.textContent = '⚠️ ' + blockedMessage;
+        banner.style.display = 'block';
+      }
+      const btn = document.getElementById('checkout-btn');
+      if (btn) btn.disabled = true;
+      return;
+    }
     changeMode = true;
     for (const key of cur.packages || []) {
       if (key === 'premium') { state.premium = true; continue; }
@@ -1294,8 +1405,8 @@ function renderResult() {
     section('自動併売在庫管理サービス', inv);
   }
   totalEl.textContent = '総支払額 ' + yen(total) + '/月';
-  taxEl.textContent = '税抜（税込 ' + yen(Math.round(total * (1 + TAX))) + '）';
-  if (btn) btn.disabled = total <= 0;
+  taxEl.textContent = '税抜';
+  if (btn) btn.disabled = total <= 0 || !!blockedMessage;
 }
 
 function renderPremiumBanner() {
@@ -1345,6 +1456,12 @@ if (checkoutBtnEl) checkoutBtnEl.addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = changeMode ? '変更内容を確認中…' : '申し込み内容を送信中…';
   err.textContent = '';
+  if (!lineUserId) {
+    btn.disabled = false;
+    btn.textContent = applyLabel();
+    showLoginError();
+    return;
+  }
   try {
     const payload = { ...selectionPayload(), lineUserId };
     const res = await fetch('/plan-builder/intent', {
@@ -1353,7 +1470,21 @@ if (checkoutBtnEl) checkoutBtnEl.addEventListener('click', async () => {
       body: JSON.stringify(payload),
     });
     const data = await res.json();
+    if (!data.success && data.blocked) {
+      blockedMessage = data.error;
+      err.textContent = data.error;
+      btn.textContent = applyLabel();
+      return;
+    }
     if (!data.success) throw new Error(data.error || 'intent failed');
+    const inClient = typeof liff !== 'undefined' && liff.isInClient && liff.isInClient();
+    if (data.change && !inClient) {
+      // 下の直接Checkoutは新規サブスクを作るため、既存契約者がLINE外で押すと二重契約になる
+      err.textContent = 'プラン変更はスマートフォンのLINEアプリから開いて操作してください。';
+      btn.disabled = false;
+      btn.textContent = applyLabel();
+      return;
+    }
     if (data.change) {
       // プラン変更: 実行前に支払い内容を確認してもらう
       // アップグレード=日割り差額を即時決済（Stripe算出の確定額） / ダウングレード=決済なし・次回更新日切替
@@ -1372,7 +1503,7 @@ if (checkoutBtnEl) checkoutBtnEl.addEventListener('click', async () => {
         return;
       }
     }
-    if (typeof liff !== 'undefined' && liff.isInClient && liff.isInClient()) {
+    if (inClient) {
       // 選択内容をユーザーのメッセージとしてトークに送信 → Botが決済リンクを返す
       await liff.sendMessages([{ type: 'text', text: data.message }]);
       liff.closeWindow();
@@ -1384,6 +1515,12 @@ if (checkoutBtnEl) checkoutBtnEl.addEventListener('click', async () => {
         body: JSON.stringify(payload),
       });
       const data2 = await res2.json();
+      if (!data2.success && data2.blocked) {
+        blockedMessage = data2.error;
+        err.textContent = data2.error;
+        btn.textContent = applyLabel();
+        return;
+      }
       if (!data2.success) throw new Error(data2.error || 'checkout failed');
       window.location.href = data2.url;
     }
@@ -1426,20 +1563,65 @@ function hidePbLoading() {
   setTimeout(function () { ld.remove(); }, 300);
 }
 
+function storageGet(key) { try { return sessionStorage.getItem(key); } catch (e) { return null; } }
+function storageSet(key, value) { try { sessionStorage.setItem(key, value); } catch (e) {} }
+function storageRemove(key) { try { sessionStorage.removeItem(key); } catch (e) {} }
+
+// lineUserId が取れないと intent が 400（lineUserId required）になるため、申し込み画面の代わりに出す（TB-951）
+function showLoginError() {
+  const sim = document.querySelector('.simulator');
+  const box = document.getElementById('login-err');
+  if (sim) sim.style.display = 'none';
+  if (box) box.style.display = 'block';
+  hidePbLoading();
+  window.scrollTo(0, 0);
+}
+
+const loginRetryBtnEl = document.getElementById('login-retry-btn');
+if (loginRetryBtnEl) loginRetryBtnEl.addEventListener('click', () => {
+  storageRemove(LOGIN_TRIED_KEY);
+  if (LOGIN_RETRY_URL) {
+    window.location.href = LOGIN_RETRY_URL;
+  } else {
+    window.location.reload();
+  }
+});
+
 (async () => {
   // 保険: 何かが固まってもローディングで操作不能のままにしない
   setTimeout(hidePbLoading, 15000);
-  if (LIFF_MODE && LIFF_ID && typeof liff !== 'undefined') {
+  if (LIFF_MODE) {
+    // LIFF ID 無しの直リンク・SDK の読み込み失敗・LIFF 初期化失敗・ログインのキャンセル/失敗は、
+    // どれも lineUserId が空のまま申し込みを押せてしまい「送信に失敗しました」になっていた（TB-951）
+    if (!LIFF_ID || typeof liff === 'undefined') { showLoginError(); return; }
     try {
       await liff.init({ liffId: LIFF_ID });
       if (liff.isLoggedIn()) {
         const profile = await liff.getProfile();
         lineUserId = profile.userId;
+        storageRemove(LOGIN_TRIED_KEY);
         showCouponBanner();
         await loadCurrentPlan(); // 既存契約者は現構成で初期化（プラン変更モード）
+      } else if (storageGet(LOGIN_TRIED_KEY) || new URLSearchParams(window.location.search).has('error')) {
+        // ログイン画面から戻ってもまだ未ログイン（キャンセル・失敗）。もう一度 liff.login すると堂々巡りになる
+        storageRemove(LOGIN_TRIED_KEY);
+        showLoginError();
+        return;
+      } else {
+        // PC版LINEなどからLINE外のブラウザで開くと未ログインのまま lineUserId が取れず、
+        // 申し込みが intent の 400（lineUserId required）で必ず失敗していた（2026-10-02 Dりょうすけさん・TB-948）
+        storageSet(LOGIN_TRIED_KEY, '1');
+        liff.login({ redirectUri: window.location.href });
+        return;
       }
-    } catch (e) { console.log('liff init skipped:', e); }
+    } catch (e) {
+      console.log('liff init failed:', e);
+      showLoginError();
+      return;
+    }
+    if (!lineUserId) { showLoginError(); return; }
   }
+  if (EMBED && !LIFF_MODE && !lineUserId) applyEmbedPreset(window.location.search);
   render();
   hidePbLoading();
 })();

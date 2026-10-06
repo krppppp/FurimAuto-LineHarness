@@ -534,6 +534,75 @@ describe('#246 段階4 本体: 複合主キー・追加・削除・CSV', () => {
     expect(gone.status).toBe(404);
   });
 
+  it('TB-927: 認証エラーと監視の記録（furim_ext_errors）は 1 行削除できる', async () => {
+    const row = { id: 'e1', line_user_id: 'U1', key_code: 'pb_x', method: 'getKeyCodeSet', error: 'メルカリURL不一致', created_at: '2026-10-01T21:15:21.332+09:00' };
+    const { db, batches } = makeDb({ firstRows: [row] });
+    const res = await req(db, 'DELETE', '/api/furim/admin/furim_ext_errors/e1');
+    expect(res.status).toBe(200);
+    expect(batches[0][0].sql).toBe('DELETE FROM furim_ext_errors WHERE id = ?');
+    expect(batches[0][0].args).toEqual(['e1']);
+    expect(batches[0][1].args.slice(3, 6)).toEqual(['furim_ext_errors', 'e1', '(delete)']);
+  });
+
+  it('TB-927: bulk-delete はチェックした行をまとめて消し、行ごとに監査 (delete) を残す。見つからない行は missing', async () => {
+    const r1 = { id: 'e1', method: 'getKeyCodeSet', error: 'メルカリURL不一致', created_at: 'a' };
+    const r2 = { id: 'e2', method: 'getKeyCodeSet', error: 'メルカリURL不一致', created_at: 'b' };
+    const { db, statements, batches } = makeDb({ firstRows: [r1, null, r2] });
+    const res = await req(db, 'POST', '/api/furim/admin/furim_ext_errors/bulk-delete', { ids: ['e1', 'none', 'e2', 'e1'] });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { meta: { deleted: string[]; missing: string[] } };
+    expect(body.meta).toEqual({ deleted: ['e1', 'e2'], missing: ['none'] });
+    expect(statements.filter((s) => s.sql.startsWith('SELECT * FROM furim_ext_errors')).map((s) => s.args[0])).toEqual(['e1', 'none', 'e2']);
+    expect(batches).toHaveLength(1);
+    const [d1, a1, d2, a2] = batches[0];
+    expect(d1.sql).toBe('DELETE FROM furim_ext_errors WHERE id = ?');
+    expect([d1.args, d2.args]).toEqual([['e1'], ['e2']]);
+    expect([a1.args[4], a1.args[5], a2.args[4]]).toEqual(['e1', '(delete)', 'e2']);
+    expect(JSON.parse(String(a2.args[6]))).toEqual({ id: 'e2', method: 'getKeyCodeSet', error: 'メルカリURL不一致', created_at: 'b' });
+  });
+
+  it('TB-927: bulk-delete は複合主キーも行 id で引く', async () => {
+    const row = { line_user_id: 'U1', feature_key: 'mChangePrice', value: '1' };
+    const { db, batches } = makeDb({ firstRows: [row] });
+    const res = await req(db, 'POST', '/api/furim/admin/furim_feature_flags/bulk-delete', { ids: ['U1|mChangePrice'] });
+    expect(res.status).toBe(200);
+    expect(batches[0][0].sql).toBe('DELETE FROM furim_feature_flags WHERE line_user_id = ? AND feature_key = ?');
+    expect(batches[0][0].args).toEqual(['U1', 'mChangePrice']);
+  });
+
+  it('TB-927: bulk-delete は削除不可のテーブル・staff ロール・空や不正な ids・上限超え・全件なしを弾き、何も消さない', async () => {
+    for (const name of ['furim_master', 'furim_ai_chat_logs', 'furim_ops_log']) {
+      const { db, batches } = makeDb({ firstRows: [{ id: 'x' }] });
+      const r = await req(db, 'POST', `/api/furim/admin/${name}/bulk-delete`, { ids: ['x'] });
+      expect(r.status).toBe(400);
+      expect(batches).toHaveLength(0);
+    }
+    const cases: Array<[unknown, number, string?]> = [
+      [{ ids: [] }, 400],
+      [{ ids: 'e1' }, 400],
+      [{ ids: ['e1', 3] }, 400],
+      [{ ids: Array.from({ length: 101 }, (_, i) => `e${i}`) }, 400],
+      [{ ids: ['e1'] }, 403, STAFF_KEY],
+      [{ ids: ['none'] }, 404],
+    ];
+    for (const [body, status, key] of cases) {
+      const { db, batches } = makeDb();
+      const r = await req(db, 'POST', '/api/furim/admin/furim_ext_errors/bulk-delete', body, key);
+      expect(r.status).toBe(status);
+      expect(batches).toHaveLength(0);
+    }
+  });
+
+  it('TB-927: 削除できるかはテーブルごとの deletable に従い、tables の deletable に出る', async () => {
+    const res = await req(makeDb().db, 'GET', '/api/furim/admin/tables');
+    const body = (await res.json()) as { data: Array<{ name: string; deletable: boolean }> };
+    const deletable = Object.fromEntries(body.data.map((t) => [t.name, t.deletable]));
+    expect(deletable.furim_ext_errors).toBe(true);
+    expect(deletable.furim_master).toBe(false);
+    expect(deletable.furim_ai_chat_logs).toBe(false);
+    expect(deletable.furim_ops_log).toBe(false);
+  });
+
   it('export.csv は BOM 付き CSV を返し、先頭列は LINE 表示名', async () => {
     const { db } = makeDb({ allRows: [[{ name: 'クーポン,A', coupon_id: 'c"1', is_active: 1 }]] });
     const res = await req(db, 'GET', '/api/furim/admin/furim_coupons/export.csv');

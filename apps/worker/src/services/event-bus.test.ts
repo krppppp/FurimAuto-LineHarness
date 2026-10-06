@@ -252,16 +252,6 @@ describe('fireEvent — send_message action logging', () => {
   });
 });
 
-vi.mock('../furim/gas-client.js', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  gasPost: vi.fn().mockResolvedValue({ success: true, keyCode: 'pb_test123' }),
-  gasGet: vi.fn().mockResolvedValue({}),
-}));
-
-vi.mock('../furim/gas-retry-queue.js', () => ({
-  enqueueGasRetryJob: vi.fn(),
-}));
-
 describe('fireEvent — 汎用eventData等値条件', () => {
   let captured: CapturedInsert[];
 
@@ -321,99 +311,6 @@ describe('fireEvent — 汎用eventData等値条件', () => {
   });
 });
 
-describe('fireEvent — call_gas_post capture', () => {
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('GAS応答のフィールドをeventDataに保存し後続send_messagesで展開する', async () => {
-    const db = await import('@line-crm/db');
-    (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
-      {
-        id: 'auto-friend-add',
-        line_account_id: 'acc-1',
-        conditions: JSON.stringify({}),
-        actions: JSON.stringify([
-          {
-            type: 'call_gas_post',
-            params: {
-              method: 'syncFeaturesFromSubscription',
-              args: { lineUserId: '{{line_user_id}}', packages: 'trial' },
-              capture: { keyCode: 'keyCode' },
-            },
-          },
-          {
-            type: 'send_messages',
-            params: {
-              messages: [{ messageType: 'text', content: 'あなたのキーコード: {{eventData.keyCode}}' }],
-            },
-          },
-        ]),
-      },
-    ]);
-
-    const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: [] });
-    await fireEvent(
-      dbFake,
-      'friend_add',
-      { friendId: 'friend-1', eventData: { isNewUser: true } },
-      'channel-token',
-      'acc-1',
-      { gasDeployId: 'gas-dep-test' },
-    );
-
-    const gas = await import('../furim/gas-client.js');
-    const gasPostMock = gas.gasPost as unknown as { mock: { calls: unknown[][] } };
-    expect(gasPostMock.mock.calls).toHaveLength(1);
-    expect(gasPostMock.mock.calls[0][1]).toMatchObject({
-      method: 'syncFeaturesFromSubscription',
-      lineUserId: 'U_test',
-      packages: 'trial',
-    });
-
-    const { LineClient } = await import('@line-crm/line-sdk');
-    const instances = (LineClient as unknown as { mock: { results: Array<{ value: { pushMessage: { mock: { calls: unknown[][] } } } }> } }).mock.results;
-    const pushCalls = instances.flatMap((r) => r.value.pushMessage.mock.calls);
-    expect(pushCalls).toHaveLength(1);
-    expect(pushCalls[0][1]).toEqual([
-      { type: 'text', text: 'あなたのキーコード: pb_test123' },
-    ]);
-  });
-});
-
-describe('fireEvent — setCustomerData の試用終了日時（Capsec #262）', () => {
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.clearAllMocks();
-  });
-
-  it('シートへ送る trialFinishedDateTime は webhook が D1 に書く終了日時（今＋14 日）と同じ瞬間', async () => {
-    const nowMs = Date.parse('2026-09-14T12:34:56.000+09:00');
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(nowMs);
-    const db = await import('@line-crm/db');
-    (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
-      {
-        id: 'auto-friend-add',
-        line_account_id: 'acc-1',
-        conditions: JSON.stringify({}),
-        actions: JSON.stringify([
-          { type: 'call_gas_post', params: { method: 'setCustomerData', args: { followEventDateTime: '{{now_jst}}', trialFinishedDateTime: '{{trial_end_jst}}' } } },
-        ]),
-      },
-    ]);
-    await fireEvent(fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: [] }), 'friend_add', { friendId: 'friend-1', eventData: { isNewUser: true } }, 'channel-token', 'acc-1', { gasDeployId: 'gas-dep-test' });
-    const gas = await import('../furim/gas-client.js');
-    const call = (gas.gasPost as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][1] as Record<string, string>;
-    expect(call).toMatchObject({ method: 'setCustomerData', followEventDateTime: '2026-09-14 12:34:56', trialFinishedDateTime: '2026-09-28 12:34:56' });
-    const { FRIEND_TRIAL_DAYS, formatJstIso, parseJstDateTime } = await import('../furim/customer-store.js');
-    const d1End = formatJstIso(nowMs + FRIEND_TRIAL_DAYS * 24 * 60 * 60_000);
-    expect(d1End).toBe('2026-09-28T12:34:56.000+09:00');
-    expect(parseJstDateTime(call.trialFinishedDateTime)).toBe(parseJstDateTime(d1End));
-    expect(parseJstDateTime(call.followEventDateTime)).toBe(parseJstDateTime(formatJstIso(nowMs)));
-  });
-});
-
 describe('fireEvent — 冪等 (idempotencyKey / stripe再処理)', () => {
   beforeEach(() => { idem.done.clear(); });
   afterEach(() => { vi.clearAllMocks(); idem.done.clear(); });
@@ -462,13 +359,16 @@ describe('fireEvent — 冪等 (idempotencyKey / stripe再処理)', () => {
   });
 });
 
-describe('fireEvent — call_gas_post 失敗時のキュー退避（2026-08-14 Stripe経路統合）', () => {
+describe('fireEvent — call_gas 系は廃止（TB-940）', () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     idem.done.clear();
   });
 
-  async function setupGasAutomation(method: string) {
+  it('call_gas / call_gas_post / call_gas_get は何もせず通り、失敗にならず、GAS を呼ばない（friendId 無しでも throw しない）', async () => {
+    const fetchStub = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchStub);
     const db = await import('@line-crm/db');
     (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
       {
@@ -476,64 +376,24 @@ describe('fireEvent — call_gas_post 失敗時のキュー退避（2026-08-14 S
         line_account_id: 'acc-1',
         conditions: JSON.stringify({}),
         actions: JSON.stringify([
-          { type: 'call_gas_post', params: { method, args: { stripeCustomerID: 'cus_1', subscriptionID: 'sub_1' } } },
+          { type: 'call_gas', params: { method: 'setCustomerData', args: { lineUserId: '{{line_user_id}}' } } },
+          { type: 'call_gas_post', params: { method: 'setSubscriptionData', args: { stripeCustomerID: 'cus_1' }, capture: { keyCode: 'keyCode' } } },
+          { type: 'call_gas_get', params: { method: 'getKeyCode', args: {}, set_variable: 'hasKey' } },
         ]),
       },
     ]);
-  }
-
-  it('ホワイトリストのメソッドはgasPost例外でキュー退避し、automationは成功扱いになる', async () => {
-    await setupGasAutomation('setSubscriptionData');
-    const gas = await import('../furim/gas-client.js');
-    (gas.gasPost as unknown as { mockRejectedValueOnce: (e: unknown) => void }).mockRejectedValueOnce(new Error('GAS fetch hang'));
-    const queue = await import('../furim/gas-retry-queue.js');
-
     const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: [] });
-    const ok = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'friend-1', idempotencyKey: 'evt_q1', eventData: {} }, 'tok', 'acc-1', { gasDeployId: 'dep-1' });
 
-    expect(ok).toBe(true);
-    const enq = queue.enqueueGasRetryJob as unknown as { mock: { calls: unknown[][] } };
-    expect(enq.mock.calls).toHaveLength(1);
-    expect(enq.mock.calls[0][1]).toMatchObject({
-      lineUserId: 'U_test',
-      method: 'setSubscriptionData',
-      callType: 'post',
-      doneCheck: 'subscriptionRecorded',
-      dedupeKey: 'setSubscriptionData:evt_q1',
-      maxAttempts: 20,
-      params: { stripeCustomerID: 'cus_1', subscriptionID: 'sub_1' },
-    });
-  });
+    const withFriend = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'friend-1', idempotencyKey: 'evt_gas1', eventData: {} }, 'tok', 'acc-1');
+    const withoutFriend = await fireEvent(dbFake, 'stripe_invoice_paid', { idempotencyKey: 'evt_gas2', eventData: {} }, 'tok', 'acc-1');
 
-  it('success:false応答も失敗としてキュー退避される（無言ロストの穴を塞ぐ）', async () => {
-    await setupGasAutomation('setTransactionData');
-    const gas = await import('../furim/gas-client.js');
-    (gas.gasPost as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({ success: false, error: '該当レコードなし' });
-    const queue = await import('../furim/gas-retry-queue.js');
-
-    const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: [] });
-    const ok = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'friend-1', idempotencyKey: 'evt_q2', eventData: {} }, 'tok', 'acc-1', { gasDeployId: 'dep-1' });
-
-    expect(ok).toBe(true);
-    const enq = queue.enqueueGasRetryJob as unknown as { mock: { calls: unknown[][] } };
-    expect(enq.mock.calls).toHaveLength(1);
-    expect(enq.mock.calls[0][1]).toMatchObject({ method: 'setTransactionData', doneCheck: 'transactionRecorded' });
-  });
-
-  it('ホワイトリスト外メソッドのsuccess:falseはautomation失敗になり、キューには積まれない', async () => {
-    await setupGasAutomation('setSurveyResult');
-    const gas = await import('../furim/gas-client.js');
-    (gas.gasPost as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({ success: false, error: 'boom' });
-    const queue = await import('../furim/gas-retry-queue.js');
-
-    const dbFake = fakeDb({ friend: { line_user_id: 'U_test' }, capturedInserts: [] });
-    const ok = await fireEvent(dbFake, 'stripe_invoice_paid', { friendId: 'friend-1', idempotencyKey: 'evt_q3', eventData: {} }, 'tok', 'acc-1', { gasDeployId: 'dep-1' });
-
-    expect(ok).toBe(false);
-    expect((queue.enqueueGasRetryJob as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(0);
+    expect(withFriend).toBe(true);
+    expect(withoutFriend).toBe(true);
+    expect(fetchStub.mock.calls.filter((c) => String(c[0]).includes('script.google.com'))).toHaveLength(0);
+    const log = db.createAutomationLog as unknown as { mock: { calls: unknown[][] } };
+    expect(log.mock.calls.map((c) => (c[1] as { status?: string }).status)).toEqual(['success', 'success']);
   });
 });
-
 
 describe('fireEvent — 配信の2段階先記録とX-Line-Retry-Key（2026-08-18）', () => {
   afterEach(() => {

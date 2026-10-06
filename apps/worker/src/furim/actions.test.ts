@@ -1,10 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// gasGet / gasPost を差し替え、他の furim モジュールは実体を使う。
-// キーコード発行・月額会員ページ・限定特典GET は D1 furim_customers を読む（Capsec #243）
-const gasGet = vi.fn();
-const gasPost = vi.fn();
-vi.mock('./gas-client.js', () => ({ gasGet, gasPost, getGasErrorFromResponse: () => null }));
+// furim モジュールは実体を使う。
+// キーコード発行・月額会員ページ・限定特典GET は D1 furim_customers を読む（Capsec #243）。GAS は呼ばない（TB-940）
 vi.mock('./firebase-client.js', () => ({
   getSentGiftBatches: vi.fn().mockResolvedValue([]),
   setSentGiftBatches: vi.fn().mockResolvedValue(undefined),
@@ -52,54 +49,44 @@ function makeDb(opts: { customer?: Record<string, unknown> | null; friendMeta?: 
   return { db, writes };
 }
 
-const env = { GAS_DEPLOY_ID: 'deploy-id' };
+const env = {};
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
 describe('actionKeycodeIssue (キーコード発行は D1 から返す)', () => {
-  it('正常系: D1 の key_code を reply で返し、初回発行フラグを D1→GAS の順で立てる', async () => {
-    gasPost.mockResolvedValueOnce({ success: true });
-    const client = makeClient();
-    const { db, writes } = makeDb({ customer: { key_code: 'pb_abcd1234', key_code_issued: 0 } });
+  it('正常系: D1 の key_code を reply で返し、初回発行フラグを D1 に立てる（GAS は呼ばない）', async () => {
+    const fetchStub = vi.fn();
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      const client = makeClient();
+      const { db, writes } = makeDb({ customer: { key_code: 'pb_abcd1234', key_code_issued: 0 } });
 
-    const handled = await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】キーコード発行', env, db);
+      const handled = await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】キーコード発行', env, db);
 
-    expect(handled).toBe(true);
-    expect(gasGet).not.toHaveBeenCalled();
-    expect(client.replyMessage).toHaveBeenCalledWith('rt', [{ type: 'text', text: 'pb_abcd1234' }]);
-    expect(client.pushMessage).not.toHaveBeenCalled();
-    const issued = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql));
-    expect(issued?.sql).toContain('key_code_issued = excluded.key_code_issued');
-    expect(gasPost).toHaveBeenCalledWith('deploy-id', { method: 'setCustomerFields', lineUserId: 'Uxxx', fields: { '初回発行': true } });
-    // セグメント3 昇格
-    expect(writes.some((w) => /INSERT OR IGNORE INTO friend_tags/.test(w.sql))).toBe(true);
+      expect(handled).toBe(true);
+      expect(client.replyMessage).toHaveBeenCalledWith('rt', [{ type: 'text', text: 'pb_abcd1234' }]);
+      expect(client.pushMessage).not.toHaveBeenCalled();
+      const issued = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql));
+      expect(issued?.sql).toContain('key_code_issued = excluded.key_code_issued');
+      expect(writes.some((w) => /gas_retry_jobs/.test(w.sql))).toBe(false);
+      expect(fetchStub).not.toHaveBeenCalled();
+      // セグメント3 昇格
+      expect(writes.some((w) => /INSERT OR IGNORE INTO friend_tags/.test(w.sql))).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
-  it('初回発行済みなら GAS への鏡写しはしない', async () => {
+  it('初回発行済みなら初回発行フラグを書き直さない', async () => {
     const client = makeClient();
-    const { db } = makeDb({ customer: { key_code: 'pb_abcd1234', key_code_issued: 1 } });
+    const { db, writes } = makeDb({ customer: { key_code: 'pb_abcd1234', key_code_issued: 1 } });
 
     await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】キーコード発行', env, db);
 
     expect(client.replyMessage).toHaveBeenCalledWith('rt', [{ type: 'text', text: 'pb_abcd1234' }]);
-    expect(gasPost).not.toHaveBeenCalled();
-  });
-
-  it('鏡写しの GAS が失敗しても顧客には返信済みで、再実行キューに積む', async () => {
-    gasPost.mockRejectedValueOnce(new Error('GAS POST 500'));
-    const client = makeClient();
-    const { db, writes } = makeDb({ customer: { key_code: 'pb_abcd1234', key_code_issued: 0 } });
-
-    await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】キーコード発行', env, db);
-
-    expect(client.replyMessage).toHaveBeenCalledWith('rt', [{ type: 'text', text: 'pb_abcd1234' }]);
-    expect(client.pushMessage).not.toHaveBeenCalled();
-    const q = writes.find((w) => /INSERT INTO gas_retry_jobs/.test(w.sql));
-    expect(q).toBeTruthy();
-    expect(q!.args).toContain('setCustomerFields');
-    expect(q!.args).toContain('setCustomerFields:初回発行');
+    expect(writes.some((w) => /INSERT INTO furim_customers/.test(w.sql))).toBe(false);
   });
 
   it('reply が失敗 (replyToken失効) → 同じ内容を push で届ける', async () => {
@@ -119,13 +106,11 @@ describe('actionKeycodeIssue (キーコード発行は D1 から返す)', () => 
     await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】キーコード発行', env, db);
 
     expect((client.replyMessage.mock.calls[0][1] as { text: string }[])[0].text).toContain('準備中');
-    expect(gasGet).not.toHaveBeenCalled();
-    expect(gasPost).not.toHaveBeenCalled();
   });
 });
 
 describe('actionMemberPage (月額会員ページ)', () => {
-  const stripeEnv = { GAS_DEPLOY_ID: 'deploy-id', STRIPE_SECRET_KEY: 'sk_test_x' };
+  const stripeEnv = { STRIPE_SECRET_KEY: 'sk_test_x' };
 
   it('D1 の Stripe顧客ID で Billing Portal を作り imagemap で返す（GAS は呼ばない）', async () => {
     const fetchStub = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ url: 'https://billing.stripe.com/p/session_1' }) });
@@ -136,7 +121,7 @@ describe('actionMemberPage (月額会員ページ)', () => {
 
       await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】月額会員ページ', stripeEnv, db);
 
-      expect(gasGet).not.toHaveBeenCalled();
+      expect(fetchStub).toHaveBeenCalledTimes(1);
       expect(String(fetchStub.mock.calls[0][0])).toContain('billing_portal/sessions');
       expect((fetchStub.mock.calls[0][1] as { body: string }).body).toBe('customer=cus_d1');
       const msg = (client.replyMessage.mock.calls[0][1] as Array<{ type: string; actions: Array<{ linkUri: string }> }>)[0];
@@ -170,12 +155,18 @@ describe('actionMemberPage (月額会員ページ)', () => {
 
 describe('actionLimitedGift (限定特典GET)', () => {
   it('D1 の 6 フラグで解放判定し、GAS は呼ばない（アンケート済み → 特典③④が解放）', async () => {
+    const fetchStub = vi.fn();
+    vi.stubGlobal('fetch', fetchStub);
     const client = makeClient();
     const { db } = makeDb({ customer: { survey_answer: '紹介', key_code_issued: 0, device_activated: 0, free30_ticket: 0, youtube_coupon: null, extend_keyword: null } });
 
-    await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】限定特典GET', env, db);
+    try {
+      await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】限定特典GET', env, db);
+    } finally {
+      vi.unstubAllGlobals();
+    }
 
-    expect(gasGet).not.toHaveBeenCalled();
+    expect(fetchStub).not.toHaveBeenCalled();
     const messages = client.replyMessage.mock.calls[0][1] as Array<{ type: string; text?: string }>;
     expect(messages[0].text).toContain('アンケートご回答ありがとうございます');
     expect(messages[0].text).toContain('③ ロードマップ❸');

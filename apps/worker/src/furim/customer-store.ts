@@ -166,38 +166,6 @@ export function generateTrialKeyCode(): string {
   return TRIAL_KEYCODE_PREFIX + s;
 }
 
-/**
- * GAS 応答からキーコード関連の状態を取り込む（2 規則）:
- *  (1) resp.keyCode が D1 と異なる → key_code を更新し device_activated=0（GAS は再発行時に必ず端末判定をクリアする）
- *  (2) resp.keyCodeIssued===true → key_code_issued=1・device_activated=0（syncFeatures は発行時に「初回発行」を書く）
- * 応答に keyCode が無い / エラーコード文字列なら何もしない。失敗しても呼び出し元の処理は止めない
- */
-export async function absorbGasKeyCode(db: D1Database | undefined, lineUserId: string | null | undefined, resp: unknown): Promise<void> {
-  if (!db || !lineUserId || !resp || typeof resp !== 'object') return;
-  const r = resp as { keyCode?: unknown; keyCodeIssued?: unknown };
-  const keyCode = typeof r.keyCode === 'string' ? r.keyCode.trim() : '';
-  const issued = r.keyCodeIssued === true;
-  if (!keyCode || keyCode.includes('エラーコード')) return;
-  try {
-    const current = await getFurimCustomer(db, lineUserId);
-    const patch: FurimCustomerPatch = {};
-    if (current?.key_code !== keyCode) {
-      patch.key_code = keyCode;
-      patch.device_activated = 0;
-      patch.device_code = null;
-    }
-    if (issued) {
-      patch.key_code_issued = 1;
-      patch.device_activated = 0;
-      patch.device_code = null;
-    }
-    if (Object.keys(patch).length === 0) return;
-    await upsertFurimCustomer(db, lineUserId, patch);
-  } catch (e) {
-    console.error('[furim/customer-store] absorbGasKeyCode failed:', lineUserId, e);
-  }
-}
-
 /** 解約（customer.subscription.deleted）: GAS deleteSubscription と同じくキーコードと端末判定を消す */
 export async function clearFurimCustomerKeyCode(db: D1Database, lineUserId: string): Promise<void> {
   await upsertFurimCustomer(db, lineUserId, { key_code: null, device_activated: 0, device_code: null });

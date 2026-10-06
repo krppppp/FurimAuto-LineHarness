@@ -1,9 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// gasGet/gasPost を差し替え、他は実体を使う
-const gasGet = vi.fn();
-const gasPost = vi.fn();
-vi.mock('./gas-client.js', () => ({ gasGet, gasPost, getGasErrorFromResponse: () => null }));
+// 実体を使う。GAS は呼ばない（TB-940）。fetch を差し替えて script.google.com へ行かないことを確かめる
 
 const { processReferral, handleKeywordAction } = await import('./keyword-actions.js');
 
@@ -69,7 +66,7 @@ function makeReferralDb(opts: {
   return { db, writes };
 }
 
-const env = { GAS_DEPLOY_ID: 'deploy-id', STRIPE_SECRET_KEY: 'sk_test' };
+const env = { STRIPE_SECRET_KEY: 'sk_test' };
 
 function stubStripe(opts: { ambassadorDiscount?: boolean; monthly?: number } = {}) {
   const calls: Array<{ url: string; body?: string; method?: string }> = [];
@@ -105,7 +102,6 @@ describe('processReferral（D1 だけで完結・Capsec #244）', () => {
     expect(result).toEqual({ ok: false, reason: 'already_referred' });
     expect(calls).toHaveLength(0);
     expect(writes.filter((w) => /INSERT INTO furim_referrals/.test(w.sql))).toHaveLength(0);
-    expect(gasGet).not.toHaveBeenCalled();
   });
 
   it('紹介台帳に被紹介者が居ても already_referred（タグ無しでも）', async () => {
@@ -165,16 +161,15 @@ describe('processReferral（D1 だけで完結・Capsec #244）', () => {
     expect(result).toEqual({ ok: false, reason: 'self_referral' });
   });
 
-  it('成立: 台帳に記録 → 被紹介者に半額クーポン → 期限 +7 日（D1→シート鏡写し）→ 2 通の通知 → 報酬クーポン適用', async () => {
+  it('成立: 台帳に記録 → 被紹介者に半額クーポン → 期限 +7 日（D1）→ 2 通の通知 → 報酬クーポン適用（GAS は呼ばない）', async () => {
     const calls = stubStripe({ monthly: 5980 });
-    gasPost.mockResolvedValue({ success: true });
     const client = makeClient();
     const { db, writes } = makeReferralDb();
 
     const result = await processReferral(client as never, 'Uintroduced', 'AMB12345', env, db as never, { replyToken: 'rt' });
 
     expect(result).toEqual({ ok: true });
-    expect(gasGet).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.url.includes('script.google.com'))).toBe(false);
     const insert = writes.find((w) => /INSERT INTO furim_referrals/.test(w.sql));
     expect(insert?.args).toContain('friend1');
     expect(insert?.args).toContain('アンバサダー1500円引きクーポン'); // 5980 円 → 1500 円帯
@@ -183,10 +178,10 @@ describe('processReferral（D1 だけで完結・Capsec #244）', () => {
     const introducedPost = calls.find((c) => c.url.endsWith('/v1/customers/cus_intro') && c.method === 'POST');
     expect(introducedPost?.body).toContain('coupon=IDLf7QBx');
     expect(introducedPost?.body).toContain('metadata%5BambassadorStripeID%5D=cus_amb');
-    // +7 日: 2026-09-27 12:00:00 → D1 は ISO+09:00、シートはスペース区切り（Capsec #260）
+    // +7 日: 2026-09-27 12:00:00 → D1 は ISO+09:00（Capsec #260）
     const extend = writes.find((w) => /INSERT INTO furim_customers/.test(w.sql) && w.sql.includes('subscription_end_at'));
     expect(extend?.args).toContain('2026-10-04T12:00:00.000+09:00');
-    expect(gasPost).toHaveBeenCalledWith('deploy-id', { method: 'setCustomerFields', lineUserId: 'Uintroduced', fields: { 'サブスク終了日時': '2026-10-04 12:00:00' } });
+    expect(writes.some((w) => /gas_retry_jobs/.test(w.sql))).toBe(false);
     // 通知: 被紹介者は reply、アンバサダーは push（クーポン付与の文面）
     expect((client.replyMessage.mock.calls[0][1] as { text: string }[])[0].text).toContain('無料試用期間を1週間追加');
     expect(client.pushMessage.mock.calls[0][0]).toBe('Uamb');
@@ -201,7 +196,6 @@ describe('processReferral（D1 だけで完結・Capsec #244）', () => {
 
   it('アンバサダーに既存の discount があれば報酬は未来に充当（適用しない）', async () => {
     const calls = stubStripe({ ambassadorDiscount: true });
-    gasPost.mockResolvedValue({ success: true });
     const client = makeClient();
     const { db, writes } = makeReferralDb();
     await processReferral(client as never, 'Uintroduced', 'AMB12345', env, db as never, {});
@@ -212,7 +206,6 @@ describe('processReferral（D1 だけで完結・Capsec #244）', () => {
 
   it('報酬クーポンが 10 枚に達していれば付与せず感謝の文面', async () => {
     stubStripe();
-    gasPost.mockResolvedValue({ success: true });
     const client = makeClient();
     const { db, writes } = makeReferralDb({ counts: { total: 12, rewarded: 10, applied: 10 }, pendingReward: null });
     await processReferral(client as never, 'Uintroduced', 'AMB12345', env, db as never, {});
@@ -234,14 +227,16 @@ function makeKeycodeDb(keyCode: string | null) {
 }
 
 describe('handleKeywordAction キーコードリセットの特別対応（段階2.5: D1 で完結・GAS resetKeyCode は削除）', () => {
-  it('【キーワード】プレフィックスなしでも動き、D1 の端末判定を解除して説明＋キーコード単体を一括で返信し、シートへ鏡写しする', async () => {
+  it('【キーワード】プレフィックスなしでも動き、D1 の端末判定を解除して説明＋キーコード単体を一括で返信する（GAS は呼ばない）', async () => {
+    const fetchStub = vi.fn();
+    vi.stubGlobal('fetch', fetchStub);
     const client = makeClient();
     const db = makeKeycodeDb('pb_test123');
 
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, db as never);
 
     expect(result).toBe(true);
-    expect(gasGet).not.toHaveBeenCalled();
+    expect(fetchStub).not.toHaveBeenCalled();
     const sqls = db.prepare.mock.calls.map((c: unknown[]) => String(c[0]));
     expect(sqls.some((q: string) => /INSERT INTO furim_customers/.test(q) && /device_code/.test(q))).toBe(true);
     const messages = client.replyMessage.mock.calls[0][1];
@@ -250,8 +245,7 @@ describe('handleKeywordAction キーコードリセットの特別対応（段�
     expect(messages[0].text).toContain('お手数ですが次の対応をお願いいたします');
     // キーコードはコピーしやすいよう単体メッセージ
     expect(messages[1].text).toBe('pb_test123');
-    // 返信の後にシートの端末判定文字列を空にする（旧拡張が GAS 経路で読む列）
-    expect(gasPost).toHaveBeenCalledWith('deploy-id', { method: 'setCustomerFields', lineUserId: 'Uuser', fields: { '端末判定文字列': '' } });
+    expect(sqls.some((q: string) => q.includes('gas_retry_jobs'))).toBe(false);
   });
 
   it('キーコードが取得できなくても、メニュー誘導つきの説明だけで返す', async () => {
@@ -271,7 +265,6 @@ describe('handleKeywordAction キーコードリセットの特別対応（段�
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'お手数ですがキーコードリセットお願いします', env);
 
     expect(result).toBe(true);
-    expect(gasGet).not.toHaveBeenCalled();
     expect(client.replyMessage).toHaveBeenCalledTimes(1);
   });
 
@@ -295,24 +288,6 @@ describe('handleKeywordAction キーコードリセットの特別対応（段�
 
     expect(result).toBe(true);
     expect(client.replyMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it('鏡写しの GAS が失敗しても顧客には返信済みで、setCustomerFields を再実行キューに積む', async () => {
-    gasPost.mockRejectedValueOnce(new Error('GAS fetch hang (8000ms)'));
-    const client = makeClient();
-    const stmt = { bind: vi.fn(), run: vi.fn().mockResolvedValue({}), first: vi.fn().mockResolvedValue(null) };
-    stmt.bind.mockReturnValue(stmt);
-    const db = { prepare: vi.fn().mockReturnValue(stmt) };
-
-    const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'キーコードリセット', env, db as never);
-
-    expect(result).toBe(true);
-    // リセットは D1 で完了しているので返信は届く
-    expect(client.replyMessage).toHaveBeenCalledTimes(1);
-    // 鏡写しだけ gas_retry_jobs へ
-    const sqls = db.prepare.mock.calls.map((c: unknown[]) => String(c[0]));
-    expect(sqls.some((q: string) => q.includes('INSERT INTO gas_retry_jobs'))).toBe(true);
-    expect(client.pushMessage).not.toHaveBeenCalled();
   });
 
   it('replyが失敗してもpushで完了通知を届ける（リセット自体は成功しているため）', async () => {
@@ -343,7 +318,6 @@ describe('handleKeywordAction キーコードリセットの特別対応（段�
     const result = await handleKeywordAction(client as never, 'Uuser', 'rt', 'こんにちは', env);
 
     expect(result).toBe(false);
-    expect(gasGet).not.toHaveBeenCalled();
     expect(client.replyMessage).not.toHaveBeenCalled();
   });
 });

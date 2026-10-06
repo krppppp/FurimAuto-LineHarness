@@ -20,7 +20,6 @@ export const DROP_YELLOW_RATIO = 0.85;
 export const DROP_RED_RATIO = 0.7;
 export const CONFIRM_AFTER_HHMM = '03:10';
 export const SHEET_SYNC_HEARTBEAT_ID = 'sheet_execution_sync';
-export const SHEET_SYNC_STALE_HOURS = 7;
 
 const EXCLUDED = [...EXCLUDED_LINE_IDS, ...TEST_LINE_IDS];
 const dayCol = "substr(replace(created_at, ' ', 'T'), 1, 10)";
@@ -163,11 +162,3 @@ export async function summarizeAutomationDaily(db: D1Database, nowJst: string): 
   };
 }
 
-/** シート取り込みが何時間止まっているか。心拍がまだ無い（初回の実行前）は null で判定しない */
-export function sheetSyncStaleHours(lastRunAt: string | null, nowJst: string): number | null {
-  if (!lastRunAt) return null;
-  const last = Date.parse(lastRunAt.replace(' ', 'T').slice(0, 19) + '+09:00');
-  const now = Date.parse(nowJst.slice(0, 19) + '+09:00');
-  if (Number.isNaN(last) || Number.isNaN(now)) return null;
-  return Math.floor((now - last) / 3600_000);
-}

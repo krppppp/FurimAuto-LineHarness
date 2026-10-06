@@ -212,7 +212,6 @@ export const PREMIUM_MONTHLY_TICKETS = 200;
 
 /**
  * 契約内容を D1 に適用する（furim_customers・furim_feature_flags・furim_ticket_ledger・KV）。冪等。
- * 返り値をそのまま GAS syncFeaturesFromSubscription に渡す（gasSyncArgs）
  */
 export async function applyPlanBuilderSync(db: D1Database, kv: ExtCache | undefined, input: PlanSyncInput): Promise<PlanSyncResult> {
   const master = await loadFurimMaster(db);
@@ -281,9 +280,4 @@ export async function applyPlanBuilderSync(db: D1Database, kv: ExtCache | undefi
     flags,
     ticketsGranted,
   };
-}
-
-/** GAS syncFeaturesFromSubscription に渡す「Worker が決めた値」（GAS はこれを書くだけ） */
-export function gasSyncArgs(result: PlanSyncResult): { keyCode: string; keyCodeIssued: boolean; planLabel: string; flags: Record<string, string> } {
-  return { keyCode: result.keyCode, keyCodeIssued: result.keyCodeIssued, planLabel: result.planLabel, flags: result.flags };
 }

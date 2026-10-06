@@ -324,20 +324,8 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
     };
 
     await add(
-      'gas_retry_pending', '同期の保留ジョブ', '/data/table?name=gas_retry_jobs',
-      "SELECT COUNT(*) AS n, MIN(created_at) AS since FROM gas_retry_jobs WHERE status = 'pending'",
-    );
-    await add(
-      'gas_retry_failed', '同期の失敗ジョブ', '/data/table?name=gas_retry_jobs',
-      "SELECT COUNT(*) AS n, MIN(updated_at) AS since FROM gas_retry_jobs WHERE status = 'failed'",
-    );
-    await add(
       'plan_change_alert', '未反映のプラン変更', '/data/table?name=plan_builder_intents',
       "SELECT COUNT(*) AS n, MIN(created_at) AS since FROM plan_builder_intents WHERE stage LIKE 'watch:alert:%'",
-    );
-    await add(
-      'sync_diff', 'シートと D1 の差分', '/data/table?name=furim_sync_diffs',
-      'SELECT COUNT(*) AS n, MIN(first_seen_at) AS since FROM furim_sync_diffs WHERE resolved_at IS NULL',
     );
     await add(
       'stripe_pending', 'Stripe イベントの滞留', '/data/table?name=stripe_events',
@@ -441,9 +429,9 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
       console.log('[dashboard] heartbeat check skipped:', e);
     }
 
-    // 自動化の件数・人数の減少と、シート取り込みの停止（Capsec #296）
+    // 自動化の件数・人数の減少（Capsec #296）
     if (automation.ok) {
-      const { judgeAutomationDrop, sheetSyncStaleHours, addDays, CONFIRM_AFTER_HHMM, SHEET_SYNC_STALE_HOURS } = await import('../furim/automation-daily.js');
+      const { judgeAutomationDrop, addDays, CONFIRM_AFTER_HHMM } = await import('../furim/automation-daily.js');
       const tg = automation.target;
       const drop = judgeAutomationDrop(tg, tg.medianRuns, tg.medianPeople);
       if (drop) {
@@ -458,20 +446,6 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
           acked: null,
           isNew: false,
           note: `直近 7 日の中央値（${tg.medianRuns ?? '—'} 件・${tg.medianPeople ?? '—'} 人）に対して、件数 ${pct(drop.runsRatio)}・人数 ${pct(drop.peopleRatio)}。85% 未満で黄・70% 未満で赤`,
-        });
-      }
-      const staleHours = sheetSyncStaleHours(automation.sheetSync.lastRunAt, now);
-      if (staleHours !== null && staleHours >= SHEET_SYNC_STALE_HOURS) {
-        items.push({
-          kind: 'sheet_sync_stale',
-          label: `シートからの実行ログ取り込みが ${staleHours} 時間止まっている`,
-          count: staleHours,
-          since: automation.sheetSync.lastRunAt,
-          href: '/data/table?name=furim_health_heartbeat',
-          severity: 'yellow',
-          acked: null,
-          isNew: false,
-          note: '6 時間ごとに動くはずの取り込み。止まっている間は旧版の会員の実行が数に入らない',
         });
       }
     }

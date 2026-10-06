@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { NO_FIT_SLOT_ID, OTHER_TOPIC_ID, SEMINAR_TOPICS, announceSeminar, collectSeminarTopicReports, parseSeminarTopicData, parseSeminarVoteData, pickTopSlots, recordSeminarTopicNote, recordSeminarTopicVote, recordSeminarVote, remindSeminarSlots, sendSeminarSurvey, seminarAnnounceMessages, seminarEntryUrl, seminarSurveyFlex, slotLabel, surveyWeekIdOf, topicReplyText, topicReportText, voteReplyText, weekIdOf } from './seminar.js';
+import { NO_FIT_SLOT_ID, OTHER_TOPIC_ID, SEMINAR_TOPICS, announceSeminar, collectSeminarTopicReports, parseSeminarTopicData, parseSeminarVoteData, pickTopSlots, recordSeminarTopicNote, recordSeminarTopicVote, recordSeminarVote, remindSeminarSlots, SEMINAR_URL_UPDATE, sendSeminarSurvey, seminarAnnounceMessages, seminarEntryUrl, seminarSurveyFlex, slotLabel, surveyWeekIdOf, topicReplyText, topicReportText, voteReplyText, weekIdOf } from './seminar.js';
 
 vi.mock('@line-crm/db', () => ({ createBroadcast: vi.fn(async () => ({ id: 'bc-1' })), createTrackedLink: vi.fn() }));
 vi.mock('../lib/link-base-url.js', () => ({ resolveTrackedLinkBaseUrl: async () => 'https://line-harness-prod.furimuato.workers.dev' }));
@@ -163,9 +163,11 @@ describe('5 分前の URL 案内（TB-449 → TB-821）', () => {
     { friend_id: 'fr-2', line_user_id: 'U2' },
   ];
 
-  function makeReminderDb() {
+  function makeReminderDb(others: Array<{ friend_id: string; line_user_id: string }> = [], noteValue: string | null = null) {
     const runs: Array<{ sql: string; binds: unknown[] }> = [];
+    const batches: unknown[][] = [];
     const db = {
+      async batch(stmts: unknown[]) { batches.push(stmts); return []; },
       prepare(sql: string) {
         const stmt = {
           binds: [] as unknown[],
@@ -173,10 +175,12 @@ describe('5 分前の URL 案内（TB-449 → TB-821）', () => {
           async first() {
             if (sql.includes('FROM furim_seminar_weeks')) return { week_id: '2026-10-04', stream_url: 'https://www.youtube.com/@FurimAuto/live', survey_sent_at: null };
             if (sql.includes('FROM tracked_links')) return { id: 'link-1', short_code: 'abc123' };
+            if (sql.includes('FROM account_settings')) return noteValue === null ? null : { value: noteValue };
             return null;
           },
           async all() {
             if (sql.includes('FROM furim_seminar_slots')) return { results: [{ slot_id: 's3', starts_at: '2026-10-04T20:00:00+09:00' }] };
+            if (sql.includes('NOT IN')) return { results: others };
             if (sql.includes('FROM furim_seminar_votes')) return { results: voters };
             return { results: [] };
           },
@@ -185,7 +189,7 @@ describe('5 分前の URL 案内（TB-449 → TB-821）', () => {
         return stmt;
       },
     };
-    return { db: db as unknown as D1Database, runs };
+    return { db: db as unknown as D1Database, runs, batches };
   }
 
   const uriOf = (messages: unknown[]) =>
@@ -196,7 +200,7 @@ describe('5 分前の URL 案内（TB-449 → TB-821）', () => {
     const pushMessage = vi.fn().mockResolvedValue(undefined);
     const multicast = vi.fn();
     const r = await remindSeminarSlots(db, { pushMessage, multicast }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW });
-    expect(r.reminded).toEqual([{ slotId: 's3', recipients: 2 }]);
+    expect(r.reminded).toEqual([{ slotId: 's3', recipients: 2, others: 0, othersSent: 0 }]);
     expect(multicast).not.toHaveBeenCalled();
     expect(pushMessage).toHaveBeenCalledTimes(2);
     expect(pushMessage.mock.calls[0][0]).toBe('U1');
@@ -210,6 +214,81 @@ describe('5 分前の URL 案内（TB-449 → TB-821）', () => {
     await remindSeminarSlots(db, { pushMessage }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW });
     expect(pushMessage).toHaveBeenCalledTimes(2);
     expect(runs.some((x) => x.sql.includes('reminded_at = NULL'))).toBe(false);
+  });
+
+  it('投票していない友だち全員に ?f= なしで multicast する（500 人ずつ・計測リンクは通す・TB-977）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ type: 'none', totalUsage: 0 }))));
+    const others = Array.from({ length: 541 }, (_, i) => ({ friend_id: `o-${i}`, line_user_id: `UO${i}` }));
+    const { db, batches } = makeReminderDb(others);
+    const pushMessage = vi.fn().mockResolvedValue(undefined);
+    const multicast = vi.fn().mockResolvedValue(undefined);
+    const r = await remindSeminarSlots(db, { pushMessage, multicast }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW });
+    vi.unstubAllGlobals();
+    expect(r.reminded).toEqual([{ slotId: 's3', recipients: 2, others: 541, othersSent: 541 }]);
+    expect(pushMessage).toHaveBeenCalledTimes(2);
+    expect(multicast).toHaveBeenCalledTimes(2);
+    expect(multicast.mock.calls[0][0]).toHaveLength(500);
+    expect(multicast.mock.calls[1][0]).toHaveLength(41);
+    expect(multicast.mock.calls[0][0]).not.toContain('U1');
+    expect(uriOf(multicast.mock.calls[0][1])).toBe('https://line-harness-prod.furimuato.workers.dev/t/abc123?openExternalBrowser=1');
+    expect(batches.map((b) => b.length)).toEqual([500, 41]);
+  });
+
+  it('送信量が足りないときは投票者だけに送り、残りは送らずに quotaNote を返す', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('consumption') ? { totalUsage: 4990 } : { type: 'limited', value: 5000 }))));
+    const { db, runs } = makeReminderDb([{ friend_id: 'o-1', line_user_id: 'UO1' }, ...Array.from({ length: 20 }, (_, i) => ({ friend_id: `o-x${i}`, line_user_id: `UX${i}` }))]);
+    const pushMessage = vi.fn().mockResolvedValue(undefined);
+    const multicast = vi.fn();
+    const r = await remindSeminarSlots(db, { pushMessage, multicast }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW });
+    vi.unstubAllGlobals();
+    expect(pushMessage).toHaveBeenCalledTimes(2);
+    expect(multicast).not.toHaveBeenCalled();
+    expect(r.reminded[0]).toMatchObject({ others: 21, othersSent: 0, quotaNote: '残り 10 通／必要 21 通' });
+    expect(runs.some((x) => x.sql.includes('reminded_at = NULL'))).toBe(false);
+  });
+
+  it('multicast の 1 バッチが落ちても再送しない（届いた分の二重送信を避ける）。投票者に届いていれば枠取りも戻さない', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ type: 'none', totalUsage: 0 }))));
+    const others = Array.from({ length: 600 }, (_, i) => ({ friend_id: `o-${i}`, line_user_id: `UO${i}` }));
+    const { db, runs } = makeReminderDb(others);
+    const pushMessage = vi.fn().mockResolvedValue(undefined);
+    const multicast = vi.fn().mockRejectedValueOnce(new Error('LINE 500')).mockResolvedValue(undefined);
+    const r = await remindSeminarSlots(db, { pushMessage, multicast }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW });
+    vi.unstubAllGlobals();
+    expect(multicast).toHaveBeenCalledTimes(2);
+    expect(r.reminded[0]).toMatchObject({ others: 600, othersSent: 100 });
+    expect(runs.some((x) => x.sql.includes('reminded_at = NULL'))).toBe(false);
+  });
+
+  it('更新報告の設定が無い・1 以外なら配信 URL の 1 吹き出しだけ（TB-997）', async () => {
+    for (const v of [null, '0']) {
+      const { db } = makeReminderDb([], v);
+      const pushMessage = vi.fn().mockResolvedValue(undefined);
+      await remindSeminarSlots(db, { pushMessage }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW });
+      expect(pushMessage.mock.calls[0][1]).toHaveLength(1);
+    }
+  });
+
+  it('更新報告の設定が 1 なら push・multicast とも配信 URL と同じ 1 つの Flex に報告を載せる（TB-997）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ type: 'none', totalUsage: 0 }))));
+    const others = Array.from({ length: 3 }, (_, i) => ({ friend_id: `o-${i}`, line_user_id: `UO${i}` }));
+    const { db, runs, batches } = makeReminderDb(others, '1');
+    const pushMessage = vi.fn().mockResolvedValue(undefined);
+    const multicast = vi.fn().mockResolvedValue(undefined);
+    await remindSeminarSlots(db, { pushMessage, multicast }, { LINE_CHANNEL_ACCESS_TOKEN: 't' }, { nowMs: REMIND_NOW });
+    vi.unstubAllGlobals();
+    const pushed = pushMessage.mock.calls[0][1] as Array<{ type: string }>;
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0].type).toBe('flex');
+    expect(uriOf(pushed)).toBe('https://line-harness-prod.furimuato.workers.dev/t/abc123?openExternalBrowser=1&f=fr-1');
+    const pushedJson = JSON.stringify(pushed[0]);
+    expect(pushedJson).toContain(SEMINAR_URL_UPDATE.title);
+    for (const t of SEMINAR_URL_UPDATE.items) expect(pushedJson).toContain(t);
+    expect(pushedJson).not.toContain('更新内容を見る');
+    expect(multicast.mock.calls[0][1]).toHaveLength(1);
+    expect(JSON.stringify(multicast.mock.calls[0][1][0])).toContain(SEMINAR_URL_UPDATE.title);
+    expect(runs.filter((x) => x.sql.includes("'text'")).length).toBe(0);
+    expect(batches.map((b) => b.length)).toEqual([3]);
   });
 
   it('全員に失敗したら枠取りを戻して投げ直す（次の tick で再送できるように）', async () => {
@@ -327,6 +406,7 @@ describe('5 分前の窓（TB-821）', () => {
       ['FROM tracked_links', { id: 'link-1', short_code: 'abc123' }],
     ] as Array<[string, Row]>,
     all: [
+      ['NOT IN', []],
       ['FROM furim_seminar_slots', [{ slot_id: 's3', starts_at: '2026-10-04T20:00:00+09:00' }]],
       ['FROM furim_seminar_votes', [{ friend_id: 'fr-1', line_user_id: 'U1' }]],
     ] as Array<[string, unknown[]]>,

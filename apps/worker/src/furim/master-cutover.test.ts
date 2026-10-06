@@ -196,9 +196,4 @@ describe('#264 シートからの取り込みを止めた', () => {
     const plan = readFileSync(join(srcDir, 'routes/plan-builder.ts'), 'utf8');
     expect(plan).not.toMatch(/gasGet|caches\.default/);
   });
-
-  it('シート取り込み（backfill-sheets）の対象にプラン一覧・チケット単価一覧が無い', async () => {
-    const { SHEET_BACKFILL_SPECS } = await import('./sheet-backfill.js');
-    expect(SHEET_BACKFILL_SPECS.map((s) => s.table)).not.toContain('furim_master');
-  });
 });

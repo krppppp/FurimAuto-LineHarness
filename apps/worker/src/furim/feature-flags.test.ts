@@ -1,12 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const gasGet = vi.fn();
-vi.mock('./gas-client.js', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  gasGet,
-  gasPost: vi.fn(),
-}));
-
 const {
   expandFeatureSet,
   computeFeatureFlags,
