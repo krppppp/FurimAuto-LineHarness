@@ -25,6 +25,7 @@ import {
 import { buildIntroMessage } from '../services/intro-message.js';
 import { notifyAffiliateFriendAdd } from '../services/affiliate-notifier.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
+import { EXCLUDED_LINE_IDS, TEST_LINE_IDS } from '../furim/segments.js';
 import type { Env } from '../index.js';
 
 const liffRoutes = new Hono<Env>();
@@ -1733,6 +1734,65 @@ liffRoutes.get('/api/analytics/ref/:refCode', async (c) => {
     });
   } catch (err) {
     console.error('GET /api/analytics/ref/:refCode error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/analytics/ref-daily?ref=org_x&from=YYYY-MM-DD&to=YYYY-MM-DD
+ * ref ごとに、日付（JST）× utm_content で友だちになった人数を返す（読み取りだけ・TB-987）。
+ * XOps の cron が投稿ごとの line_adds（utm_content=x_p<id>）を埋めるのに使う。
+ * 社内・検証用アカウントは数えない。
+ */
+liffRoutes.get('/api/analytics/ref-daily', async (c) => {
+  try {
+    const refCode = c.req.query('ref') ?? '';
+    if (!refCode) {
+      return c.json({ success: false, error: 'ref is required' }, 400);
+    }
+    const isDate = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v);
+    const to = c.req.query('to') ?? jstNow().slice(0, 10);
+    const from = c.req.query('from') ?? to;
+    if (!isDate(from) || !isDate(to) || from > to) {
+      return c.json({ success: false, error: 'from/to must be YYYY-MM-DD and from <= to' }, 400);
+    }
+    if ((Date.parse(to) - Date.parse(from)) / 86400000 > 92) {
+      return c.json({ success: false, error: 'range must be 93 days or less' }, 400);
+    }
+
+    const excluded = [...EXCLUDED_LINE_IDS, ...TEST_LINE_IDS];
+    const day = `substr(replace(rt.created_at, ' ', 'T'), 1, 10)`;
+    const rows = await c.env.DB
+      .prepare(
+        `SELECT ${day} AS date,
+                rt.utm_content AS utm_content,
+                COUNT(DISTINCT rt.friend_id) AS friends
+         FROM ref_tracking rt
+         JOIN friends f ON f.id = rt.friend_id
+         WHERE rt.ref_code = ? AND ${day} BETWEEN ? AND ?
+           AND f.line_user_id NOT IN (${excluded.map(() => '?').join(',')})
+         GROUP BY date, rt.utm_content
+         ORDER BY date, rt.utm_content`,
+      )
+      .bind(refCode, from, to, ...excluded)
+      .all<{ date: string; utm_content: string | null; friends: number }>();
+
+    return c.json({
+      success: true,
+      data: {
+        refCode,
+        from,
+        to,
+        tz: 'Asia/Tokyo',
+        rows: (rows.results ?? []).map((r) => ({
+          date: r.date,
+          utmContent: r.utm_content,
+          friends: Number(r.friends),
+        })),
+      },
+    });
+  } catch (err) {
+    console.error('GET /api/analytics/ref-daily error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
