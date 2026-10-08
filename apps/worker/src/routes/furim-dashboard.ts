@@ -475,15 +475,19 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
   return c.json({ success: true, range, sections: { friends, revenue, churn, adSpend, trial, automation, anomalies } });
 });
 
-// GET /api/furim/dashboard/monthly?from=YYYY-MM — 月次ダッシュボード（TB-1189）。省略時は今年の 1 月から
+// GET /api/furim/dashboard/monthly?start=YYYY-MM-DD|all&end=YYYY-MM-DD — 月次ダッシュボード（TB-1189・期間の選択は TB-1265）。
+// 省略時は今年の 1 月 1 日〜今日。end は今日より先にしない
 furimDashboard.get('/api/furim/dashboard/monthly', async (c) => {
   const { buildMonthlyDashboard, fetchStripeSubscriptions } = await import('../furim/monthly-dashboard.js');
   const now = jstNow();
-  const thisMonth = now.slice(0, 7);
-  const q = c.req.query('from') ?? '';
-  const from = /^\d{4}-(0[1-9]|1[0-2])$/.test(q) && q >= '2023-01' && q <= thisMonth ? q : `${now.slice(0, 4)}-01`;
+  const today = now.slice(0, 10);
+  const isDate = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`)) && v >= '2023-01-01';
+  const qs = c.req.query('start') ?? '';
+  const qe = c.req.query('end') ?? '';
+  const end = isDate(qe) && qe <= today ? qe : today;
+  const start = qs === 'all' ? 'all' : isDate(qs) && qs <= end ? qs : `${today.slice(0, 4)}-01-01`;
   const subs = await fetchStripeSubscriptions(c.env.STRIPE_SECRET_KEY ?? '');
-  return c.json({ success: true, ...(await buildMonthlyDashboard(c.env.DB, subs, now, from)) });
+  return c.json({ success: true, ...(await buildMonthlyDashboard(c.env.DB, subs, now, { start, end })) });
 });
 
 // POST /api/furim/dashboard/anomalies/ack —異常を「確認済み」にする（Capsec #289）。

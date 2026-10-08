@@ -1,4 +1,4 @@
-// 月次ダッシュボード（TB-1189）。今年 1 月〜今月を月ごとに、友だち追加・ブロック・月額会員・MRR・新規加入・解約・
+// 月次ダッシュボード（TB-1189）。選んだ期間を日・週・月ごと（TB-1265）に、友だち追加・ブロック・月額会員・MRR・新規加入・解約・
 // 友だち追加月ごとのファネル（試用開始・有料化）・流入経路別・セグメント別を出す。読み取りだけ。
 // 行数が少ない（友だち・請求とも数千）ので、生の行を読んで JS で数える。定義を 1 か所に置いてテストで固めるため。
 // 月額会員・新規加入・解約は Stripe のサブスク一覧で数える（くろさんが見る Stripe の画面と合わせる。TB-1192）。
@@ -17,17 +17,23 @@ export type RouteGroup = (typeof ROUTE_GROUPS)[number];
 export const SEGMENT_GROUPS = ['有料化', 'セグメント5〜8', 'セグメント4', 'セグメント3', 'セグメント2', 'セグメント1', 'ブロック', '対象外'] as const;
 export type SegmentGroup = (typeof SEGMENT_GROUPS)[number];
 
-export type MonthRow = {
+export type Granularity = 'day' | 'week' | 'month';
+
+export type BucketRow = {
+  /** 日・週は始まりの日 'YYYY-MM-DD'、月は 'YYYY-MM' */
   t: string;
+  /** 範囲で切った始まりと終わりの日（終わりの日を含む） */
+  start: string;
+  end: string;
   friendsAdded: number;
-  /** ブロックの記録（ブロック時フローの実行ログ）が無い月は null */
+  /** ブロックの記録（ブロック時フローの実行ログ）が始まる前の区切りは null */
   blocked: number | null;
   net: number | null;
   members: number;
   mrr: number;
   newPaid: number;
   churned: number;
-  /** 以下はこの月に友だち追加した人の、いま時点の到達（コホート） */
+  /** 以下はこの区切りに友だち追加した人の、いま時点の到達（コホート） */
   trialStarted: number;
   cohortPaid: number;
   routesAdded: Record<RouteGroup, number>;
@@ -38,9 +44,21 @@ export type MonthRow = {
 export type CardMetric = { value: number | null; prev: number | null };
 
 export type MonthlyDashboard = {
-  range: { from: string; to: string; asOf: string; blockedSince: string | null };
-  months: MonthRow[];
-  /** 今月の値と比べる先。流れ（追加・加入・解約）は前月の同じ日まで、在庫（会員・MRR）は前月末 */
+  range: {
+    start: string;
+    end: string;
+    all: boolean;
+    granularity: Granularity;
+    /** ひとつ前の同じ長さの期間（全期間のときは null） */
+    prevStart: string | null;
+    prevEnd: string | null;
+    asOf: string;
+    /** データのある最初の日（友だち・Stripe の古い方） */
+    dataStart: string;
+    blockedSince: string | null;
+  };
+  buckets: BucketRow[];
+  /** 流れ（追加・加入・解約）は期間内の合計、在庫（会員・MRR）は期間末。prev はひとつ前の同じ長さの期間 */
   cards: {
     friendsAdded: CardMetric;
     net: CardMetric;
@@ -70,17 +88,34 @@ export function addMonths(ym: string, n: number): string {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`;
 }
 
-/** 'YYYY-MM-DDTHH:MM:SS' の 1 か月前（月末は丸める。10/31 → 9/30） */
-export function oneMonthBefore(s19: string): string {
-  const ym = addMonths(s19.slice(0, 7), -1);
-  const [y, m] = ym.split('-').map(Number);
-  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
-  const day = Math.min(Number(s19.slice(8, 10)), last);
-  return `${ym}-${pad(day)}${s19.slice(10)}`;
+/** 'YYYY-MM-DD' の n 日後 */
+export function addDays(ymd: string, n: number): string {
+  return new Date(Date.parse(`${ymd}T00:00:00Z`) + n * 86400_000).toISOString().slice(0, 10);
+}
+const daysBetween = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400_000);
+/** 'YYYY-MM-DDTHH:MM:SS' の n 日後 */
+const shiftDays = (s19: string, n: number) => new Date(Date.parse(`${s19}Z`) + n * 86400_000).toISOString().slice(0, 19);
+
+/** グラフの刻み: 31 日までは日、6 か月（186 日）までは週、それより長ければ月 */
+export function granularityOf(start: string, end: string): Granularity {
+  const days = daysBetween(start, end) + 1;
+  return days <= 31 ? 'day' : days <= 186 ? 'week' : 'month';
 }
 
-/** その日時までの同じ日・時刻を前月に置いた値（前月同日比の境目） */
-const sameTimePrevMonth = oneMonthBefore;
+/** 期間 [start, end]（日付・end を含む）を区切る。週は月曜はじまり。端の区切りは範囲で切る */
+export function bucketsOf(start: string, end: string, g: Granularity): Array<{ t: string; start: string; end: string }> {
+  const out: Array<{ t: string; start: string; end: string }> = [];
+  for (let d = start; d <= end; ) {
+    let next: string;
+    if (g === 'day') next = addDays(d, 1);
+    else if (g === 'week') next = addDays(d, 7 - ((new Date(`${d}T00:00:00Z`).getUTCDay() + 6) % 7));
+    else next = `${addMonths(d.slice(0, 7), 1)}-01`;
+    const last = addDays(next, -1) < end ? addDays(next, -1) : end;
+    out.push({ t: g === 'month' ? d.slice(0, 7) : d, start: d, end: last });
+    d = next;
+  }
+  return out;
+}
 
 function emptyRoutes(): Record<RouteGroup, number> {
   return Object.fromEntries(ROUTE_GROUPS.map((g) => [g, 0])) as Record<RouteGroup, number>;
@@ -149,9 +184,15 @@ function membersAt(spans: Span[], invoicesBySub: Map<string, InvoiceRow[]>, at: 
   return { members: people.size, mrr };
 }
 
-export async function buildMonthlyDashboard(db: D1Database, stripeSubs: StripeSub[], nowIso: string, fromMonth: string): Promise<MonthlyDashboard> {
+/** start が 'all' なら全期間。end は今日より先にしない */
+export async function buildMonthlyDashboard(
+  db: D1Database,
+  stripeSubs: StripeSub[],
+  nowIso: string,
+  range: { start: string; end: string },
+): Promise<MonthlyDashboard> {
   const now19 = sec(nowIso);
-  const toMonth = now19.slice(0, 7);
+  const today = now19.slice(0, 10);
 
   const [friendsRes, customersRes, paymentsRes, invoicesRes, unfollowRes, routesRes, affLinksRes, referralsRes] = await Promise.all([
     db.prepare('SELECT id, line_user_id, created_at, ref_code, is_following FROM friends').all<FriendRow>(),
@@ -237,11 +278,25 @@ export async function buildMonthlyDashboard(db: D1Database, stripeSubs: StripeSu
     if (!switched) churnEvents.push({ customer: s.customer, at: s.to });
   }
 
+  const dataStart = [...friends.map((f) => sec(f.created_at)), ...stripeSubs.map((s) => jstOf(s.start_date))].reduce(
+    (min, at) => (at && at < min ? at : min),
+    `${today}T00:00:00`,
+  ).slice(0, 10);
+  const all = range.start === 'all';
+  const end = range.end < today ? range.end : today;
+  const start = all ? dataStart : range.start <= end ? range.start : end;
+  const granularity = granularityOf(start, end);
+  const days = daysBetween(start, end) + 1;
+  /** 区切りの終わり（日付の翌日 0 時）。いまより先はいまで切る */
+  const cutOf = (lastDay: string) => {
+    const c = `${addDays(lastDay, 1)}T00:00:00`;
+    return c < now19 ? c : now19;
+  };
+
   const blockedSince = unfollows.reduce<string | null>((min, u) => {
     const at = sec(u.created_at);
     return !min || at < min ? at : min;
   }, null);
-  const blockedSinceMonth = blockedSince?.slice(0, 7) ?? null;
 
   const countDistinct = <T>(rows: T[], keyOf: (r: T) => string, atOf: (r: T) => string, start: string, end: string) => {
     const s = new Set<string>();
@@ -252,29 +307,31 @@ export async function buildMonthlyDashboard(db: D1Database, stripeSubs: StripeSu
     return s.size;
   };
 
-  const months: MonthRow[] = [];
-  for (let t = fromMonth; t <= toMonth; t = addMonths(t, 1)) {
-    const start = `${t}-01T00:00:00`;
-    const end = t === toMonth ? '9999' : `${addMonths(t, 1)}-01T00:00:00`;
-    const memberAt = t === toMonth ? now19 : `${addMonths(t, 1)}-01T00:00:00`;
+  const buckets: BucketRow[] = [];
+  for (const b of bucketsOf(start, end, granularity)) {
+    const bStart = `${b.start}T00:00:00`;
+    const bEnd = cutOf(b.end);
 
-    const cohort = friends.filter((f) => monthOf(f.created_at) === t);
-    const row: MonthRow = {
-      t,
+    const cohort = friends.filter((f) => {
+      const at = sec(f.created_at);
+      return at >= bStart && at < bEnd;
+    });
+    const row: BucketRow = {
+      ...b,
       friendsAdded: cohort.length,
       blocked: null,
       net: null,
-      ...membersAt(spans, invoicesBySub, memberAt),
-      newPaid: newPaidIn(start, end),
-      churned: countDistinct(churnEvents, (c) => c.customer, (c) => c.at, start, end),
+      ...membersAt(spans, invoicesBySub, bEnd),
+      newPaid: newPaidIn(bStart, bEnd),
+      churned: countDistinct(churnEvents, (c) => c.customer, (c) => c.at, bStart, bEnd),
       trialStarted: 0,
       cohortPaid: 0,
       routesAdded: emptyRoutes(),
       routesPaid: emptyRoutes(),
       segments: emptySegments(),
     };
-    if (blockedSinceMonth && t >= blockedSinceMonth) {
-      row.blocked = countDistinct(unfollows, (u) => u.friend_id as string, (u) => sec(u.created_at), start, end);
+    if (blockedSince && blockedSince < bEnd) {
+      row.blocked = countDistinct(unfollows, (u) => u.friend_id as string, (u) => sec(u.created_at), bStart, bEnd);
       row.net = row.friendsAdded - row.blocked;
     }
 
@@ -287,49 +344,66 @@ export async function buildMonthlyDashboard(db: D1Database, stripeSubs: StripeSu
       row.segments[segmentGroupOf(paid, f.is_following === 1, c)] += 1;
     }
     for (const [line, at] of firstPaid) {
-      if (at >= start && at < end) row.routesPaid[routeOf(friendByLine.get(line)).group] += 1;
+      if (at >= bStart && at < bEnd) row.routesPaid[routeOf(friendByLine.get(line)).group] += 1;
     }
-    months.push(row);
+    buckets.push(row);
   }
 
   // 流入経路ごとの合計（期間内）
+  const rangeStart = `${start}T00:00:00`;
+  const rangeCut = cutOf(end);
   const detail = new Map<string, { route: string; group: RouteGroup; added: number; paid: number }>();
-  const rangeStart = `${fromMonth}-01T00:00:00`;
   const bump = (f: FriendRow | undefined, key: 'added' | 'paid') => {
     const r = routeOf(f);
     const e = detail.get(r.label) ?? { route: r.label, group: r.group, added: 0, paid: 0 };
     e[key] += 1;
     detail.set(r.label, e);
   };
-  for (const f of friends) if (sec(f.created_at) >= rangeStart) bump(f, 'added');
-  for (const [line, at] of firstPaid) if (at >= rangeStart) bump(friendByLine.get(line), 'paid');
-
-  // カード: 流れは前月の同じ日時まで、在庫は前月末と比べる
-  const prevCut = sameTimePrevMonth(now19);
-  const prevMonthStart = `${addMonths(toMonth, -1)}-01T00:00:00`;
-  const thisMonthStart = `${toMonth}-01T00:00:00`;
-  const cur = months[months.length - 1];
-  const prev = months.length >= 2 ? months[months.length - 2] : null;
-  const addedPrev = friends.filter((f) => {
+  for (const f of friends) {
     const at = sec(f.created_at);
-    return at >= prevMonthStart && at < prevCut;
-  }).length;
-  const blockedPrev =
-    blockedSinceMonth && addMonths(toMonth, -1) >= blockedSinceMonth
-      ? countDistinct(unfollows, (u) => u.friend_id as string, (u) => sec(u.created_at), prevMonthStart, prevCut)
-      : null;
-  const prevMembers = membersAt(spans, invoicesBySub, thisMonthStart);
+    if (at >= rangeStart && at < rangeCut) bump(f, 'added');
+  }
+  for (const [line, at] of firstPaid) if (at >= rangeStart && at < rangeCut) bump(friendByLine.get(line), 'paid');
+
+  // カード: 期間内の合計と期間末の値。前の期間は同じ日数だけ前にずらす（今日を含むときは前の期間も同じ時刻まで）
+  const prevStart = `${addDays(start, -days)}T00:00:00`;
+  const prevCut = shiftDays(rangeCut, -days);
+  const addedIn = (from: string, to: string) =>
+    friends.filter((f) => {
+      const at = sec(f.created_at);
+      return at >= from && at < to;
+    }).length;
+  const blockedIn = (from: string, to: string) =>
+    blockedSince && blockedSince < to ? countDistinct(unfollows, (u) => u.friend_id as string, (u) => sec(u.created_at), from, to) : null;
+  const churnedIn = (from: string, to: string) => countDistinct(churnEvents, (c) => c.customer, (c) => c.at, from, to);
+  const flow = (f: (from: string, to: string) => number | null): CardMetric => ({ value: f(rangeStart, rangeCut), prev: all ? null : f(prevStart, prevCut) });
+  const netIn = (from: string, to: string) => {
+    const b = blockedIn(from, to);
+    return b === null ? null : addedIn(from, to) - b;
+  };
+  const cur = membersAt(spans, invoicesBySub, rangeCut);
+  const prev = all ? null : membersAt(spans, invoicesBySub, prevCut);
 
   return {
-    range: { from: fromMonth, to: toMonth, asOf: now19, blockedSince },
-    months,
+    range: {
+      start,
+      end,
+      all,
+      granularity,
+      prevStart: all ? null : prevStart.slice(0, 10),
+      prevEnd: all ? null : addDays(start, -1),
+      asOf: now19,
+      dataStart,
+      blockedSince,
+    },
+    buckets,
     cards: {
-      friendsAdded: { value: cur.friendsAdded, prev: addedPrev },
-      net: { value: cur.net, prev: blockedPrev === null ? null : addedPrev - blockedPrev },
-      members: { value: cur.members, prev: prev ? prevMembers.members : null },
-      mrr: { value: cur.mrr, prev: prev ? prevMembers.mrr : null },
-      newPaid: { value: cur.newPaid, prev: newPaidIn(prevMonthStart, prevCut) },
-      churned: { value: cur.churned, prev: countDistinct(churnEvents, (c) => c.customer, (c) => c.at, prevMonthStart, prevCut) },
+      friendsAdded: flow(addedIn),
+      net: flow(netIn),
+      members: { value: cur.members, prev: prev?.members ?? null },
+      mrr: { value: cur.mrr, prev: prev?.mrr ?? null },
+      newPaid: flow(newPaidIn),
+      churned: flow(churnedIn),
     },
     routeDetail: [...detail.values()].sort((a, b) => b.added - a.added || b.paid - a.paid),
   };

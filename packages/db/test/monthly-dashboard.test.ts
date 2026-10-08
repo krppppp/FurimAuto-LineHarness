@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import Database from 'better-sqlite3';
-import { addMonths, buildMonthlyDashboard, oneMonthBefore, routeGroupOf, type StripeSub } from '../../../apps/worker/src/furim/monthly-dashboard.js';
+import { addDays, addMonths, bucketsOf, buildMonthlyDashboard, granularityOf, routeGroupOf, type StripeSub } from '../../../apps/worker/src/furim/monthly-dashboard.js';
 
 const TEST_LINE = 'Ue4941a030cb2ec8758095fb0fffff344';
 
@@ -108,11 +108,11 @@ describe('月次ダッシュボード（TB-1189）', () => {
   test('月ごとの友だち追加・ブロック・会員・MRR・新規加入・解約・ファネル', async () => {
     const sqlite = setupDb();
     seed(sqlite);
-    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', '2026-07');
+    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', { start: '2026-01-01', end: '2026-10-08' });
 
-    expect(r.range).toMatchObject({ from: '2026-07', to: '2026-10', blockedSince: '2026-08-25T10:00:00' });
-    const [jul, aug, sep, oct] = r.months;
-    expect(r.months.map((m) => m.t)).toEqual(['2026-07', '2026-08', '2026-09', '2026-10']);
+    expect(r.range).toMatchObject({ start: '2026-01-01', end: '2026-10-08', granularity: 'month', blockedSince: '2026-08-25T10:00:00' });
+    expect(r.buckets.map((m) => m.t)).toEqual(['01', '02', '03', '04', '05', '06', '07', '08', '09', '10'].map((m) => `2026-${m}`));
+    const [jul, aug, sep, oct] = r.buckets.slice(6);
 
     // ブロックの記録が始まる前の月は null
     expect(jul).toMatchObject({ friendsAdded: 0, blocked: null, net: null });
@@ -151,22 +151,62 @@ describe('月次ダッシュボード（TB-1189）', () => {
     expect(aug.routesPaid).toMatchObject({ 経路なし: 3 });
   });
 
-  test('カードは流れを前月の同じ日時まで、在庫を前月末と比べる', async () => {
+  test('カードは期間内の合計・期間末の値を、ひとつ前の同じ長さの期間と比べる', async () => {
     const sqlite = setupDb();
     seed(sqlite);
-    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', '2026-01');
-    expect(r.cards.friendsAdded).toEqual({ value: 1, prev: 1 }); // 9/1〜9/8 09:00 は U3 だけ
-    expect(r.cards.members).toEqual({ value: 4, prev: 5 });
+    // 今月（現在まで）= 10/1〜10/8 09:00 の 8 日間。前の期間は 9/23〜9/30 09:00
+    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', { start: '2026-10-01', end: '2026-10-08' });
+    expect(r.range).toMatchObject({ granularity: 'day', prevStart: '2026-09-23', prevEnd: '2026-09-30', asOf: '2026-10-08T09:00:00' });
+    expect(r.buckets).toHaveLength(8);
+    expect(r.cards.friendsAdded).toEqual({ value: 1, prev: 1 }); // 前の期間は U4（9/28）
+    expect(r.cards.members).toEqual({ value: 4, prev: 5 }); // 9/30 09:00 時点
     expect(r.cards.mrr).toEqual({ value: 8980 + 3980 + 5980 + 2980, prev: 8980 + 3980 + 5980 + 5980 + 2980 });
     expect(r.cards.newPaid).toEqual({ value: 0, prev: 0 });
     expect(r.cards.churned).toEqual({ value: 1, prev: 0 });
     expect(r.cards.net).toEqual({ value: 0, prev: 1 });
   });
 
+  test('過去の範囲は期間の終わりの日の 24 時までで数え、前の期間は始まりの直前まで', async () => {
+    const sqlite = setupDb();
+    seed(sqlite);
+    // 9/1〜9/30 の 30 日 → 日ごと。前の期間は 8/2〜8/31
+    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', { start: '2026-09-01', end: '2026-09-30' });
+    expect(r.range).toMatchObject({ granularity: 'day', prevStart: '2026-08-02', prevEnd: '2026-08-31' });
+    expect(r.cards.friendsAdded).toEqual({ value: 2, prev: 2 });
+    expect(r.cards.members).toEqual({ value: 5, prev: 4 }); // 10/1 0:00 と 9/1 0:00
+    expect(r.cards.newPaid).toEqual({ value: 1, prev: 0 });
+    const d10 = r.buckets.find((b) => b.t === '2026-09-10');
+    expect(d10).toMatchObject({ newPaid: 1, members: 5 }); // cus1 の試用が 9/10 10:00 に終わる
+    expect(r.buckets.find((b) => b.t === '2026-09-09')).toMatchObject({ members: 4 });
+  });
+
+  test('週ごと（月曜はじまり・端は範囲で切る）', async () => {
+    const sqlite = setupDb();
+    seed(sqlite);
+    // 8/5（水）〜10/8 の 65 日 → 週ごと
+    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', { start: '2026-08-05', end: '2026-10-08' });
+    expect(r.range.granularity).toBe('week');
+    expect(r.buckets[0]).toMatchObject({ t: '2026-08-05', start: '2026-08-05', end: '2026-08-09' });
+    expect(r.buckets[1]).toMatchObject({ t: '2026-08-10', end: '2026-08-16' });
+    expect(r.buckets[r.buckets.length - 1]).toMatchObject({ t: '2026-10-05', end: '2026-10-08' });
+    expect(r.buckets.reduce((a, b) => a + b.friendsAdded, 0)).toBe(4); // f1（8/3）は範囲外
+    expect(r.buckets.find((b) => b.t === '2026-09-07')).toMatchObject({ newPaid: 1 });
+  });
+
+  test('全期間はデータのある最初の日（友だち・Stripe の古い方）から。前の期間は無い', async () => {
+    const sqlite = setupDb();
+    seed(sqlite);
+    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', { start: 'all', end: '2026-10-08' });
+    expect(r.range).toMatchObject({ start: '2025-03-01', end: '2026-10-08', granularity: 'month', all: true, prevStart: null, prevEnd: null, dataStart: '2025-03-01' });
+    expect(r.buckets[0].t).toBe('2025-03');
+    expect(r.cards.friendsAdded).toEqual({ value: 8, prev: null });
+    expect(r.cards.members).toEqual({ value: 4, prev: null });
+  });
+
   test('流入経路ごとの合計（検証用アカウントは入らない）', async () => {
     const sqlite = setupDb();
     seed(sqlite);
-    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', '2026-01');
+    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', { start: '2026-01-01', end: '2026-10-08' });
     expect(r.routeDetail).toEqual(
       expect.arrayContaining([
         { route: '広告_Google検索', group: '広告', added: 1, paid: 1 },
@@ -182,8 +222,14 @@ describe('月次ダッシュボード（TB-1189）', () => {
   test('日付のずらし', () => {
     expect(addMonths('2026-01', -1)).toBe('2025-12');
     expect(addMonths('2026-12', 1)).toBe('2027-01');
-    expect(oneMonthBefore('2026-10-31T10:00:00')).toBe('2026-09-30T10:00:00');
-    expect(oneMonthBefore('2026-03-08T09:00:00')).toBe('2026-02-08T09:00:00');
+    expect(addDays('2026-03-01', -1)).toBe('2026-02-28');
+    expect(granularityOf('2026-10-01', '2026-10-31')).toBe('day');
+    expect(granularityOf('2026-04-09', '2026-10-08')).toBe('week'); // 過去 6 か月
+    expect(granularityOf('2025-10-09', '2026-10-08')).toBe('month');
+    expect(bucketsOf('2026-09-29', '2026-10-02', 'month').map((b) => [b.t, b.start, b.end])).toEqual([
+      ['2026-09', '2026-09-29', '2026-09-30'],
+      ['2026-10', '2026-10-01', '2026-10-02'],
+    ]);
     expect(routeGroupOf('org_x', false)).toBe('運用（SEO・SNS）');
     expect(routeGroupOf('', false)).toBe('経路なし');
     expect(routeGroupOf('ad_meta', true)).toBe('紹介');
