@@ -241,6 +241,14 @@ describe('POST /api/ext/v1/key-code-set', () => {
     expect(await res.json()).toMatchObject({ success: false, error: 'キーコードが更新されました' });
   });
 
+  it('見つからないが発行履歴に置き換え済みとして残っている → メルカリURLなしでもキーコードが更新されました', async () => {
+    const { db, statements } = makeDb(customerRouter(null, (sql) => (/FROM furim_key_code_history/.test(sql) ? { first: { line_user_id: U2 } } : undefined)));
+    const res = await call(envWith(db), 'key-code-set', { keyCode: 'old' });
+    expect(await res.json()).toMatchObject({ success: false, error: 'キーコードが更新されました' });
+    const err = statements.find((s) => /INSERT INTO furim_ext_errors/.test(s.sql));
+    expect(err?.args).toContain(U2);
+  });
+
   it('期限切れはプラン名で文言を出し分ける', async () => {
     const cases: Array<[string | null, string]> = [
       ['キャンセル済み(PBプラン)', 'プランキャンセル済み'],

@@ -90,7 +90,7 @@ describe('POST /api/furim/test-reset（Capsec #257）', () => {
     expect(friendsIdx).toBeGreaterThan(dels.findIndex(([t]) => t === 'affiliates'));
 
     const byLine = dels.filter(([, w]) => w === 'line_user_id = ?').map(([t]) => t);
-    for (const t of ['furim_customers', 'furim_sync_diffs', 'furim_feature_flags', 'furim_survey_answers', 'furim_ticket_ledger', 'furim_payments', 'furim_cancellations', 'furim_coupon_applications', 'furim_execution_logs', 'furim_ext_errors', 'furim_manual_copy_logs', 'furim_shop_research_logs', 'furim_auto_copy_logs']) {
+    for (const t of ['furim_customers', 'furim_sync_diffs', 'furim_feature_flags', 'furim_survey_answers', 'furim_ticket_ledger', 'furim_payments', 'furim_cancellations', 'furim_coupon_applications', 'furim_execution_logs', 'furim_ext_errors', 'furim_manual_copy_logs', 'furim_shop_research_logs', 'furim_auto_copy_logs', 'furim_key_code_history']) {
       expect(byLine, t).toContain(t);
     }
     const freeAccounts = dels.find(([t]) => t === 'furim_free_accounts')!;

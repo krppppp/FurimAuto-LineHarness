@@ -11,6 +11,7 @@ import {
   loadCustomerByKeyCode,
   recordExtError,
 } from '../furim/ext-auth.js';
+import { findOwnerOfReplacedKeyCode } from '../furim/key-code-history.js';
 
 /**
  * Chrome 拡張 → Worker の認証・ログ API（Capsec #245・段階3）。
@@ -105,13 +106,15 @@ mount('key-code-set', async (c, p, client) => {
     return c.json({ success: false, error, errorMessage: keyCodeErrorMessage(error, { currentMercariUrl, mercariAccountUrl: input.mercariAccountUrl }), keyCode: null, expiredDate: null });
   };
 
-  let { bundle, fromCache } = await loadCustomerByKeyCode(db, kv, keyCode);
-  if (!bundle) {
-    // 旧キーコードのまま（プラン変更で刷新済み）か、単なる無効かをメルカリURLで見分ける
-    const owner = input.mercariAccountUrl ? await findLineUserIdByMercariUrl(db, input.mercariAccountUrl) : null;
+  // 旧キーコードのまま（プラン変更で刷新済み）か、単なる無効かを発行履歴（TB-1246）→ メルカリURLの順で見分ける
+  const notFound = async () => {
+    const owner = (await findOwnerOfReplacedKeyCode(db, keyCode)) ?? (input.mercariAccountUrl ? await findLineUserIdByMercariUrl(db, input.mercariAccountUrl) : null);
     if (owner) return fail(KEY_CODE_ERROR.KEY_CODE_RENEWED, null, owner);
     return fail(KEY_CODE_ERROR.NOT_FOUND, null, null);
-  }
+  };
+
+  let { bundle, fromCache } = await loadCustomerByKeyCode(db, kv, keyCode);
+  if (!bundle) return notFound();
 
   const evaluate = async (b: NonNullable<typeof bundle>) => {
     const other = input.mercariAccountUrl ? await findLineUserIdByMercariUrl(db, input.mercariAccountUrl, b.customer.line_user_id) : null;
@@ -123,7 +126,7 @@ mount('key-code-set', async (c, p, client) => {
     const fresh = await loadCustomerByKeyCode(db, kv, keyCode, { fresh: true });
     bundle = fresh.bundle;
     fromCache = false;
-    if (!bundle) return fail(KEY_CODE_ERROR.NOT_FOUND, null, null);
+    if (!bundle) return notFound();
     outcome = await evaluate(bundle);
   }
   if (!outcome.ok) return fail(outcome.error, outcome.currentMercariUrl, bundle.customer.line_user_id);
