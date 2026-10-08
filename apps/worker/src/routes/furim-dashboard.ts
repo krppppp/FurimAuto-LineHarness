@@ -477,12 +477,13 @@ furimDashboard.get('/api/furim/dashboard', async (c) => {
 
 // GET /api/furim/dashboard/monthly?from=YYYY-MM — 月次ダッシュボード（TB-1189）。省略時は今年の 1 月から
 furimDashboard.get('/api/furim/dashboard/monthly', async (c) => {
-  const { buildMonthlyDashboard } = await import('../furim/monthly-dashboard.js');
+  const { buildMonthlyDashboard, fetchStripeSubscriptions } = await import('../furim/monthly-dashboard.js');
   const now = jstNow();
   const thisMonth = now.slice(0, 7);
   const q = c.req.query('from') ?? '';
   const from = /^\d{4}-(0[1-9]|1[0-2])$/.test(q) && q >= '2023-01' && q <= thisMonth ? q : `${now.slice(0, 4)}-01`;
-  return c.json({ success: true, ...(await buildMonthlyDashboard(c.env.DB, now, from)) });
+  const subs = await fetchStripeSubscriptions(c.env.STRIPE_SECRET_KEY ?? '');
+  return c.json({ success: true, ...(await buildMonthlyDashboard(c.env.DB, subs, now, from)) });
 });
 
 // POST /api/furim/dashboard/anomalies/ack —異常を「確認済み」にする（Capsec #289）。

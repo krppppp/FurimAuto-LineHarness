@@ -1,6 +1,7 @@
 // 月次ダッシュボード（TB-1189）。今年 1 月〜今月を月ごとに、友だち追加・ブロック・月額会員・MRR・新規加入・解約・
 // 友だち追加月ごとのファネル（試用開始・有料化）・流入経路別・セグメント別を出す。読み取りだけ。
 // 行数が少ない（友だち・請求とも数千）ので、生の行を読んで JS で数える。定義を 1 か所に置いてテストで固めるため。
+// 月額会員・新規加入・解約は Stripe のサブスク一覧で数える（くろさんが見る Stripe の画面と合わせる。TB-1192）。
 import { EXCLUDED_LINE_IDS, TEST_LINE_IDS, segmentOf } from './segments.js';
 
 const EXCLUDED: ReadonlySet<string> = new Set([...EXCLUDED_LINE_IDS, ...TEST_LINE_IDS]);
@@ -54,7 +55,11 @@ export type MonthlyDashboard = {
 type FriendRow = { id: string; line_user_id: string | null; created_at: string; ref_code: string | null; is_following: number };
 type CustomerRow = Parameters<typeof segmentOf>[0] & { line_user_id: string };
 type PaymentRow = { line_user_id: string | null; subscription_id: string | null; billing_reason: string | null; price_excl_tax: number | null; paid_at: string };
-type CancelRow = { line_user_id: string | null; subscription_id: string | null; canceled_at: string };
+type InvoiceRow = { subscription_id: string; price_excl_tax: number | null; paid_at: string };
+
+/** Stripe のサブスク（一覧 API の読み取り）。月額会員・MRR・新規加入・解約は Stripe を正にする（TB-1192） */
+export type StripeSub = { id: string; customer: string; status: string; start_date: number; trial_end: number | null; ended_at: number | null };
+type Span = { sub: string; customer: string; from: string; to: string };
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -95,36 +100,60 @@ export function routeGroupOf(refCode: string | null, isReferral: boolean): Route
 }
 
 const SUBSCRIPTION_REASONS = new Set(['subscription_create', 'subscription_cycle', 'subscription_update']);
-const RECURRING_REASONS = new Set(['subscription_create', 'subscription_cycle']);
 const SWITCH_WINDOW_MS = 7 * 86400_000;
 const ms = (s19: string) => Date.parse(`${s19}+09:00`);
+const jstOf = (unix: number) => new Date((unix + 9 * 3600) * 1000).toISOString().slice(0, 19);
+
+/** Stripe のサブスク一覧を全件読む（status=all。書き込みはしない） */
+export async function fetchStripeSubscriptions(secretKey: string): Promise<StripeSub[]> {
+  const subs: StripeSub[] = [];
+  let after = '';
+  for (;;) {
+    const res = await fetch(`https://api.stripe.com/v1/subscriptions?status=all&limit=100${after ? `&starting_after=${after}` : ''}`, {
+      headers: { Authorization: `Bearer ${secretKey}` },
+    });
+    if (!res.ok) throw new Error(`Stripe subscriptions ${res.status}`);
+    const page = (await res.json()) as { data: StripeSub[]; has_more: boolean };
+    subs.push(...page.data);
+    if (!page.has_more || page.data.length === 0) return subs;
+    after = page.data[page.data.length - 1].id;
+  }
+}
 
 /**
- * 月額会員と MRR（区間 [start, end) に 0 円でない定期の請求があった人）。
- * 月額なので、月内に払った人は月末時点で払った期間の中にいる。今月は「いまから 1 か月前〜いま」で数える
+ * サブスクごとの「有料で続いていた期間」[from, to)。試用の間は入れない。
+ * Stripe の画面の有効な定期購読者（active・past_due）に合わせる。一度も有料にならなかったもの（incomplete・試用中の解約）と unpaid・paused は入らない
  */
-function membersIn(payments: PaymentRow[], start: string, end: string): { members: number; mrr: number } {
-  const people = new Set<string>();
-  const latestBySub = new Map<string, PaymentRow>();
-  for (const p of payments) {
-    const at = sec(p.paid_at);
-    if (at < start || at >= end) continue;
-    people.add(p.line_user_id ?? '');
-    if (!RECURRING_REASONS.has(p.billing_reason ?? '')) continue;
-    const key = p.subscription_id ?? `${p.line_user_id}`;
-    const cur = latestBySub.get(key);
-    if (!cur || sec(cur.paid_at) < at) latestBySub.set(key, p);
+export function paidSpans(subs: StripeSub[]): Span[] {
+  const spans: Span[] = [];
+  for (const s of subs) {
+    if (!['active', 'past_due', 'trialing', 'canceled'].includes(s.status)) continue;
+    const from = jstOf(Math.max(s.start_date, s.trial_end ?? 0));
+    const to = s.ended_at ? jstOf(s.ended_at) : '9999';
+    if (from < to) spans.push({ sub: s.id, customer: s.customer, from, to });
   }
+  return spans;
+}
+
+/** 時点 at の月額会員（Stripe の顧客単位）と MRR（その会員のサブスクごとの、at までの直近の定期請求の割引後・税抜の合計） */
+function membersAt(spans: Span[], invoicesBySub: Map<string, InvoiceRow[]>, at: string): { members: number; mrr: number } {
+  const people = new Set<string>();
   let mrr = 0;
-  for (const p of latestBySub.values()) mrr += Number(p.price_excl_tax ?? 0);
+  for (const s of spans) {
+    if (s.from > at || s.to <= at) continue;
+    people.add(s.customer);
+    let latest: InvoiceRow | undefined;
+    for (const i of invoicesBySub.get(s.sub) ?? []) if (sec(i.paid_at) <= at && (!latest || sec(latest.paid_at) < sec(i.paid_at))) latest = i;
+    mrr += Number(latest?.price_excl_tax ?? 0);
+  }
   return { members: people.size, mrr };
 }
 
-export async function buildMonthlyDashboard(db: D1Database, nowIso: string, fromMonth: string): Promise<MonthlyDashboard> {
+export async function buildMonthlyDashboard(db: D1Database, stripeSubs: StripeSub[], nowIso: string, fromMonth: string): Promise<MonthlyDashboard> {
   const now19 = sec(nowIso);
   const toMonth = now19.slice(0, 7);
 
-  const [friendsRes, customersRes, paymentsRes, cancelsRes, unfollowRes, routesRes, affLinksRes, referralsRes] = await Promise.all([
+  const [friendsRes, customersRes, paymentsRes, invoicesRes, unfollowRes, routesRes, affLinksRes, referralsRes] = await Promise.all([
     db.prepare('SELECT id, line_user_id, created_at, ref_code, is_following FROM friends').all<FriendRow>(),
     db
       .prepare(
@@ -137,7 +166,12 @@ export async function buildMonthlyDashboard(db: D1Database, nowIso: string, from
          WHERE line_user_id IS NOT NULL AND actual_paid_amount > 0 AND billing_reason LIKE 'subscription_%'`,
       )
       .all<PaymentRow>(),
-    db.prepare('SELECT line_user_id, subscription_id, canceled_at FROM furim_cancellations').all<CancelRow>(),
+    db
+      .prepare(
+        `SELECT subscription_id, price_excl_tax, paid_at FROM furim_payments
+         WHERE subscription_id IS NOT NULL AND billing_reason IN ('subscription_create', 'subscription_cycle')`,
+      )
+      .all<InvoiceRow>(),
     db
       .prepare(
         `SELECT l.friend_id, l.created_at FROM automation_logs l JOIN automations a ON a.id = l.automation_id
@@ -155,7 +189,13 @@ export async function buildMonthlyDashboard(db: D1Database, nowIso: string, from
   for (const f of friends) if (f.line_user_id) friendByLine.set(f.line_user_id, f);
   const customers = new Map((customersRes.results ?? []).map((c) => [c.line_user_id, c]));
   const payments = (paymentsRes.results ?? []).filter((p) => !isExcluded(p.line_user_id) && SUBSCRIPTION_REASONS.has(p.billing_reason ?? ''));
-  const cancels = (cancelsRes.results ?? []).filter((c) => !isExcluded(c.line_user_id));
+  const invoicesBySub = new Map<string, InvoiceRow[]>();
+  for (const i of invoicesRes.results ?? []) {
+    const list = invoicesBySub.get(i.subscription_id) ?? [];
+    list.push(i);
+    invoicesBySub.set(i.subscription_id, list);
+  }
+  const spans = paidSpans(stripeSubs).filter((s) => s.from <= now19); // 試用中（有料の期間がまだ先）は入れない
   const unfollows = (unfollowRes.results ?? []).filter((u) => u.friend_id && friendById.has(u.friend_id));
   const routeName = new Map((routesRes.results ?? []).map((r) => [r.ref_code, r.name]));
   const affiliateCodes = new Set((affLinksRes.results ?? []).map((r) => r.ref_code));
@@ -170,7 +210,7 @@ export async function buildMonthlyDashboard(db: D1Database, nowIso: string, from
     return { group, label };
   };
 
-  // 初めて 0 円でない定期の請求があった日時（新規加入・有料化の判定）
+  // 初めて 0 円でない定期の請求があった日時（友だち追加月ごとの有料化・流入経路別の有料化の判定）
   const firstPaid = new Map<string, string>();
   for (const p of payments) {
     const id = p.line_user_id as string;
@@ -179,21 +219,22 @@ export async function buildMonthlyDashboard(db: D1Database, nowIso: string, from
     if (!cur || at < cur) firstPaid.set(id, at);
   }
 
-  // 解約: サブスクが終わった人。前後 7 日に別のサブスクで請求があった人はプランの切り替えなので数えない
-  const paymentsByLine = new Map<string, PaymentRow[]>();
-  for (const p of payments) {
-    const list = paymentsByLine.get(p.line_user_id as string) ?? [];
-    list.push(p);
-    paymentsByLine.set(p.line_user_id as string, list);
+  // 新規加入: Stripe の顧客が初めて有料の期間に入った日時
+  const firstMember = new Map<string, string>();
+  for (const s of spans) {
+    const cur = firstMember.get(s.customer);
+    if (!cur || s.from < cur) firstMember.set(s.customer, s.from);
   }
-  const churnEvents: Array<{ line: string; at: string }> = [];
-  for (const c of cancels) {
-    if (!c.line_user_id) continue;
-    const at = sec(c.canceled_at);
-    const switched = (paymentsByLine.get(c.line_user_id) ?? []).some(
-      (p) => (p.subscription_id ?? '') !== (c.subscription_id ?? '#') && Math.abs(ms(sec(p.paid_at)) - ms(at)) <= SWITCH_WINDOW_MS,
+  const newPaidIn = (start: string, end: string) => [...firstMember.values()].filter((at) => at >= start && at < end).length;
+  // 解約: 有料の期間が終わった顧客。前後 7 日に同じ顧客の別のサブスクが有料の期間にあればプランの切り替えなので数えない
+  const churnEvents: Array<{ customer: string; at: string }> = [];
+  for (const s of spans) {
+    if (s.to === '9999') continue;
+    const end = ms(s.to);
+    const switched = spans.some(
+      (o) => o.customer === s.customer && o.sub !== s.sub && ms(o.from) <= end + SWITCH_WINDOW_MS && (o.to === '9999' || ms(o.to) >= end - SWITCH_WINDOW_MS),
     );
-    if (!switched) churnEvents.push({ line: c.line_user_id, at });
+    if (!switched) churnEvents.push({ customer: s.customer, at: s.to });
   }
 
   const blockedSince = unfollows.reduce<string | null>((min, u) => {
@@ -215,7 +256,7 @@ export async function buildMonthlyDashboard(db: D1Database, nowIso: string, from
   for (let t = fromMonth; t <= toMonth; t = addMonths(t, 1)) {
     const start = `${t}-01T00:00:00`;
     const end = t === toMonth ? '9999' : `${addMonths(t, 1)}-01T00:00:00`;
-    const memberStart = t === toMonth ? oneMonthBefore(now19) : start;
+    const memberAt = t === toMonth ? now19 : `${addMonths(t, 1)}-01T00:00:00`;
 
     const cohort = friends.filter((f) => monthOf(f.created_at) === t);
     const row: MonthRow = {
@@ -223,9 +264,9 @@ export async function buildMonthlyDashboard(db: D1Database, nowIso: string, from
       friendsAdded: cohort.length,
       blocked: null,
       net: null,
-      ...membersIn(payments, memberStart, end),
-      newPaid: [...firstPaid.values()].filter((at) => at >= start && at < end).length,
-      churned: countDistinct(churnEvents, (c) => c.line, (c) => c.at, start, end),
+      ...membersAt(spans, invoicesBySub, memberAt),
+      newPaid: newPaidIn(start, end),
+      churned: countDistinct(churnEvents, (c) => c.customer, (c) => c.at, start, end),
       trialStarted: 0,
       cohortPaid: 0,
       routesAdded: emptyRoutes(),
@@ -277,7 +318,7 @@ export async function buildMonthlyDashboard(db: D1Database, nowIso: string, from
     blockedSinceMonth && addMonths(toMonth, -1) >= blockedSinceMonth
       ? countDistinct(unfollows, (u) => u.friend_id as string, (u) => sec(u.created_at), prevMonthStart, prevCut)
       : null;
-  const prevMembers = membersIn(payments, prevMonthStart, thisMonthStart);
+  const prevMembers = membersAt(spans, invoicesBySub, thisMonthStart);
 
   return {
     range: { from: fromMonth, to: toMonth, asOf: now19, blockedSince },
@@ -287,8 +328,8 @@ export async function buildMonthlyDashboard(db: D1Database, nowIso: string, from
       net: { value: cur.net, prev: blockedPrev === null ? null : addedPrev - blockedPrev },
       members: { value: cur.members, prev: prev ? prevMembers.members : null },
       mrr: { value: cur.mrr, prev: prev ? prevMembers.mrr : null },
-      newPaid: { value: cur.newPaid, prev: [...firstPaid.values()].filter((at) => at >= prevMonthStart && at < prevCut).length },
-      churned: { value: cur.churned, prev: countDistinct(churnEvents, (c) => c.line, (c) => c.at, prevMonthStart, prevCut) },
+      newPaid: { value: cur.newPaid, prev: newPaidIn(prevMonthStart, prevCut) },
+      churned: { value: cur.churned, prev: countDistinct(churnEvents, (c) => c.customer, (c) => c.at, prevMonthStart, prevCut) },
     },
     routeDetail: [...detail.values()].sort((a, b) => b.added - a.added || b.paid - a.paid),
   };

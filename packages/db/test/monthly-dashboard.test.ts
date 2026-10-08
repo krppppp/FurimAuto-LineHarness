@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import Database from 'better-sqlite3';
-import { addMonths, buildMonthlyDashboard, oneMonthBefore, routeGroupOf } from '../../../apps/worker/src/furim/monthly-dashboard.js';
+import { addMonths, buildMonthlyDashboard, oneMonthBefore, routeGroupOf, type StripeSub } from '../../../apps/worker/src/furim/monthly-dashboard.js';
 
 const TEST_LINE = 'Ue4941a030cb2ec8758095fb0fffff344';
 
@@ -33,6 +33,29 @@ function asD1(sqlite: Database.Database): D1Database {
   } as unknown as D1Database;
 }
 
+const unix = (jst: string) => Date.parse(`${jst}+09:00`) / 1000;
+const sub = (id: string, customer: string, status: string, start: string, trialEnd: string | null, ended: string | null): StripeSub => ({
+  id,
+  customer,
+  status,
+  start_date: unix(start),
+  trial_end: trialEnd ? unix(trialEnd) : null,
+  ended_at: ended ? unix(ended) : null,
+});
+
+// Stripe のサブスク一覧（会員数・新規加入・解約はこちらで数える）
+const SUBS: StripeSub[] = [
+  sub('sub1', 'cus1', 'active', '2026-08-10T10:00:00', '2026-09-10T10:00:00', null), // 試用 1 か月のあと有料
+  sub('sub6', 'cus6', 'active', '2025-03-01T09:00:00', null, null),
+  sub('sub7', 'cus7', 'canceled', '2025-04-15T08:00:00', null, '2026-10-05T08:00:00'),
+  sub('sub8a', 'cus8', 'canceled', '2025-05-20T08:00:00', null, '2026-09-20T08:05:00'), // 同じ日に sub8b へ切り替え
+  sub('sub8b', 'cus8', 'active', '2026-09-20T08:00:00', null, null),
+  sub('sub9', 'cus9', 'past_due', '2026-07-01T09:00:00', null, null), // 支払い遅れも Stripe の画面では有効
+  sub('sub10', 'cus10', 'trialing', '2026-10-03T09:00:00', '2026-10-10T09:00:00', null), // 試用中は数えない
+  sub('sub11', 'cus11', 'incomplete_expired', '2026-09-01T09:00:00', null, null), // 初回の支払いが通らなかった
+  sub('sub12', 'cus12', 'canceled', '2026-09-02T09:00:00', '2026-09-09T09:00:00', '2026-09-05T09:00:00'), // 試用中に解約
+];
+
 function seed(db: Database.Database) {
   const friend = db.prepare('INSERT INTO friends VALUES (?, ?, ?, ?, ?)');
   friend.run('f1', 'U1', '2026-08-03T10:00:00.000+09:00', 'ad_google_search', 1); // 8 月追加 → 9 月に有料
@@ -64,6 +87,7 @@ function seed(db: Database.Database) {
   pay.run('u8-9u', 'U8', 'sub8b', 'subscription_update', 1000, 1100, '2026-09-25T08:00:00+09:00');
   pay.run('ut', TEST_LINE, 'subt', 'subscription_create', 8980, 9878, '2026-09-11T08:00:00+09:00');
   pay.run('tk', 'U4', null, 'manual', 980, 1078, '2026-10-01T08:00:00+09:00'); // チケットは定期ではない
+  pay.run('u9', null, 'sub9', 'subscription_cycle', 2980, 3278, '2026-09-25T08:00:00+09:00'); // LINE と紐づいていない請求も MRR には入れる
 
   const cancel = db.prepare('INSERT INTO furim_cancellations VALUES (?, ?, ?, ?)');
   cancel.run('c7', 'U7', 'sub7', '2026-10-05T08:00:00.000+09:00'); // 10 月にサブスク終了
@@ -84,7 +108,7 @@ describe('月次ダッシュボード（TB-1189）', () => {
   test('月ごとの友だち追加・ブロック・会員・MRR・新規加入・解約・ファネル', async () => {
     const sqlite = setupDb();
     seed(sqlite);
-    const r = await buildMonthlyDashboard(asD1(sqlite), '2026-10-08T09:00:00.000+09:00', '2026-07');
+    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', '2026-07');
 
     expect(r.range).toMatchObject({ from: '2026-07', to: '2026-10', blockedSince: '2026-08-25T10:00:00' });
     const [jul, aug, sep, oct] = r.months;
@@ -96,17 +120,20 @@ describe('月次ダッシュボード（TB-1189）', () => {
     expect(sep).toMatchObject({ friendsAdded: 2, blocked: 0, net: 2 });
     expect(oct).toMatchObject({ friendsAdded: 1, blocked: 1, net: 0 });
 
-    // 会員: 月内に 0 円でない定期の請求があった人。MRR はサブスクごとの直近の定期請求（税抜）
-    expect(aug).toMatchObject({ members: 3, mrr: 3980 + 5980 + 1980 });
-    expect(sep).toMatchObject({ members: 4, mrr: 8980 + 3980 + 5980 + 5980 });
-    // 今月は「いまから 1 か月前〜いま」（9/8 09:00 以降）。U7 は 9/15、U8 は 9/20 に払っているので入る
-    expect(oct).toMatchObject({ members: 4, mrr: 8980 + 3980 + 5980 + 5980 });
+    // 会員: 月末時点で Stripe のサブスクが有料の期間（active・past_due）にある顧客。試用中・incomplete・試用中の解約は入らない
+    // MRR: その会員のサブスクごとの、月末までの直近の定期請求（create・cycle。割引後・税抜）。請求が無ければ 0
+    expect(jul).toMatchObject({ members: 4, mrr: 0 }); // 4 人とも 7 月末までの請求が D1 に無い（sub6 の初回は 8/1）
+    expect(aug).toMatchObject({ members: 4, mrr: 3980 + 5980 + 1980 + 0 }); // sub9 の請求は 9/25
+    expect(sep).toMatchObject({ members: 5, mrr: 8980 + 3980 + 5980 + 5980 + 2980 });
+    // 今月はいまの時点。sub7 は 10/5 に終わったので入らない
+    expect(oct).toMatchObject({ members: 4, mrr: 8980 + 3980 + 5980 + 2980 });
 
-    // 新規加入: 初めての 0 円でない定期の請求。U1 は 0 円の 8 月ではなく 9 月
-    expect(aug.newPaid).toBe(3); // U6・U7・U8（データ上の初回が 8 月）
+    // 新規加入: Stripe の顧客が初めて有料の期間に入った月。cus1 は試用が終わった 9 月
+    expect(jul.newPaid).toBe(1); // cus9
+    expect(aug.newPaid).toBe(0);
     expect(sep.newPaid).toBe(1);
     expect(oct.newPaid).toBe(0);
-    // 解約: U7 は 10 月。U8 は前後 7 日に別サブスクの請求があるので切り替えとして数えない
+    // 解約: cus7 は 10 月。cus8 は同じ日に別のサブスクが始まっているので切り替えとして数えない。cus12 は有料にならずに終わった
     expect(sep.churned).toBe(0);
     expect(oct.churned).toBe(1);
 
@@ -127,9 +154,10 @@ describe('月次ダッシュボード（TB-1189）', () => {
   test('カードは流れを前月の同じ日時まで、在庫を前月末と比べる', async () => {
     const sqlite = setupDb();
     seed(sqlite);
-    const r = await buildMonthlyDashboard(asD1(sqlite), '2026-10-08T09:00:00.000+09:00', '2026-01');
+    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', '2026-01');
     expect(r.cards.friendsAdded).toEqual({ value: 1, prev: 1 }); // 9/1〜9/8 09:00 は U3 だけ
-    expect(r.cards.members).toEqual({ value: 4, prev: 4 });
+    expect(r.cards.members).toEqual({ value: 4, prev: 5 });
+    expect(r.cards.mrr).toEqual({ value: 8980 + 3980 + 5980 + 2980, prev: 8980 + 3980 + 5980 + 5980 + 2980 });
     expect(r.cards.newPaid).toEqual({ value: 0, prev: 0 });
     expect(r.cards.churned).toEqual({ value: 1, prev: 0 });
     expect(r.cards.net).toEqual({ value: 0, prev: 1 });
@@ -138,7 +166,7 @@ describe('月次ダッシュボード（TB-1189）', () => {
   test('流入経路ごとの合計（検証用アカウントは入らない）', async () => {
     const sqlite = setupDb();
     seed(sqlite);
-    const r = await buildMonthlyDashboard(asD1(sqlite), '2026-10-08T09:00:00.000+09:00', '2026-01');
+    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', '2026-01');
     expect(r.routeDetail).toEqual(
       expect.arrayContaining([
         { route: '広告_Google検索', group: '広告', added: 1, paid: 1 },

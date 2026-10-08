@@ -272,7 +272,7 @@ export default function MonthlyDashboardPage() {
           </Section>
 
           <div>
-            <Section title="月額会員数（月末）" note="その月に 0 円でない定期の請求があった人。今月は「1 か月前〜いま」に請求があった人">
+            <Section title="月額会員数（月末）" note="月末時点で Stripe のサブスクが有効（active・支払い遅れの past_due。試用中は入らない）な顧客。Stripe の画面と同じ数で、社内アカウントも入る。今月はいまの時点">
               <ChartOrTable
                 asTable={asTable}
                 points={base}
@@ -281,7 +281,7 @@ export default function MonthlyDashboardPage() {
                 height={220}
               />
             </Section>
-            <Section title="MRR（税抜）" note="月末時点の会員の、サブスクごとの直近の定期請求（割引後・税抜）の合計">
+            <Section title="MRR（税抜）" note="月末時点の会員の、サブスクごとの直近の定期請求（割引後・税抜）の合計。請求の額をそのまま使うので、初月の割引や月の途中のプラン変更の差額が入った請求はその額で入る">
               <ChartOrTable
                 asTable={asTable}
                 points={base}
@@ -292,7 +292,7 @@ export default function MonthlyDashboardPage() {
             </Section>
           </div>
 
-          <Section title="新規加入と解約" note="新規加入は初めて 0 円でない定期の請求があった人。解約はサブスクが終わった人（前後 7 日に別のサブスクで請求があったプランの切り替えは除く）">
+          <Section title="新規加入と解約" note="新規加入は Stripe の顧客が初めて有効になった月（試用のあとは試用が終わった月）。解約はサブスクが終わった顧客（前後 7 日に同じ顧客の別のサブスクが有効ならプランの切り替えとして除く）">
             <ChartOrTable
               asTable={asTable}
               points={base}
