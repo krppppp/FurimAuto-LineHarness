@@ -6,7 +6,7 @@ import { formatNumber, formatYen } from '@/components/charts/stat-card'
 import TimeSeriesChart, { labelOf, type ChartPoint, type ChartSeries } from '@/components/charts/time-series-chart'
 
 /**
- * 月次ダッシュボード（TB-1189）。今年 1 月〜今月を月ごとに出す。数字はすべて D1（GET /api/furim/dashboard/monthly）。
+ * 月次ダッシュボード（TB-1189）。今年 1 月〜今月を月ごとに出す（GET /api/furim/dashboard/monthly）。月額会員・新規加入・解約は Stripe、ほかは D1（TB-1192）。
  * 定義は apps/worker/src/furim/monthly-dashboard.ts。画面の注記と合わせて直す。
  */
 
@@ -215,7 +215,7 @@ export default function MonthlyDashboardPage() {
     <div>
       <Header
         title="月次ダッシュボード"
-        description={data ? `${labelOf('month', data.range.from, true)} 〜 ${labelOf('month', data.range.to, true)}（${asOf} 時点）・数字はすべて D1 から・社内と検証用の友だちは除く` : '数字はすべて D1 から'}
+        description={data ? `${labelOf('month', data.range.from, true)} 〜 ${labelOf('month', data.range.to, true)}（${asOf} 時点）・月額会員・新規加入・解約は Stripe、ほかは D1 から（友だちの数字は社内と検証用を除く）` : '月額会員・新規加入・解約は Stripe、ほかは D1 から'}
         action={
           <button
             type="button"
