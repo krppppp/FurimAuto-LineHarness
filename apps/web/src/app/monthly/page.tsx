@@ -45,6 +45,7 @@ type Monthly = {
     asOf: string
     dataStart: string
     blockedSince: string | null
+    blockedBeforeRecording?: { at: string; count: number }
   }
   buckets: Bucket[]
   cards: Record<'friendsAdded' | 'net' | 'members' | 'mrr' | 'newPaid' | 'churned', Card>
@@ -265,6 +266,10 @@ export default function MonthlyDashboardPage() {
   const routeColumns: Column[] = ROUTE_GROUPS.map((g) => ({ key: g, label: g }))
   const segmentSeries: ChartSeries[] = SEGMENT_KEYS.map((g) => ({ key: g, label: g, kind: 'bar', color: SEGMENT_COLORS[g] }))
   const blockedSince = data?.range.blockedSince ? data.range.blockedSince.slice(0, 10).replace(/-/g, '/') : null
+  const backlog = data?.range.blockedBeforeRecording
+  const backlogNote = backlog
+    ? `2026/6 のブロック数は載せ替え前の累計（記録が始まる前にブロックしていた ${formatNumber(backlog.count)} 人）をまとめて ${backlog.at.slice(5, 10).replace('-', '/')} に計上。`
+    : ''
   const asOf = data?.range.asOf ? data.range.asOf.slice(0, 16).replace('T', ' ') : ''
   const rg = data?.range
   const endsToday = !!rg && rg.end === rg.asOf.slice(0, 10)
@@ -326,7 +331,7 @@ export default function MonthlyDashboardPage() {
 
           <Section
             title="LINE 友だち追加とブロック"
-            note={`友だち追加は初めて友だちになった人（再追加は含まない）。ブロックは ${blockedSince ?? '—'} から記録があり、それより前の${unit}は「—」`}
+            note={`友だち追加は初めて友だちになった人（再追加は含まない）。ブロックは ${blockedSince ?? '—'} から記録がある。${backlogNote}それより前の${unit}は「—」`}
           >
             <ChartOrTable
               asTable={asTable}

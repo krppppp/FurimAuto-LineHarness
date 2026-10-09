@@ -17,6 +17,13 @@ export type RouteGroup = (typeof ROUTE_GROUPS)[number];
 export const SEGMENT_GROUPS = ['有料化', 'セグメント5〜8', 'セグメント4', 'セグメント3', 'セグメント2', 'セグメント1', 'ブロック', '対象外'] as const;
 export type SegmentGroup = (typeof SEGMENT_GROUPS)[number];
 
+/**
+ * ブロックの記録（2026/07/12〜）が始まる前にブロックしていた人。日付が分からないので 2026/6 の末にまとめて入れる（TB-1299）。
+ * 2026-10-09 の本番 D1 で、いまブロック中（is_following=0・社内と検証用を除く）222 人のうちブロックの記録が無い 156 人。
+ * いまブロック中 222 ＝ この 156 ＋ 記録のある 70 人のうちいまもブロック中の 66（残り 4 人は再追加）
+ */
+export const BLOCKED_BEFORE_RECORDING = { at: '2026-06-30T23:59:59', count: 156 } as const;
+
 export type Granularity = 'day' | 'week' | 'month';
 
 export type BucketRow = {
@@ -26,7 +33,7 @@ export type BucketRow = {
   start: string;
   end: string;
   friendsAdded: number;
-  /** ブロックの記録（ブロック時フローの実行ログ）が始まる前の区切りは null */
+  /** ブロックの記録（ブロック時フローの実行ログ）が始まる前の区切りは null。記録開始前のブロックは 2026/6 末に入る */
   blocked: number | null;
   net: number | null;
   members: number;
@@ -56,6 +63,7 @@ export type MonthlyDashboard = {
     /** データのある最初の日（友だち・Stripe の古い方） */
     dataStart: string;
     blockedSince: string | null;
+    blockedBeforeRecording: { at: string; count: number };
   };
   buckets: BucketRow[];
   /** 流れ（追加・加入・解約）は期間内の合計、在庫（会員・MRR）は期間末。prev はひとつ前の同じ長さの期間 */
@@ -307,6 +315,14 @@ export async function buildMonthlyDashboard(
     return s.size;
   };
 
+  const backlog = BLOCKED_BEFORE_RECORDING;
+  const hasBacklog = (from: string, to: string) => backlog.at >= from && backlog.at < to;
+  const blockedIn = (from: string, to: string) => {
+    const blockStart = blockedSince && blockedSince < backlog.at ? blockedSince : backlog.at;
+    if (blockStart >= to) return null;
+    return countDistinct(unfollows, (u) => u.friend_id as string, (u) => sec(u.created_at), from, to) + (hasBacklog(from, to) ? backlog.count : 0);
+  };
+
   const buckets: BucketRow[] = [];
   for (const b of bucketsOf(start, end, granularity)) {
     const bStart = `${b.start}T00:00:00`;
@@ -330,10 +346,8 @@ export async function buildMonthlyDashboard(
       routesPaid: emptyRoutes(),
       segments: emptySegments(),
     };
-    if (blockedSince && blockedSince < bEnd) {
-      row.blocked = countDistinct(unfollows, (u) => u.friend_id as string, (u) => sec(u.created_at), bStart, bEnd);
-      row.net = row.friendsAdded - row.blocked;
-    }
+    row.blocked = blockedIn(bStart, bEnd);
+    if (row.blocked !== null) row.net = row.friendsAdded - row.blocked;
 
     for (const f of cohort) {
       row.routesAdded[routeOf(f).group] += 1;
@@ -373,8 +387,6 @@ export async function buildMonthlyDashboard(
       const at = sec(f.created_at);
       return at >= from && at < to;
     }).length;
-  const blockedIn = (from: string, to: string) =>
-    blockedSince && blockedSince < to ? countDistinct(unfollows, (u) => u.friend_id as string, (u) => sec(u.created_at), from, to) : null;
   const churnedIn = (from: string, to: string) => countDistinct(churnEvents, (c) => c.customer, (c) => c.at, from, to);
   const flow = (f: (from: string, to: string) => number | null): CardMetric => ({ value: f(rangeStart, rangeCut), prev: all ? null : f(prevStart, prevCut) });
   const netIn = (from: string, to: string) => {
@@ -395,11 +407,13 @@ export async function buildMonthlyDashboard(
       asOf: now19,
       dataStart,
       blockedSince,
+      blockedBeforeRecording: { ...backlog },
     },
     buckets,
     cards: {
       friendsAdded: flow(addedIn),
-      net: flow(netIn),
+      // 6 月の計上分を片方の期間だけが含むときは比べない
+      net: { ...flow(netIn), ...(!all && hasBacklog(rangeStart, rangeCut) !== hasBacklog(prevStart, prevCut) ? { prev: null } : {}) },
       members: { value: cur.members, prev: prev?.members ?? null },
       mrr: { value: cur.mrr, prev: prev?.mrr ?? null },
       newPaid: flow(newPaidIn),

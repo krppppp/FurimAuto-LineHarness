@@ -1,6 +1,15 @@
 import { describe, expect, test } from 'vitest';
 import Database from 'better-sqlite3';
-import { addDays, addMonths, bucketsOf, buildMonthlyDashboard, granularityOf, routeGroupOf, type StripeSub } from '../../../apps/worker/src/furim/monthly-dashboard.js';
+import {
+  BLOCKED_BEFORE_RECORDING,
+  addDays,
+  addMonths,
+  bucketsOf,
+  buildMonthlyDashboard,
+  granularityOf,
+  routeGroupOf,
+  type StripeSub,
+} from '../../../apps/worker/src/furim/monthly-dashboard.js';
 
 const TEST_LINE = 'Ue4941a030cb2ec8758095fb0fffff344';
 
@@ -110,12 +119,20 @@ describe('月次ダッシュボード（TB-1189）', () => {
     seed(sqlite);
     const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', { start: '2026-01-01', end: '2026-10-08' });
 
-    expect(r.range).toMatchObject({ start: '2026-01-01', end: '2026-10-08', granularity: 'month', blockedSince: '2026-08-25T10:00:00' });
+    expect(r.range).toMatchObject({
+      start: '2026-01-01',
+      end: '2026-10-08',
+      granularity: 'month',
+      blockedSince: '2026-08-25T10:00:00',
+      blockedBeforeRecording: { at: '2026-06-30T23:59:59', count: 156 },
+    });
     expect(r.buckets.map((m) => m.t)).toEqual(['01', '02', '03', '04', '05', '06', '07', '08', '09', '10'].map((m) => `2026-${m}`));
     const [jul, aug, sep, oct] = r.buckets.slice(6);
 
-    // ブロックの記録が始まる前の月は null
-    expect(jul).toMatchObject({ friendsAdded: 0, blocked: null, net: null });
+    // 記録が始まる前にブロックしていた人は 6 月にまとめて入る。それより前の月は null
+    expect(r.buckets[4]).toMatchObject({ blocked: null, net: null });
+    expect(r.buckets[5]).toMatchObject({ friendsAdded: 0, blocked: BLOCKED_BEFORE_RECORDING.count, net: -BLOCKED_BEFORE_RECORDING.count });
+    expect(jul).toMatchObject({ friendsAdded: 0, blocked: 0, net: 0 });
     expect(aug).toMatchObject({ friendsAdded: 2, blocked: 1, net: 1 });
     expect(sep).toMatchObject({ friendsAdded: 2, blocked: 0, net: 2 });
     expect(oct).toMatchObject({ friendsAdded: 1, blocked: 1, net: 0 });
@@ -201,6 +218,24 @@ describe('月次ダッシュボード（TB-1189）', () => {
     expect(r.buckets[0].t).toBe('2025-03');
     expect(r.cards.friendsAdded).toEqual({ value: 8, prev: null });
     expect(r.cards.members).toEqual({ value: 4, prev: null });
+  });
+
+  test('記録開始前のブロックは 6/30 の 1 点に入り、それを片方だけ含む前の期間とは純増を比べない', async () => {
+    const sqlite = setupDb();
+    seed(sqlite);
+    const days = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', { start: '2026-06-29', end: '2026-07-01' });
+    expect(days.buckets.map((b) => [b.t, b.blocked])).toEqual([
+      ['2026-06-29', null],
+      ['2026-06-30', BLOCKED_BEFORE_RECORDING.count],
+      ['2026-07-01', 0],
+    ]);
+    expect(days.cards.net).toEqual({ value: -BLOCKED_BEFORE_RECORDING.count, prev: null }); // 前の 6/26〜6/28 は記録なし
+
+    const q3 = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', { start: '2026-07-01', end: '2026-09-30' });
+    expect(q3.cards.net).toEqual({ value: 4 - 1, prev: null }); // 前の期間（4/1〜6/30）は 6 月の計上分を含む
+
+    const all = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', { start: 'all', end: '2026-10-08' });
+    expect(all.buckets.reduce((a, b) => a + (b.blocked ?? 0), 0)).toBe(BLOCKED_BEFORE_RECORDING.count + 2);
   });
 
   test('流入経路ごとの合計（検証用アカウントは入らない）', async () => {
