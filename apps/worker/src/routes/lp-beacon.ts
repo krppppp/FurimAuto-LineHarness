@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { jstNow } from '@line-crm/db';
 import type { Env } from '../index.js';
 
@@ -178,5 +178,56 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
     return c.body(null, 204);
   }
 });
+
+/**
+ * /auth/line（auth_hit）と /r/:ref（gate_hit）に届いたことをサーバー側で lp_events に残す（TB-1417）。
+ * /r/ の gate_view はブラウザのビーコン頼みで、10/8 以降スマホの 5 セッションが 1 件も残さず
+ * 「届いていない」のか「ビーコンが落ちた」のかを分けられなかった。PC の QR ページはビーコンも無い。
+ * LP から来た（sid がある）ときだけ書く。page は gate_view と同じ /r/<ref> にそろえる。
+ * 転送を遅らせないよう waitUntil で書き、失敗しても転送は止めない。
+ */
+export function recordServerHop(
+  c: Context<Env>,
+  eventType: 'auth_hit' | 'gate_hit',
+  ref: string,
+): void {
+  const q = (k: string) => c.req.query(k) || '';
+  const sid = clampStr(q('sid'));
+  if (!sid || !ref || ref.startsWith('xh:')) return;
+  const ua = c.req.header('user-agent') || '';
+  const hasClickId = ['gclid', 'gbraid', 'wbraid', 'fbclid', 'twclid', 'ttclid'].some((k) => !!q(k)) ? 1 : 0;
+  let write: Promise<unknown>;
+  try {
+    write = c.env.DB.prepare(
+      `INSERT INTO lp_events
+       (session_id, page, event_type, ref, has_click_id, utm_campaign, utm_content, utm_term, is_mobile, referrer, created_at, detail)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        sid,
+        clampStr(`/r/${ref}`),
+        eventType,
+        clampStr(ref),
+        hasClickId,
+        clampStr(q('utm_campaign')),
+        clampStr(q('utm_content')),
+        clampStr(q('utm_term')),
+        /iphone|ipad|android|mobile/i.test(ua) ? 1 : 0,
+        clampStr(c.req.header('referer') || ''),
+        jstNow(),
+        clampDetail({ ua: ua.slice(0, 300) }),
+      )
+      .run()
+      .catch((err: unknown) => console.error(`[lp-server-hop] ${eventType} write failed:`, err));
+  } catch (err) {
+    console.error(`[lp-server-hop] ${eventType} write failed:`, err);
+    return;
+  }
+  try {
+    c.executionCtx.waitUntil(write);
+  } catch {
+    // executionCtx が無い実行環境では待たずに流す
+  }
+}
 
 export { lpBeacon };

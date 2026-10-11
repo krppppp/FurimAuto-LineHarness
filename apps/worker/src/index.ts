@@ -62,7 +62,7 @@ import { automations } from './routes/automations.js';
 import { richMenus } from './routes/rich-menus.js';
 import { trackedLinks } from './routes/tracked-links.js';
 import { entryRoutes } from './routes/entry-routes.js';
-import { lpBeacon } from './routes/lp-beacon.js';
+import { lpBeacon, recordServerHop } from './routes/lp-beacon.js';
 import { lpAnalytics } from './routes/lp-analytics.js';
 import { furim } from './routes/furim.js';
 import { furimCoupons } from './routes/furim-coupons.js';
@@ -316,6 +316,7 @@ app.get('/api/qr', async (c) => {
 // Stuck users opt into /r/:ref/help for Safari escape instructions.
 app.get('/r/:ref', async (c) => {
   const ref = c.req.param('ref');
+  recordServerHop(c, 'gate_hit', ref);
   const formId = c.req.query('form') || '';
 
   // Resolve LIFF URL — priority:

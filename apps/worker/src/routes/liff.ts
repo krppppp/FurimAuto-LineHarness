@@ -25,6 +25,7 @@ import {
 import { buildIntroMessage } from '../services/intro-message.js';
 import { notifyAffiliateFriendAdd } from '../services/affiliate-notifier.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
+import { recordServerHop } from './lp-beacon.js';
 import { EXCLUDED_LINE_IDS, TEST_LINE_IDS } from '../furim/segments.js';
 import type { Env } from '../index.js';
 
@@ -476,6 +477,7 @@ liffRoutes.get('/auth/line', async (c) => {
   const baseUrl = new URL(c.req.url).origin;
 
   const ua = c.req.header('user-agent') || '';
+  recordServerHop(c, 'auth_hit', ref);
 
   // Multi-account: resolve LINE Login channel + LIFF
   // Priority:
