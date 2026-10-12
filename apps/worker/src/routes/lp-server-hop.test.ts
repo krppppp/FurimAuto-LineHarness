@@ -23,6 +23,7 @@ const dbMocks = {
 vi.mock('@line-crm/db', () => dbMocks);
 
 const worker = (await import('../index.js')).default;
+const { decodeOAuthState } = await import('./liff.js');
 
 type Insert = { sql: string; args: unknown[] };
 let inserts: Insert[];
@@ -135,5 +136,36 @@ describe('TB-1417 サーバー側の到達記録', () => {
     );
     await Promise.allSettled(pending);
     expect(res.status).toBe(302);
+  });
+});
+
+// TB-1417 本当の原因: 検索広告の utm_term（{keyword}＝「フリマート」など日本語）が付くと、
+// OAuth の state を btoa() で作る所で例外になり、/auth/line が 500「Internal Server Error」を返していた。
+describe('TB-1417 日本語の utm_term で /auth/line が落ちない', () => {
+  const JA = encodeURIComponent('メルカリ 自動 再 出品 ツール');
+
+  it('スマホ: 302 で /r/ へ送り、utm_term も引き継ぐ', async () => {
+    const res = await get(`/auth/line?ref=ad_google_search&gclid=G1&utm_term=${JA}&sid=S6`, IPHONE);
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get('location')!, 'https://worker.example.com');
+    expect(loc.pathname).toBe('/r/ad_google_search');
+    expect(loc.searchParams.get('utm_term')).toBe('メルカリ 自動 再 出品 ツール');
+  });
+
+  it('PC: QR ページを返す', async () => {
+    const res = await get(`/auth/line?ref=ad_google_search&utm_term=${JA}&sid=S7`, MAC);
+    expect(res.status).toBe(200);
+  });
+
+  it('LINE ログインへ送る state を戻すと日本語がそのまま出る', async () => {
+    const res = await get(`/auth/line?ref=ad_google_search&account=C1&utm_term=${JA}&sid=S8`, IPHONE);
+    expect(res.status).toBe(302);
+    const state = new URL(res.headers.get('location')!).searchParams.get('state')!;
+    expect(decodeOAuthState(state)).toMatchObject({ ref: 'ad_google_search', utmTerm: 'メルカリ 自動 再 出品 ツール', sid: 'S8' });
+  });
+
+  it('今までの英数字だけの state（btoa で作ったもの）も同じように戻せる', () => {
+    const old = btoa(JSON.stringify({ ref: 'org_seo', gclid: 'G2', sid: 'S9' }));
+    expect(decodeOAuthState(old)).toEqual({ ref: 'org_seo', gclid: 'G2', sid: 'S9' });
   });
 });
