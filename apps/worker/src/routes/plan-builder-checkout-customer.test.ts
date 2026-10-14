@@ -37,6 +37,7 @@ function mockStripe(customer: Record<string, unknown> | 'error') {
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
     if (path === 'tax_rates') return json({ data: [{ id: 'txr_1', percentage: 10, inclusive: false }] });
     if (path.startsWith('coupons/')) return json({ id: path.slice(8), valid: true });
+    if (path === 'coupons') return json({ id: new URLSearchParams(init.body).get('id') });
     if (path.startsWith('customers/')) return customer === 'error' ? json({ error: { message: 'boom' } }, 500) : json(customer);
     if (path === 'checkout/sessions') {
       sessions.push(new URLSearchParams(init.body));
@@ -82,6 +83,17 @@ describe('プランビルダーの Checkout を既存の Stripe 顧客で開く�
     const s = sessions[0];
     expect(s.get('customer')).toBe('cus_FC');
     expect(s.get('discounts[0][coupon]')).toBeNull();
+    expect(s.get('subscription_data[metadata][pendingComboCoupon]')).toBeTruthy();
+  });
+
+  it('％型の顧客クーポンと併用割引があれば、初月は合算クーポンで開く（TB-942）', async () => {
+    const sessions = mockStripe({ id: 'cus_FC', discount: { coupon: { name: '50%OFF', percent_off: 50 } } });
+    await createPlanBuilderCheckout(env(makeDb(sheetMasterRows(), { furimCustomerId: 'cus_FC' })), { packages: ['m_full', 'm_semi'], lineUserId: 'U1' });
+    const s = sessions[0];
+    const merged = s.get('discounts[0][coupon]');
+    expect(merged).toMatch(/^fm50x\d+-/);
+    expect(s.get('subscription_data[metadata][mergedCouponId]')).toBe(merged);
+    expect(s.get('subscription_data[metadata][consumedCustomerCoupon]')).toBe('1');
     expect(s.get('subscription_data[metadata][pendingComboCoupon]')).toBeTruthy();
   });
 });
