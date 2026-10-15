@@ -191,3 +191,60 @@ describe('Google transactionId (TB-367)', () => {
     });
   });
 });
+
+describe('Google ingest の応答（requestId）を response_body に残す（TB-1694）', () => {
+  const config = { customer_id: '8394293197', conversion_action_id: '7714135877', oauth_token: 'tok' };
+  const run = async (status: number, body: unknown) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status })));
+    getRefTrackingWithClickIds.mockResolvedValueOnce({ gbraid: 'GB_TEST' });
+    getActiveAdPlatforms.mockResolvedValueOnce([{ id: 'p-google', name: 'google', config: JSON.stringify(config) }]);
+    logAdConversion.mockClear();
+    try {
+      await sendAdConversions(dbWithFriend('U-normal'), 'f-1694', 'line_friend_add');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    return logAdConversion.mock.calls[0][1] as { status: string; responseBody: string | null; requestBody: string; errorMessage?: string };
+  };
+
+  it('送信済みの記録に requestId を入れる（requestStatus で取り込み結果を引くため）', async () => {
+    const logged = await run(200, { requestId: 'req-123' });
+    expect(logged.status).toBe('sent');
+    expect(JSON.parse(String(logged.responseBody))).toEqual({ api: 'datamanager.events:ingest', requestId: 'req-123', fieldWarnings: [] });
+  });
+
+  it('fieldWarnings は reason と field だけ残し、説明文や知らない項目は残さない', async () => {
+    const logged = await run(200, {
+      requestId: 'req-456',
+      fieldWarnings: [{ reason: 'SOME_WARNING', field: 'events[0].adIdentifiers.gbraid', description: 'value a@example.com' }],
+      userData: { emailAddress: 'private@example.com' },
+    });
+    const saved = String(logged.responseBody);
+    expect(JSON.parse(saved)).toEqual({
+      api: 'datamanager.events:ingest',
+      requestId: 'req-456',
+      fieldWarnings: [{ reason: 'SOME_WARNING', field: 'events[0].adIdentifiers.gbraid' }],
+    });
+    expect(saved).not.toContain('example.com');
+  });
+
+  it('requestId が返らなくても送信済みとして残し、requestId は null にする', async () => {
+    const logged = await run(200, {});
+    expect(logged.status).toBe('sent');
+    expect(JSON.parse(String(logged.responseBody)).requestId).toBeNull();
+  });
+
+  it('200 でも events[].errors があれば failed にし、requestId は残す', async () => {
+    const logged = await run(200, { requestId: 'req-789', events: [{ errors: [{ reason: 'X' }] }] });
+    expect(logged.status).toBe('failed');
+    expect(logged.errorMessage).toContain('Data Manager API event error');
+    expect(JSON.parse(String(logged.responseBody)).requestId).toBe('req-789');
+    expect(JSON.parse(logged.requestBody).gbraid).toBe('GB_TEST');
+  });
+
+  it('HTTP エラーのときは response_body を空のまま failed にする', async () => {
+    const logged = await run(400, 'rejected');
+    expect(logged.status).toBe('failed');
+    expect(logged.responseBody).toBeNull();
+  });
+});
