@@ -674,6 +674,42 @@ describe('collect-skip（巡回キューの取りこぼし・Capsec #294）', ()
   });
 });
 
+describe('inventory-error（在庫管理シートへの書き込みの失敗・TB-1615）', () => {
+  it('操作・エラー・保留の有無・未反映件数を拡張エラーの表に残す', async () => {
+    const { db, statements } = makeDb((sql) =>
+      /SELECT line_user_id FROM furim_customers WHERE key_code/.test(sql) ? { first: { line_user_id: 'U1' } } : undefined,
+    );
+    const res = await call(envWith(db), 'inventory-error', {
+      keyCode: 'pb_x',
+      action: 'inventoryAddCopyUrl',
+      error: '在庫管理シートのログインが切れています（User interaction required.）',
+      queued: true,
+      pendingCount: 3,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, recorded: true });
+    const err = statements.find((x) => /INSERT INTO furim_ext_errors/.test(x.sql));
+    expect(err).toBeDefined();
+    expect(err!.args.some((b) => String(b) === 'inventorySheet')).toBe(true);
+    expect(err!.args.some((b) => String(b).includes('inventoryAddCopyUrl') && String(b).includes('ログインが切れています') && String(b).includes('保留して後で反映') && String(b).includes('未反映 3 件'))).toBe(true);
+    expect(err!.args.some((b) => String(b) === 'U1')).toBe(true);
+  });
+
+  it('キーコードが無くても記録する（無料版の在庫管理など）', async () => {
+    const { db, statements } = makeDb(() => undefined);
+    const res = await call(envWith(db), 'inventory-error', { action: 'inventoryDeleteUrl', error: 'Sheets API POST失敗 (429)' });
+    expect(res.status).toBe(200);
+    const err = statements.find((x) => /INSERT INTO furim_ext_errors/.test(x.sql));
+    expect(err!.args.some((b) => String(b).includes('inventoryDeleteUrl') && String(b).includes('429'))).toBe(true);
+  });
+
+  it('クライアントヘッダが無ければ 401', async () => {
+    const { db } = makeDb(() => undefined);
+    const res = await call(envWith(db), 'inventory-error', { action: 'x', error: 'y' }, { header: null });
+    expect(res.status).toBe(401);
+  });
+});
+
 describe('patrol-run（巡回 1 回分の実行記録・Capsec #294）', () => {
   it('収集の件数を記録する', async () => {
     const { db, statements } = makeDb((sql) =>

@@ -454,6 +454,32 @@ mount('collect-skip', async (c, p, client) => {
   return c.json({ success: true, recorded: true });
 });
 
+// ── 2-9b. inventory-error ← 在庫管理シートへの書き込みの失敗（TB-1615） ──
+// 拡張は失敗を自分の console と Firebase のログに残すだけで、ログイン切れで連動が全部止まっていても
+// 誰も気づけなかった（2026-10-15）。拡張エラーの表に残し、ヘルス巡回で拾えるようにする。
+// 拡張側で同じ操作・同じ内容は 30 分に 1 回に間引いて送ってくる
+mount('inventory-error', async (c, p, client) => {
+  const keyCode = str(p.keyCode);
+  const action = str(p.action).slice(0, 60) || 'unknown'; // inventoryAddCopyUrl など
+  const error = str(p.error).slice(0, 200);
+  const queued = p.queued === true || str(p.queued) === 'true';
+  const pendingCount = Number(p.pendingCount) || 0;
+  const db = c.env.DB;
+
+  const lineUserId = keyCode ? await findLineUserIdByKeyCode(db, keyCode) : null;
+  await recordExtError(db, {
+    method: 'inventorySheet',
+    error: [action, error, queued ? '保留して後で反映' : '', pendingCount ? `未反映 ${pendingCount} 件` : ''].filter(Boolean).join(' / ').slice(0, 300),
+    lineUserId,
+    keyCode: keyCode || null,
+    mercariUrl: null,
+    discriminationCode: null,
+    client,
+  });
+  console.warn(`[ext-api] inventory-error action=${action} queued=${queued} pending=${pendingCount} keyCode=${keyCode} client=${client}`);
+  return c.json({ success: true, recorded: true });
+});
+
 // ── 2-10. patrol-run ← 巡回 1 回分の実行記録（Capsec #294） ──
 // 巡回は D1 に実行記録が無く、取りこぼしが起きても後から何も読めなかった。
 // 直したあとに「効いているか」を確かめる手段が、記録を残すこと以外に無い。
