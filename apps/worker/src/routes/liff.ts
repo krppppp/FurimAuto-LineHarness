@@ -472,6 +472,7 @@ liffRoutes.get('/auth/line', async (c) => {
   const gclid = c.req.query('gclid') || '';
   const gbraid = c.req.query('gbraid') || '';
   const wbraid = c.req.query('wbraid') || '';
+  const yclid = c.req.query('yclid') || '';
   const fbclid = c.req.query('fbclid') || '';
   const twclid = c.req.query('twclid') || '';
   const ttclid = c.req.query('ttclid') || '';
@@ -574,6 +575,7 @@ liffRoutes.get('/auth/line', async (c) => {
   if (gclid) liffParams.set('gclid', gclid);
   if (gbraid) liffParams.set('gbraid', gbraid);
   if (wbraid) liffParams.set('wbraid', wbraid);
+  if (yclid) liffParams.set('yclid', yclid);
   if (fbclid) liffParams.set('fbclid', fbclid);
   if (twclid) liffParams.set('twclid', twclid);
   if (ttclid) liffParams.set('ttclid', ttclid);
@@ -595,7 +597,7 @@ liffRoutes.get('/auth/line', async (c) => {
   // can verify against the correct gate via the correct X Harness instance.
   // Without these, the form falls back to the gateId baked into the form's
   // onSubmitWebhookUrl (which is stale when a form is reused across campaigns).
-  const state = JSON.stringify({ ref, redirect, form: formId, gate: gateParam, xh: xhParam2, gclid, gbraid, wbraid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, utmContent, utmTerm, sid, account: accountParam || poolAccount, uid: uidParam, ig: igParam, iga: igaParam, igan: iganParam });
+  const state = JSON.stringify({ ref, redirect, form: formId, gate: gateParam, xh: xhParam2, gclid, gbraid, wbraid, yclid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, utmContent, utmTerm, sid, account: accountParam || poolAccount, uid: uidParam, ig: igParam, iga: igaParam, igan: iganParam });
   const encodedState = encodeOAuthState(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
   loginUrl.searchParams.set('response_type', 'code');
@@ -626,6 +628,7 @@ liffRoutes.get('/auth/line', async (c) => {
   if (gclid) qrParams.set('gclid', gclid);
   if (gbraid) qrParams.set('gbraid', gbraid);
   if (wbraid) qrParams.set('wbraid', wbraid);
+  if (yclid) qrParams.set('yclid', yclid);
   if (fbclid) qrParams.set('fbclid', fbclid);
   if (twclid) qrParams.set('twclid', twclid);
   if (ttclid) qrParams.set('ttclid', ttclid);
@@ -722,6 +725,7 @@ liffRoutes.get('/auth/oauth', async (c) => {
   const gclid = c.req.query('gclid') || '';
   const gbraid = c.req.query('gbraid') || '';
   const wbraid = c.req.query('wbraid') || '';
+  const yclid = c.req.query('yclid') || '';
   const fbclid = c.req.query('fbclid') || '';
   const twclid = c.req.query('twclid') || '';
   const ttclid = c.req.query('ttclid') || '';
@@ -769,7 +773,7 @@ liffRoutes.get('/auth/oauth', async (c) => {
   const callbackUrl = `${baseUrl}/auth/callback`;
   const state = JSON.stringify({
     ref, redirect, form: formId, gate: gateParam, xh: xhParam,
-    gclid, gbraid, wbraid, fbclid, twclid, ttclid,
+    gclid, gbraid, wbraid, yclid, fbclid, twclid, ttclid,
     utmSource, utmMedium, utmCampaign, utmContent, utmTerm, sid,
     account: accountParam || poolAccount, uid: uidParam, ig: igParam,
     iga: igaParam, igan: iganParam,
@@ -805,6 +809,7 @@ liffRoutes.get('/auth/callback', async (c) => {
   let gclid = '';
   let gbraid = '';
   let wbraid = '';
+  let yclid = '';
   let fbclid = '';
   let twclid = '';
   let ttclid = '';
@@ -829,6 +834,7 @@ liffRoutes.get('/auth/callback', async (c) => {
     gclid = parsed.gclid || '';
     gbraid = parsed.gbraid || '';
     wbraid = parsed.wbraid || '';
+    yclid = parsed.yclid || '';
     fbclid = parsed.fbclid || '';
     twclid = parsed.twclid || '';
     ttclid = parsed.ttclid || '';
@@ -1006,6 +1012,7 @@ liffRoutes.get('/auth/callback', async (c) => {
         gclid: gclid || null,
         gbraid: gbraid || null,
         wbraid: wbraid || null,
+        yclid: yclid || null,
         twclid: twclid || null,
         ttclid: ttclid || null,
         utmSource: utmSource || null,
@@ -1032,6 +1039,7 @@ liffRoutes.get('/auth/callback', async (c) => {
     if (gclid) adMeta.gclid = gclid;
     if (gbraid) adMeta.gbraid = gbraid;
     if (wbraid) adMeta.wbraid = wbraid;
+    if (yclid) adMeta.yclid = yclid;
     if (fbclid) adMeta.fbclid = fbclid;
     if (twclid) adMeta.twclid = twclid;
     if (ttclid) adMeta.ttclid = ttclid;
@@ -1391,6 +1399,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
       gclid?: string;
       gbraid?: string;
       wbraid?: string;
+      yclid?: string;
       fbclid?: string;
       twclid?: string;
       ttclid?: string;
@@ -1479,6 +1488,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
             gclid: body.gclid || null,
             gbraid: body.gbraid || null,
             wbraid: body.wbraid || null,
+            yclid: body.yclid || null,
             fbclid: body.fbclid || null,
             twclid: body.twclid || null,
             ttclid: body.ttclid || null,
@@ -1562,6 +1572,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
           gclid: body.gclid || null,
           gbraid: body.gbraid || null,
           wbraid: body.wbraid || null,
+          yclid: body.yclid || null,
           fbclid: body.fbclid || null,
           twclid: body.twclid || null,
           ttclid: body.ttclid || null,

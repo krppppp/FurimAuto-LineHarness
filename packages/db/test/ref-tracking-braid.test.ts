@@ -42,7 +42,7 @@ function execSafe(db: Database.Database, sql: string): void {
 function setupDb(): Database.Database {
   const db = new Database(':memory:');
   execSafe(db, readFileSync(join(PKG_ROOT, 'schema.sql'), 'utf8'));
-  const migrationFiles = ['003_entry_routes.sql', '004_friend_metadata.sql', '010_ad_conversions.sql', '062_lp_events.sql', '065_utm_content_term.sql', '086_ref_tracking_braid.sql'];
+  const migrationFiles = ['003_entry_routes.sql', '004_friend_metadata.sql', '010_ad_conversions.sql', '062_lp_events.sql', '065_utm_content_term.sql', '086_ref_tracking_braid.sql', '091_ref_tracking_yclid.sql'];
   for (const file of migrationFiles) {
     execSafe(db, readFileSync(join(MIGRATIONS_DIR, file), 'utf8'));
   }

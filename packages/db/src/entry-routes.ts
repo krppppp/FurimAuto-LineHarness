@@ -24,6 +24,7 @@ export interface RefTracking {
   gclid: string | null;
   gbraid: string | null;
   wbraid: string | null;
+  yclid: string | null;
   twclid: string | null;
   ttclid: string | null;
   utm_source: string | null;
@@ -233,6 +234,7 @@ export async function recordRefTracking(
     gclid?: string | null;
     gbraid?: string | null;
     wbraid?: string | null;
+    yclid?: string | null;
     twclid?: string | null;
     ttclid?: string | null;
     utmSource?: string | null;
@@ -252,10 +254,10 @@ export async function recordRefTracking(
     .prepare(
       `INSERT INTO ref_tracking
        (id, ref_code, friend_id, entry_route_id, source_url,
-        fbclid, gclid, gbraid, wbraid, twclid, ttclid, utm_source, utm_medium, utm_campaign,
+        fbclid, gclid, gbraid, wbraid, yclid, twclid, ttclid, utm_source, utm_medium, utm_campaign,
         utm_content, utm_term,
         user_agent, ip_address, lp_session_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -267,6 +269,7 @@ export async function recordRefTracking(
       opts.gclid ?? null,
       opts.gbraid ?? null,
       opts.wbraid ?? null,
+      opts.yclid ?? null,
       opts.twclid ?? null,
       opts.ttclid ?? null,
       opts.utmSource ?? null,
