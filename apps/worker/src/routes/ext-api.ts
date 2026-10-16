@@ -336,6 +336,12 @@ async function countManualCopies(db: D1Database, installId: string, target: stri
   return row?.n ?? 0;
 }
 
+const ABANDONED_STATUS = new Map([
+  ['tab_closed', '未完了(タブ閉じ)'],
+  ['not_submitted', '未完了(未押下)'],
+  ['error', '未完了(エラー)'],
+]);
+
 mount('manual-copy-log', async (c, p, client) => {
   const stage = str(p.stage);
   const dedupeKey = str(p.dedupeKey);
@@ -370,7 +376,8 @@ mount('manual-copy-log', async (c, p, client) => {
   if (stage === 'abandoned') {
     if (!existing) return c.json({ success: true, message: '対象行なし' });
     if (existing.status !== '開始') return c.json({ success: true, message: '更新不要', status: existing.status });
-    await db.prepare(`UPDATE furim_manual_copy_logs SET status = '未完了(期限切れ)', target_url = '', completed_at = ? WHERE id = ?`).bind(now, existing.id).run();
+    const status = ABANDONED_STATUS.get(str(p.reason)) ?? '未完了(期限切れ)';
+    await db.prepare(`UPDATE furim_manual_copy_logs SET status = ?, target_url = '', completed_at = ? WHERE id = ?`).bind(status, now, existing.id).run();
     return c.json({ success: true, updated: true });
   }
 

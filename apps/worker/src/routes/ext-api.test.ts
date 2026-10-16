@@ -518,6 +518,22 @@ describe('POST /api/ext/v1/manual-copy-log', () => {
     expect(await (await call(envWith(none.db), 'manual-copy-log', { ...base, stage: 'abandoned' })).json()).toEqual({ success: true, message: '対象行なし' });
     expect(await (await call(envWith(exists.db), 'manual-copy-log', { ...base, stage: 'abandoned' })).json()).toEqual({ success: true, updated: true });
   });
+
+  it.each([
+    [undefined, '未完了(期限切れ)'],
+    ['tab_closed', '未完了(タブ閉じ)'],
+    ['not_submitted', '未完了(未押下)'],
+    ['error', '未完了(エラー)'],
+    ['overwritten', '未完了(期限切れ)'],
+  ])('abandoned の reason=%s は %s に更新', async (reason, status) => {
+    const exists = makeDb(customerRouter(customer(), (sql) => {
+      if (/FROM furim_manual_copy_logs WHERE dedupe_key/.test(sql)) return { first: { id: 'row1', status: '開始' } };
+      return undefined;
+    }));
+    expect(await (await call(envWith(exists.db), 'manual-copy-log', { ...base, stage: 'abandoned', reason })).json()).toEqual({ success: true, updated: true });
+    const up = exists.statements.find((s) => /UPDATE furim_manual_copy_logs SET status = \?/.test(s.sql));
+    expect(up?.args).toEqual([status, '2026-09-14T03:00:00.000+09:00', 'row1']);
+  });
 });
 
 describe('POST /api/ext/v1/shop-research-log', () => {
