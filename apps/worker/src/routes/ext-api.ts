@@ -11,6 +11,7 @@ import {
   loadCustomerByKeyCode,
   recordExtError,
 } from '../furim/ext-auth.js';
+import { findOwnerOfReplacedKeyCode } from '../furim/key-code-history.js';
 
 /**
  * Chrome 拡張 → Worker の認証・ログ API（Capsec #245・段階3）。
@@ -105,13 +106,15 @@ mount('key-code-set', async (c, p, client) => {
     return c.json({ success: false, error, errorMessage: keyCodeErrorMessage(error, { currentMercariUrl, mercariAccountUrl: input.mercariAccountUrl }), keyCode: null, expiredDate: null });
   };
 
-  let { bundle, fromCache } = await loadCustomerByKeyCode(db, kv, keyCode);
-  if (!bundle) {
-    // 旧キーコードのまま（プラン変更で刷新済み）か、単なる無効かをメルカリURLで見分ける
-    const owner = input.mercariAccountUrl ? await findLineUserIdByMercariUrl(db, input.mercariAccountUrl) : null;
+  // 旧キーコードのまま（プラン変更で刷新済み）か、単なる無効かを発行履歴（TB-1246）→ メルカリURLの順で見分ける
+  const notFound = async () => {
+    const owner = (await findOwnerOfReplacedKeyCode(db, keyCode)) ?? (input.mercariAccountUrl ? await findLineUserIdByMercariUrl(db, input.mercariAccountUrl) : null);
     if (owner) return fail(KEY_CODE_ERROR.KEY_CODE_RENEWED, null, owner);
     return fail(KEY_CODE_ERROR.NOT_FOUND, null, null);
-  }
+  };
+
+  let { bundle, fromCache } = await loadCustomerByKeyCode(db, kv, keyCode);
+  if (!bundle) return notFound();
 
   const evaluate = async (b: NonNullable<typeof bundle>) => {
     const other = input.mercariAccountUrl ? await findLineUserIdByMercariUrl(db, input.mercariAccountUrl, b.customer.line_user_id) : null;
@@ -123,7 +126,7 @@ mount('key-code-set', async (c, p, client) => {
     const fresh = await loadCustomerByKeyCode(db, kv, keyCode, { fresh: true });
     bundle = fresh.bundle;
     fromCache = false;
-    if (!bundle) return fail(KEY_CODE_ERROR.NOT_FOUND, null, null);
+    if (!bundle) return notFound();
     outcome = await evaluate(bundle);
   }
   if (!outcome.ok) return fail(outcome.error, outcome.currentMercariUrl, bundle.customer.line_user_id);
@@ -333,6 +336,12 @@ async function countManualCopies(db: D1Database, installId: string, target: stri
   return row?.n ?? 0;
 }
 
+const ABANDONED_STATUS = new Map([
+  ['tab_closed', '未完了(タブ閉じ)'],
+  ['not_submitted', '未完了(未押下)'],
+  ['error', '未完了(エラー)'],
+]);
+
 mount('manual-copy-log', async (c, p, client) => {
   const stage = str(p.stage);
   const dedupeKey = str(p.dedupeKey);
@@ -367,7 +376,8 @@ mount('manual-copy-log', async (c, p, client) => {
   if (stage === 'abandoned') {
     if (!existing) return c.json({ success: true, message: '対象行なし' });
     if (existing.status !== '開始') return c.json({ success: true, message: '更新不要', status: existing.status });
-    await db.prepare(`UPDATE furim_manual_copy_logs SET status = '未完了(期限切れ)', target_url = '', completed_at = ? WHERE id = ?`).bind(now, existing.id).run();
+    const status = ABANDONED_STATUS.get(str(p.reason)) ?? '未完了(期限切れ)';
+    await db.prepare(`UPDATE furim_manual_copy_logs SET status = ?, target_url = '', completed_at = ? WHERE id = ?`).bind(status, now, existing.id).run();
     return c.json({ success: true, updated: true });
   }
 
@@ -448,6 +458,32 @@ mount('collect-skip', async (c, p, client) => {
     client,
   });
   console.warn(`[ext-api] collect-skip queue=${queue} reason=${reason} service=${service} keyCode=${keyCode} client=${client}`);
+  return c.json({ success: true, recorded: true });
+});
+
+// ── 2-9b. inventory-error ← 在庫管理シートへの書き込みの失敗（TB-1615） ──
+// 拡張は失敗を自分の console と Firebase のログに残すだけで、ログイン切れで連動が全部止まっていても
+// 誰も気づけなかった（2026-10-15）。拡張エラーの表に残し、ヘルス巡回で拾えるようにする。
+// 拡張側で同じ操作・同じ内容は 30 分に 1 回に間引いて送ってくる
+mount('inventory-error', async (c, p, client) => {
+  const keyCode = str(p.keyCode);
+  const action = str(p.action).slice(0, 60) || 'unknown'; // inventoryAddCopyUrl など
+  const error = str(p.error).slice(0, 200);
+  const queued = p.queued === true || str(p.queued) === 'true';
+  const pendingCount = Number(p.pendingCount) || 0;
+  const db = c.env.DB;
+
+  const lineUserId = keyCode ? await findLineUserIdByKeyCode(db, keyCode) : null;
+  await recordExtError(db, {
+    method: 'inventorySheet',
+    error: [action, error, queued ? '保留して後で反映' : '', pendingCount ? `未反映 ${pendingCount} 件` : ''].filter(Boolean).join(' / ').slice(0, 300),
+    lineUserId,
+    keyCode: keyCode || null,
+    mercariUrl: null,
+    discriminationCode: null,
+    client,
+  });
+  console.warn(`[ext-api] inventory-error action=${action} queued=${queued} pending=${pendingCount} keyCode=${keyCode} client=${client}`);
   return c.json({ success: true, recorded: true });
 });
 

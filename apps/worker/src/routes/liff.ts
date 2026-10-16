@@ -25,10 +25,24 @@ import {
 import { buildIntroMessage } from '../services/intro-message.js';
 import { notifyAffiliateFriendAdd } from '../services/affiliate-notifier.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
+import { recordServerHop } from './lp-beacon.js';
 import { EXCLUDED_LINE_IDS, TEST_LINE_IDS } from '../furim/segments.js';
 import type { Env } from '../index.js';
 
 const liffRoutes = new Hono<Env>();
+
+// OAuth の state（JSON）を base64 にする。btoa() は日本語で例外になり、検索広告の utm_term（{keyword}）が
+// 付いた /auth/line が 500 を返していた（TB-1417）。UTF-8 のバイト列にしてから base64 にする。
+// 英数字だけなら btoa(JSON) と同じ文字列になるので、既に発行済みの state もそのまま戻せる。
+function encodeOAuthState(state: string): string {
+  let bin = '';
+  for (const b of new TextEncoder().encode(state)) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+export function decodeOAuthState(encoded: string): Record<string, string> {
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(encoded), (ch) => ch.charCodeAt(0))));
+}
 
 // Persist ig_igsid on the LINE friend and notify IG Harness.
 // Used anywhere a LIFF/OAuth flow resolves with a known IGSID so existing
@@ -476,6 +490,7 @@ liffRoutes.get('/auth/line', async (c) => {
   const baseUrl = new URL(c.req.url).origin;
 
   const ua = c.req.header('user-agent') || '';
+  recordServerHop(c, 'auth_hit', ref);
 
   // Multi-account: resolve LINE Login channel + LIFF
   // Priority:
@@ -581,7 +596,7 @@ liffRoutes.get('/auth/line', async (c) => {
   // Without these, the form falls back to the gateId baked into the form's
   // onSubmitWebhookUrl (which is stale when a form is reused across campaigns).
   const state = JSON.stringify({ ref, redirect, form: formId, gate: gateParam, xh: xhParam2, gclid, gbraid, wbraid, fbclid, twclid, ttclid, utmSource, utmMedium, utmCampaign, utmContent, utmTerm, sid, account: accountParam || poolAccount, uid: uidParam, ig: igParam, iga: igaParam, igan: iganParam });
-  const encodedState = btoa(state);
+  const encodedState = encodeOAuthState(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
   loginUrl.searchParams.set('response_type', 'code');
   loginUrl.searchParams.set('client_id', channelId);
@@ -759,7 +774,7 @@ liffRoutes.get('/auth/oauth', async (c) => {
     account: accountParam || poolAccount, uid: uidParam, ig: igParam,
     iga: igaParam, igan: iganParam,
   });
-  const encodedState = btoa(state);
+  const encodedState = encodeOAuthState(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
   loginUrl.searchParams.set('response_type', 'code');
   loginUrl.searchParams.set('client_id', channelId);
@@ -805,7 +820,7 @@ liffRoutes.get('/auth/callback', async (c) => {
   let igaParam = '';
   let iganParam = '';
   try {
-    const parsed = JSON.parse(atob(stateParam));
+    const parsed = decodeOAuthState(stateParam);
     ref = parsed.ref || '';
     redirect = parsed.redirect || '';
     formId = parsed.form || '';

@@ -241,6 +241,14 @@ describe('POST /api/ext/v1/key-code-set', () => {
     expect(await res.json()).toMatchObject({ success: false, error: 'キーコードが更新されました' });
   });
 
+  it('見つからないが発行履歴に置き換え済みとして残っている → メルカリURLなしでもキーコードが更新されました', async () => {
+    const { db, statements } = makeDb(customerRouter(null, (sql) => (/FROM furim_key_code_history/.test(sql) ? { first: { line_user_id: U2 } } : undefined)));
+    const res = await call(envWith(db), 'key-code-set', { keyCode: 'old' });
+    expect(await res.json()).toMatchObject({ success: false, error: 'キーコードが更新されました' });
+    const err = statements.find((s) => /INSERT INTO furim_ext_errors/.test(s.sql));
+    expect(err?.args).toContain(U2);
+  });
+
   it('期限切れはプラン名で文言を出し分ける', async () => {
     const cases: Array<[string | null, string]> = [
       ['キャンセル済み(PBプラン)', 'プランキャンセル済み'],
@@ -510,6 +518,22 @@ describe('POST /api/ext/v1/manual-copy-log', () => {
     expect(await (await call(envWith(none.db), 'manual-copy-log', { ...base, stage: 'abandoned' })).json()).toEqual({ success: true, message: '対象行なし' });
     expect(await (await call(envWith(exists.db), 'manual-copy-log', { ...base, stage: 'abandoned' })).json()).toEqual({ success: true, updated: true });
   });
+
+  it.each([
+    [undefined, '未完了(期限切れ)'],
+    ['tab_closed', '未完了(タブ閉じ)'],
+    ['not_submitted', '未完了(未押下)'],
+    ['error', '未完了(エラー)'],
+    ['overwritten', '未完了(期限切れ)'],
+  ])('abandoned の reason=%s は %s に更新', async (reason, status) => {
+    const exists = makeDb(customerRouter(customer(), (sql) => {
+      if (/FROM furim_manual_copy_logs WHERE dedupe_key/.test(sql)) return { first: { id: 'row1', status: '開始' } };
+      return undefined;
+    }));
+    expect(await (await call(envWith(exists.db), 'manual-copy-log', { ...base, stage: 'abandoned', reason })).json()).toEqual({ success: true, updated: true });
+    const up = exists.statements.find((s) => /UPDATE furim_manual_copy_logs SET status = \?/.test(s.sql));
+    expect(up?.args).toEqual([status, '2026-09-14T03:00:00.000+09:00', 'row1']);
+  });
 });
 
 describe('POST /api/ext/v1/shop-research-log', () => {
@@ -662,6 +686,42 @@ describe('collect-skip（巡回キューの取りこぼし・Capsec #294）', ()
   it('クライアントヘッダが無ければ 401', async () => {
     const { db } = makeDb(() => undefined);
     const res = await call(envWith(db), 'collect-skip', { queue: 'collect', reason: 'timeout' }, { header: null });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('inventory-error（在庫管理シートへの書き込みの失敗・TB-1615）', () => {
+  it('操作・エラー・保留の有無・未反映件数を拡張エラーの表に残す', async () => {
+    const { db, statements } = makeDb((sql) =>
+      /SELECT line_user_id FROM furim_customers WHERE key_code/.test(sql) ? { first: { line_user_id: 'U1' } } : undefined,
+    );
+    const res = await call(envWith(db), 'inventory-error', {
+      keyCode: 'pb_x',
+      action: 'inventoryAddCopyUrl',
+      error: '在庫管理シートのログインが切れています（User interaction required.）',
+      queued: true,
+      pendingCount: 3,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, recorded: true });
+    const err = statements.find((x) => /INSERT INTO furim_ext_errors/.test(x.sql));
+    expect(err).toBeDefined();
+    expect(err!.args.some((b) => String(b) === 'inventorySheet')).toBe(true);
+    expect(err!.args.some((b) => String(b).includes('inventoryAddCopyUrl') && String(b).includes('ログインが切れています') && String(b).includes('保留して後で反映') && String(b).includes('未反映 3 件'))).toBe(true);
+    expect(err!.args.some((b) => String(b) === 'U1')).toBe(true);
+  });
+
+  it('キーコードが無くても記録する（無料版の在庫管理など）', async () => {
+    const { db, statements } = makeDb(() => undefined);
+    const res = await call(envWith(db), 'inventory-error', { action: 'inventoryDeleteUrl', error: 'Sheets API POST失敗 (429)' });
+    expect(res.status).toBe(200);
+    const err = statements.find((x) => /INSERT INTO furim_ext_errors/.test(x.sql));
+    expect(err!.args.some((b) => String(b).includes('inventoryDeleteUrl') && String(b).includes('429'))).toBe(true);
+  });
+
+  it('クライアントヘッダが無ければ 401', async () => {
+    const { db } = makeDb(() => undefined);
+    const res = await call(envWith(db), 'inventory-error', { action: 'x', error: 'y' }, { header: null });
     expect(res.status).toBe(401);
   });
 });

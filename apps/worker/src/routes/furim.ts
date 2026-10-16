@@ -321,7 +321,7 @@ furim.post('/api/furim/test-reset', async (c) => {
     const lineUserIdTables = [
       'furim_customers', 'furim_sync_diffs', 'furim_feature_flags', 'furim_survey_answers', 'furim_ticket_ledger',
       'furim_payments', 'furim_cancellations', 'furim_coupon_applications', 'furim_execution_logs', 'furim_ext_errors',
-      'furim_manual_copy_logs', 'furim_shop_research_logs', 'furim_auto_copy_logs',
+      'furim_manual_copy_logs', 'furim_shop_research_logs', 'furim_auto_copy_logs', 'furim_key_code_history',
     ];
     for (const t of lineUserIdTables) await del(t, 'line_user_id = ?', lineUserId);
     result.deleted = deleted;

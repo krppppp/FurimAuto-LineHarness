@@ -12,13 +12,15 @@ export type ChartSeries = {
   format?: (n: number) => string
 }
 
-export type ChartPoint = { t: string } & Record<string, number | string>
+export type ChartPoint = { t: string } & Record<string, number | string | null>
 
 interface Props {
   points: ChartPoint[]
   series: ChartSeries[]
   granularity: 'day' | 'month' | 'year'
   height?: number
+  /** 棒を横に並べずに積み上げる（内訳の表示・TB-1189） */
+  stacked?: boolean
 }
 
 const W = 960
@@ -46,7 +48,7 @@ export function labelOf(granularity: 'day' | 'month' | 'year', key: string, full
   return full ? `${key}年` : key
 }
 
-export default function TimeSeriesChart({ points, series, granularity, height = 300 }: Props) {
+export default function TimeSeriesChart({ points, series, granularity, height = 300, stacked = false }: Props) {
   const [hover, setHover] = useState<number | null>(null)
   const H = height
   const innerW = W - PAD.left - PAD.right
@@ -57,10 +59,14 @@ export default function TimeSeriesChart({ points, series, granularity, height = 
   }
 
   const val = (p: ChartPoint, k: string) => Number(p[k] ?? 0)
+  // 値が null のところ（記録が無い月）は 0 と区別して描かない
+  const missing = (p: ChartPoint, k: string) => p[k] === null || p[k] === undefined
   const leftKeys = series.filter((s) => !s.right).map((s) => s.key)
   const rightKeys = series.filter((s) => s.right).map((s) => s.key)
   const maxOf = (keys: string[]) => niceMax(Math.max(1, ...points.flatMap((p) => keys.map((k) => val(p, k)))))
-  const leftMax = maxOf(leftKeys.length ? leftKeys : ['__none'])
+  const stackMax = () =>
+    niceMax(Math.max(1, ...points.map((p) => series.filter((s) => s.kind === 'bar' && !s.right).reduce((a, s) => a + val(p, s.key), 0))))
+  const leftMax = stacked ? stackMax() : maxOf(leftKeys.length ? leftKeys : ['__none'])
   const rightMax = maxOf(rightKeys.length ? rightKeys : ['__none'])
 
   const step = innerW / points.length
@@ -70,7 +76,7 @@ export default function TimeSeriesChart({ points, series, granularity, height = 
   // ラベルは最低 72px 間隔で間引く（friend-add-trend.html の showLabel と同じ考え方）
   const labelEvery = Math.max(1, Math.ceil(72 / step))
   const bars = series.filter((s) => s.kind === 'bar')
-  const barW = Math.max(2, (step * 0.62) / Math.max(1, bars.length))
+  const barW = stacked ? Math.max(2, step * 0.62) : Math.max(2, (step * 0.62) / Math.max(1, bars.length))
 
   const gridVals = [0, 0.25, 0.5, 0.75, 1]
 
@@ -91,8 +97,24 @@ export default function TimeSeriesChart({ points, series, granularity, height = 
           </g>
         ))}
 
-        {points.map((p, i) =>
+        {stacked &&
+          points.map((p, i) => {
+            let base = 0
+            return bars.map((s) => {
+              const v = val(p, s.key)
+              if (v <= 0) return null
+              const yTop = yOf(base + v, false)
+              const yBottom = yOf(base, false)
+              base += v
+              // 積み上げの境目に 2px の隙間を空ける（色だけに頼らず区切りを見せる）
+              const h = Math.max(1, yBottom - yTop - (base > v ? 2 : 0))
+              return <rect key={`${s.key}-${i}`} x={xOf(i) - barW / 2} y={yTop} width={barW} height={h} fill={s.color} rx={2} />
+            })
+          })}
+
+        {!stacked && points.map((p, i) =>
           bars.map((s, bi) => {
+            if (missing(p, s.key)) return null
             const v = val(p, s.key)
             const y = yOf(v, !!s.right)
             const x = xOf(i) - (bars.length * barW) / 2 + bi * barW
@@ -143,7 +165,7 @@ export default function TimeSeriesChart({ points, series, granularity, height = 
               <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: s.color }} />
               {s.label}
               <span className="ml-auto pl-3 font-medium tabular-nums text-gray-900">
-                {(s.format ?? ((n: number) => n.toLocaleString('ja-JP')))(val(points[hover], s.key))}
+                {missing(points[hover], s.key) ? '—' : (s.format ?? ((n: number) => n.toLocaleString('ja-JP')))(val(points[hover], s.key))}
               </span>
             </p>
           ))}

@@ -49,6 +49,7 @@ export async function sendAdConversions(
     if (alreadySent) continue;
 
     let googleRecord: string | null = null;
+    let googleResponse: string | null = null;
     try {
       switch (platform.name) {
         case 'meta':
@@ -74,11 +75,16 @@ export async function sendAdConversions(
             // 取り消し（調整）のときに照合できるよう、送った eventTimestamp 等を request_body に残す（Capsec #305）
             const googleEvent = buildGoogleConversionEvent(config, ref, eventValue, new Date(), { friendId, eventName });
             googleRecord = googleConversionRecord(googleEvent);
-            await sendGoogleConversion(config, googleEvent);
+            const sent = await sendGoogleConversion(config, googleEvent);
+            googleResponse = sent.responseBody;
+            if (sent.eventErrors) {
+              throw new Error(`Data Manager API event error: ${JSON.stringify(sent.eventErrors)}`);
+            }
             await logAdConversion(db, {
               platformId: platform.id, friendId, eventName,
               clickId: googleClickId.value, clickIdType: googleClickId.type, status: 'sent',
               requestBody: googleRecord,
+              responseBody: googleResponse,
             });
           }
           break;
@@ -102,6 +108,7 @@ export async function sendAdConversions(
         status: 'failed',
         errorMessage: String(error),
         requestBody: googleRecord,
+        responseBody: googleResponse,
       });
     }
   }
@@ -336,10 +343,27 @@ export function googleConversionRecord(ev: GoogleConversionEvent): string {
   return JSON.stringify(record);
 }
 
+/**
+ * ad_conversion_logs.response_body に残す内容（TB-1694）。
+ * events:ingest は 200 を返しても取り込みは非同期で、失敗は requestStatus:retrieve に requestId を渡さないと見えない。
+ * 許可リストで requestId と fieldWarnings の reason・field だけを残す（説明文や将来の項目に値が入っても保存しない）
+ */
+export function googleIngestResponseRecord(result: { requestId?: unknown; fieldWarnings?: unknown }): string {
+  const warnings = Array.isArray(result.fieldWarnings) ? result.fieldWarnings : [];
+  return JSON.stringify({
+    api: 'datamanager.events:ingest',
+    requestId: typeof result.requestId === 'string' ? result.requestId : null,
+    fieldWarnings: warnings.map((w: { reason?: unknown; field?: unknown }) => ({
+      reason: typeof w?.reason === 'string' ? w.reason : null,
+      field: typeof w?.field === 'string' ? w.field : null,
+    })),
+  });
+}
+
 async function sendGoogleConversion(
   config: AdPlatformConfig,
   ev: GoogleConversionEvent,
-): Promise<void> {
+): Promise<{ responseBody: string; eventErrors: unknown[] | null }> {
   const accessToken = await getGoogleAccessToken(config);
   const url = 'https://datamanager.googleapis.com/v1/events:ingest';
   const body = ev.body;
@@ -358,11 +382,9 @@ async function sendGoogleConversion(
     throw new Error(`Data Manager API error: ${response.status} ${errorBody}`);
   }
   // 200でも events[].errors に個別失敗が入る場合がある
-  const result = await response.json<{ events?: Array<{ errors?: unknown[] }> }>();
+  const result = await response.json<{ requestId?: string; fieldWarnings?: unknown[]; events?: Array<{ errors?: unknown[] }> }>();
   const failed = (result.events || []).find((e) => e.errors && e.errors.length > 0);
-  if (failed) {
-    throw new Error(`Data Manager API event error: ${JSON.stringify(failed.errors)}`);
-  }
+  return { responseBody: googleIngestResponseRecord(result), eventErrors: failed?.errors ?? null };
 }
 
 async function sendTikTokConversion(
