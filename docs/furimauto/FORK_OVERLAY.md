@@ -60,6 +60,8 @@
 
 - TB-367 (2026-09-27): `services/ad-conversion.ts` の Google builder に friendId/eventName を渡し、決定的な transactionId を送信・request_body 許可リストへ追加。braid/gclid 共通で保持する。
 
+- TB-1801 (2026-10-18): `services/ad-conversion.ts` の `sendAdConversions` で、`line_friend_add` だけはクリック ID の記録を `pickFriendAddClickRef`（友だち作成から 10 分以内に記録されたもの）で選ぶ。既存の友だちが後から広告を押しても友だち追加の CV にしない。upstream の `getRefTrackingWithClickIds`（最新の 1 件）はそれ以外のイベントで使う。friends の読み取りに created_at を足した。
+
 - TB-1009 (2026-10-05): `index.ts` の 5 分 cron に `runRenewalUnlock`（furim/renewal-unlock.ts・更新 7 日前の全機能開放と案内 3 通）を追加。Env Bindings に FURIM_RENEWAL_UNLOCK / PLAN_BUILDER_LIFF_URL / FURIM_RENEWAL_UNLOCK_EXCLUDE_SUBS（TB-1014）。cron は FURIM_RENEWAL_UNLOCK=on の環境だけ動く。migration 089 と合わせて保持する。
 
 - TB-1727 (2026-10-16): `index.ts`（/r/:ref）/ `routes/liff.ts`（/auth/line・/auth/oauth・/auth/callback・/api/liff/link）/ `client/main.ts` のクリック ID 引き継ぎと `packages/db/src/entry-routes.ts` の保存に yclid（LINEヤフー広告）を追加。migration 091。`getRefTrackingWithClickIds` には入れない（Google/Meta の自動送信の対象外。LINEヤフーへの戻しは D1 から CSV/API で別に行う）。
