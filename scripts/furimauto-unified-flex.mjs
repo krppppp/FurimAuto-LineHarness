@@ -120,15 +120,17 @@ function flexMsg(altText, contents) {
 // ボタンラベルは全角12文字以内（超えると端末幅によって「…」で途切れる・2026-08-27 くろさんFB）
 const KEYCODE_BTN = msgBtn('キーコード発行', '【リッチメニュー】キーコード発行', { color: COLORS.step });
 const SURVEY_BTN = msgBtn('アンケート開始（30秒）', '【ボタン】アンケート開始', { color: '#D94A3D' });
-const INSTALL_BTN = uriBtn('拡張機能を導入（1分）', 'https://furimauto.com/install', { style: 'secondary' });
+// ステップ配信のボタンは通ごとの計測リンク（tracked_links unified_step_*・TB-1840）。{{friend_id}} は送信時に置き換わる
+const TRACK = (code) => `https://line-harness-prod.furimuato.workers.dev/t/${code}?f={{friend_id}}`;
+const INSTALL_BTN = uriBtn('拡張機能を導入（1分）', TRACK('H1Ewd1s'), { style: 'secondary' });
 const PLAN_BTN = uriBtn('プラン診断をはじめる', PLAN_LIFF, { color: '#D94A3D' });
 // 動画CTA（AIレビュー指摘対応・2026-08-27。文言はベネフィット型で各メッセージの流れに合わせる）
 // 1分解説シリーズ再生リスト = クーポン導線（キーワードは動画内でのみ案内・配信文非開示の原則）
 const YT_PLAYLIST = 'https://youtube.com/playlist?list=PLUhATsy78sfvUHMVmeQpKMyxATlHOCEeF&si=4ZT_HFKCIGcuHibG';
 // 完全解説動画（長編）= 無料期間延長＋⑫⑬の導線
 const FULL_VIDEO = 'https://youtu.be/jhaCPxgE_Sk';
-const ytBtn = (label) => uriBtn(label, YT_PLAYLIST, { color: '#FF0000' });
-const fullBtn = (label) => uriBtn(label, FULL_VIDEO, { color: '#FF0000' });
+const ytBtn = (label, uri = YT_PLAYLIST) => uriBtn(label, uri, { color: '#FF0000' });
+const fullBtn = (label, uri = FULL_VIDEO) => uriBtn(label, uri, { color: '#FF0000' });
 
 // ──────────────── ウェルカム（friend_add automation・無料ステップ） ────────────────
 
@@ -259,8 +261,8 @@ const set2b = flexMsg('🎁 無料期間中に15大特典をGETしよう！', bu
     t('そして、リサーチと一緒に受け取ってほしいものがあります🎁\n\n無料期間中に段階的に解放される【15大特典】です。物販ロードマップから撮影マニュアルまで。まずは"今すぐもらえる特典"からどうぞ👇', { color: '#333333' }),
     { type: 'separator', margin: 'md' },
     t('📦 今すぐもらえる特典', { weight: 'bold', color: '#333333', margin: 'md' }),
-    btn('① ロードマップ❶（PDF）', { type: 'uri', label: '① ロードマップ❶（PDF）', uri: 'https://storage.googleapis.com/furimauto_line/tokuten/%E7%89%B9%E5%85%B81%E3%83%AD%E3%83%BC%E3%83%88%E3%82%99%E3%83%9E%E3%83%83%E3%83%95%E3%82%9A%E2%9D%B6.pdf' }, { style: 'link' }),
-    btn('② ロードマップ❷（PDF）', { type: 'uri', label: '② ロードマップ❷（PDF）', uri: 'https://storage.googleapis.com/furimauto_line/tokuten/%E7%89%B9%E5%85%B82%E3%83%AD%E3%83%BC%E3%83%88%E3%82%99%E3%83%9E%E3%83%83%E3%83%95%E3%82%9A%E2%9D%B7.pdf' }, { style: 'link' }),
+    btn('① ロードマップ❶（PDF）', { type: 'uri', label: '① ロードマップ❶（PDF）', uri: TRACK('JJW60Pe') }, { style: 'link' }),
+    btn('② ロードマップ❷（PDF）', { type: 'uri', label: '② ロードマップ❷（PDF）', uri: TRACK('agoI4q6') }, { style: 'link' }),
     { type: 'separator', margin: 'md' },
     t('🔓 使うほどもらえる特典', { weight: 'bold', color: '#333333', margin: 'md' }),
     t('③④ ロードマップ❸❹\n⑤⑥ 撮影方法マニュアル 前編・後編\n⑦⑧ 外注化マニュアル 前編・後編\n⑨⑩ 外注募集テンプレ・業務委託契約書', { size: 'xs', color: '#444444' }),
@@ -308,14 +310,14 @@ const d1m = flexMsg('おはようございます☀ 今日はまず、この1分
   hero: {
     type: 'image', url: 'https://img.youtube.com/vi/uQjheVeAuww/maxresdefault.jpg',
     size: 'full', aspectRatio: '16:9', aspectMode: 'cover',
-    action: { type: 'uri', uri: 'https://www.youtube.com/watch?v=uQjheVeAuww' },
+    action: { type: 'uri', uri: TRACK('noYCtPn') },
   },
   body: [
     heading('おはようございます☀'),
     t('FurimAutoです。\n\n今日はまず、この動画だけ見てください。\n\nFurimAutoが目指す「全自動化」──新規出品と梱包発送以外の毎日の作業をぜんぶ任せる、という世界が1分で分かります。'),
     t('長ったらしい説明はナシ！です🙅‍♀️\n使い方と他社ツールと比べた特徴を1分でまとめました!!', { size: 'xs', color: '#888888', margin: 'md' }),
   ],
-  footer: [uriBtn('YouTubeで見る', 'https://www.youtube.com/watch?v=uQjheVeAuww', { color: '#FF0000' })],
+  footer: [uriBtn('YouTubeで見る', TRACK('noYCtPn'), { color: '#FF0000' })],
 }));
 
 // Day1 13:00
@@ -346,7 +348,7 @@ const d2m = flexMsg('【値下げと再出品は、何のためにやるのか�
     t('問題は、それを毎日手作業で続けられるか、です。\n\nFurimAutoなら、出品一覧ページの作業──値下げ・再出品・コメント管理・底値設定──を日時指定でまとめて予約でき、継続的に自動化できます。\n\nたとえば毎日の値段変更の予約の合間に、再出品を「朝10品・夜10品」で予約するだけで、1日20商品×30日、1ヶ月で約600品をフレッシュな商品ページとして回せます。', { margin: 'md' }),
     hlBox('今日はまず、自動値下げか自動再出品をどちらか1つだけ予約してみてください😊', '#FFF6E5', '#333333', 'sm'),
   ],
-  footer: [ytBtn('予約のやり方を動画で見る')],
+  footer: [ytBtn('予約のやり方を動画で見る', TRACK('hE8wBnv'))],
 }));
 
 // Day2 13:00
@@ -363,7 +365,7 @@ const d2n = flexMsg('【15大特典への道 2/6】今日のミッション: キ
   ],
   // 利用方法説明書ボタン: キーコード発行の応答をコードのみに変えた(2026-08-27)ため、
   // 発行文脈のこのカードに設定手順への導線を持たせる
-  footer: [KEYCODE_BTN, uriBtn('利用方法説明書を見る', 'https://furimauto.com/howto/index.html', { style: 'secondary' })],
+  footer: [KEYCODE_BTN, uriBtn('利用方法説明書を見る', TRACK('ODi2ReG'), { style: 'secondary' })],
 }));
 
 // Day3 9:00（旧3通 → 1バブル）
@@ -378,7 +380,7 @@ const d3m = flexMsg('【売る側は高く、買う側は安くのギャップ�
     t('いいねを付けた人は、「気になっているけど、あと一歩」の人。\n\nその人に向けてセールコメントを投稿し、こちらから能動的に"交渉の場"へお客さんを連れてくる──それがFurimAutoの【自動いいね対応】です。\n\n商品にいいねが付いたら、その人に向けたセールコメントを自動で投稿。\n\n買い手は少し安く買えて、あなたの在庫は現金に変わる。', { margin: 'md' }),
     hlBox('ギャップが縮まる瞬間を、体験してみてください😊', '#FFF6E5', '#333333', 'sm'),
   ],
-  footer: [ytBtn('いいね対応の設定を見る')],
+  footer: [ytBtn('いいね対応の設定を見る', TRACK('Cx0gQHt'))],
 }));
 
 // Day3 13:00
@@ -408,7 +410,7 @@ const d4m = flexMsg('【売れるほど、忙しくなる問題】取引メッ�
     t('取引が増えるほど、これが毎日積み上がっていきます。\n\nFurimAutoは、ここも自動化できます。\n\n取引メッセージを自動で送信。対応の早い出品者として購入者からの印象・評価にもつながります。', { margin: 'md' }),
     hlBox('売れるほど、ラクになる。\n全自動化の完成が、近づいてきました。', '#FFF6E5', '#333333', 'sm'),
   ],
-  footer: [ytBtn('取引自動化の設定を見る')],
+  footer: [ytBtn('取引自動化の設定を見る', TRACK('huRknOA'))],
 }));
 
 // Day4 13:00（旧2通 → 2バブル維持: ミッション＋チケット）
@@ -447,7 +449,7 @@ const d5m = flexMsg('【1つのサイトで回ったら、次のステージへ�
     listRow('・', '全自動の連続出品は、1品あたり10〜15円のチケット制（Day4で配った無料30枚も使えます）'),
     hlBox('販路拡大は、思っているよりずっと簡単です。\nまずは1品だけ、試しにコピーしてみてください😊', '#FFF6E5', '#333333', 'sm'),
   ],
-  footer: [ytBtn('コピー出品のやり方を見る')],
+  footer: [ytBtn('コピー出品のやり方を見る', TRACK('rY0mVHz'))],
 }));
 
 // Day5 13:00（旧3通 → 1バブル）
@@ -466,7 +468,7 @@ const d5n = flexMsg('【15大特典への道 5/6】今日のミッション: You
             t('をそれぞれプレゼントいたします！（初回決済に適用）', { weight: 'bold', size: 'sm', color: '#D94A3D', margin: 'sm' }),
           ], '#FFF1EC', { header: t('【お得に使えるクーポンをGET!!】\n動画内のキーワードをLINEに送っていただいた方には、', { weight: 'bold', size: 'sm', color: '#D94A3D' }) }),
   ],
-  footer: [ytBtn('初月半額クーポンを獲得！')],
+  footer: [ytBtn('初月半額クーポンを獲得！', TRACK('ZbINSG3'))],
 }));
 
 // Day6 9:00（旧2通 → 1バブル）
@@ -480,7 +482,7 @@ const d6m = flexMsg('【最後の壁は、在庫管理】自動併売在庫管�
     t('売り違いの恐怖から解放されて、あなたがやるのは仕入れて、出品して、発送するだけ。\n\nリサーチ → 出品 → 自動化 → 販路拡大 → 在庫管理。\n\nこの2週間でご案内した階段をのぼり切ると、"片手間でも、ちゃんと伸ばせる物販"の形が完成します。', { margin: 'md' }),
     hlBox('その形、このまま続けませんか？\n無料期間の終盤に、継続をご希望の方へのご案内をお送りします😊', '#FFF6E5', '#333333', 'sm'),
   ],
-  footer: [ytBtn('在庫管理の始め方を見る')],
+  footer: [ytBtn('在庫管理の始め方を見る', TRACK('NRk6zxP'))],
 }));
 
 // Day6 13:00
@@ -496,7 +498,7 @@ const d6n = flexMsg('【15大特典への道 6/6】特典への道、最終日�
     hlBox('さらに──\n🎁 無料試用期間が1週間延長されます', '#FFF1EC', '#D94A3D', 'sm'),
     t('「まだ試し切れていない」という方も、これでもう1週間、じっくり使えます。\n\n完全解説動画は下のボタンから。動画内で案内されるキーワードを送るだけです👇', { margin: 'md' }),
   ],
-  footer: [fullBtn('無料期間を延長する！')],
+  footer: [fullBtn('無料期間を延長する！', TRACK('XJjSZj0'))],
 }));
 
 // 14日試用の分散スケジュール（2026-08-27 くろさん決定）
