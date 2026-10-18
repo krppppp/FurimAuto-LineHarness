@@ -14,6 +14,40 @@ import {
   toJstString,
 } from '@line-crm/db';
 import { TEST_LINE_IDS } from '../furim/segments.js';
+import { parseJstDateTime } from '../furim/customer-store.js';
+
+const FRIEND_ADD_EVENT = 'line_friend_add';
+
+// ref_tracking.created_at はクリックの時刻ではなく LIFF が記録した時刻。広告経由の登録では友だち作成の 0〜9 秒後に記録される（本番 19 件・2026-10-18）。
+// それより大きく遅れた記録は、すでにいる友だちが後から広告を押したもので、友だち追加の CV にしない（TB-1801）
+const FRIEND_ADD_CLICK_GRACE_MS = 10 * 60_000;
+
+export function pickFriendAddClickRef<T extends { created_at: string }>(
+  rows: T[],
+  friendCreatedAt: string | null | undefined,
+): T | null {
+  const friendAt = parseJstDateTime(friendCreatedAt);
+  if (friendAt == null) return null;
+  let picked: { row: T; at: number } | null = null;
+  for (const row of rows) {
+    const at = parseJstDateTime(row.created_at);
+    if (at == null || at > friendAt + FRIEND_ADD_CLICK_GRACE_MS) continue;
+    if (!picked || at > picked.at) picked = { row, at };
+  }
+  return picked?.row ?? null;
+}
+
+async function getRefTrackingClickRows(db: D1Database, friendId: string): Promise<RefTracking[]> {
+  const rows = await db
+    .prepare(
+      `SELECT * FROM ref_tracking
+       WHERE friend_id = ?
+       AND (fbclid IS NOT NULL OR gclid IS NOT NULL OR gbraid IS NOT NULL OR wbraid IS NOT NULL OR twclid IS NOT NULL OR ttclid IS NOT NULL)`,
+    )
+    .bind(friendId)
+    .all<RefTracking>();
+  return rows.results ?? [];
+}
 
 export async function sendAdConversions(
   db: D1Database,
@@ -21,11 +55,13 @@ export async function sendAdConversions(
   eventName: string,
   eventValue?: number,
 ): Promise<void> {
-  const ref = await getRefTrackingWithClickIds(db, friendId);
+  const friend = await db.prepare('SELECT line_user_id, created_at FROM friends WHERE id = ?').bind(friendId).first<{ line_user_id: string | null; created_at: string | null }>();
+  const ref = eventName === FRIEND_ADD_EVENT
+    ? pickFriendAddClickRef(await getRefTrackingClickRows(db, friendId), friend?.created_at)
+    : await getRefTrackingWithClickIds(db, friendId);
   if (!ref) return;
 
   // 検証用アカウントのテストを広告の成果として送らない（Capsec #301・2026-09-17 16:07 にあじゃぱーの実機テストが送られた）
-  const friend = await db.prepare('SELECT line_user_id FROM friends WHERE id = ?').bind(friendId).first<{ line_user_id: string | null }>();
   if (friend?.line_user_id && TEST_LINE_IDS.has(friend.line_user_id)) {
     console.log('[ad-conversion] 検証用アカウントなので送信しない:', friendId, eventName);
     return;
