@@ -311,7 +311,8 @@ app.get('/api/qr', async (c) => {
 
 // Short link: /r/:ref → universal landing page with LINE open button
 // Supports query params: ?form=FORM_ID (auto-push form after friend add)
-// Mobile: single CTA → LIFF URL (Universal Link). No UA detection.
+// Mobile: single CTA → LIFF URL (Universal Link) / Android intent. In-app browsers
+// (Android WebView, iOS without Safari in UA) get extra escape buttons (TB-1826).
 // Desktop: QR code encodes LIFF URL.
 // Stuck users opt into /r/:ref/help for Safari escape instructions.
 app.get('/r/:ref', async (c) => {
@@ -453,12 +454,36 @@ app.get('/r/:ref', async (c) => {
     const liffPath = liffTarget.replace(/^https:\/\//, '');
     const intentFallback = encodeURIComponent(liffTarget);
     const androidIntent = `intent://${liffPath}#Intent;scheme=https;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;package=jp.naver.line.android;S.browser_fallback_url=${intentFallback};end`;
-    const buttonHref = isAndroid ? androidIntent : liffTarget;
+    // TB-1826: アプリ内ブラウザだけ出し分ける（TB-1819 案1）。
+    //   Android WebView（UA に "; wv)"）は intent:// を中止して画面が止まるので、
+    //   liff.line.me の普通のリンクを主ボタンにし、Chrome で開く・URL コピーを並べる。
+    //   iPhone アプリ内（UA に Safari が無い）は Universal Link が効かないことがあるので、
+    //   長押しの案内と Safari で開く（URL コピー）を最初から大きく出す。
+    // それ以外（Android Chrome・iPhone Safari 等）は今までどおり。
+    const isAndroidWebView = isAndroid && /; wv\)/.test(ua);
+    const isIOSInApp = isIOS && !/safari/.test(ua);
+    const variant = isAndroidWebView ? 'android_wv' : isIOSInApp ? 'ios_inapp' : isAndroid ? 'android' : isIOS ? 'ios' : 'mobile';
+    const buttonHref = isAndroid && !isAndroidWebView ? androidIntent : liffTarget;
+    const buttonKind = buttonHref === androidIntent ? 'intent' : 'liff';
+    const chromeIntent = `intent://${liffPath}#Intent;scheme=https;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;package=com.android.chrome;end`;
+    const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const copyUrl = escapeAttr(liffTarget);
     // iOS shows long-press hint; Android relies on intent URL alone (long-press
     // on Android opens "Open with…" which is noisier than the intent route).
-    const longPressHint = isIOS
+    const longPressHint = isIOS && !isIOSInApp
       ? '<p class="hint">※開かない場合はボタンを<strong>長押し</strong>して「LINEで開く」を選択</p>'
       : '';
+    const inAppGuide = isIOSInApp
+      ? '<div class="guide">このアプリの中では<br>LINE が開かないことがあります。<br>下の緑のボタンを<strong>長押し</strong>して<br>「LINEで開く」を選んでください</div>'
+      : '';
+    const extraButtons = isAndroidWebView
+      ? `<a href="${chromeIntent}" class="btn-sub" data-gate="chrome">Chrome で開く</a>
+<button type="button" class="btn-sub copy-btn" data-gate="copy" data-url="${copyUrl}">URLをコピー</button>
+<p class="hint">コピーしたURLを Chrome のアドレスバーに貼り付けて開いてください</p>`
+      : isIOSInApp
+        ? `<button type="button" class="btn-sub copy-btn" data-gate="copy" data-url="${copyUrl}">URLをコピーして Safari で開く</button>
+<p class="hint">Safari を開き、アドレスバーに貼り付けて開いてください</p>`
+        : '';
 
     return c.html(`<!DOCTYPE html>
 <html lang="ja">
@@ -479,6 +504,11 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 .hint strong{color:#06C755;font-weight:700}
 .help{font-size:12px;color:#999;margin-top:18px;line-height:1.5}
 .help a{color:#999;text-decoration:underline}
+.guide{font-size:14px;color:#333;background:#f0faf4;border:1px solid #bfe9cf;border-radius:12px;padding:14px 12px;margin-bottom:16px;line-height:1.7}
+.guide strong{color:#06C755;font-weight:700}
+.btn-sub{display:block;width:100%;padding:14px;margin-top:12px;border:1.5px solid #06C755;border-radius:12px;font-size:15px;font-weight:700;text-decoration:none;text-align:center;color:#06C755;background:#fff;cursor:pointer;font-family:inherit;transition:all .15s}
+.btn-sub:active{transform:scale(0.98);opacity:.9}
+.btn-sub.copied{color:#fff;background:#999;border-color:#999}
 </style>
 </head>
 <body>
@@ -487,14 +517,45 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 <svg viewBox="0 0 48 48" fill="none"><rect width="48" height="48" rx="12" fill="#06C755"/><path d="M24 12C17.37 12 12 16.58 12 22.2c0 3.54 2.35 6.65 5.86 8.47-.2.74-.76 2.75-.87 3.17-.14.55.2.54.42.39.18-.12 2.84-1.88 4-2.65.84.13 1.7.22 2.59.22 6.63 0 12-4.58 12-10.2S30.63 12 24 12z" fill="#fff"/></svg>
 </div>
 <p class="msg">友達追加して始める</p>
-<a href="${buttonHref}" class="btn">LINEで開く</a>
+${inAppGuide}
+<a href="${buttonHref}" class="btn" data-gate="${buttonKind}">LINEで開く</a>
 ${longPressHint}
+${extraButtons}
 <p class="help">うまく開けない方は <a href="${helpUrl}">こちら</a></p>
 </div>
 <script>
 (function(){
+  var btns=document.querySelectorAll('.copy-btn');
+  function copied(btn,ok){
+    var label=btn.textContent;
+    btn.textContent=ok?'コピーしました':'下の「こちら」からURLをコピー';
+    btn.classList.add('copied');
+    setTimeout(function(){ btn.textContent=label; btn.classList.remove('copied'); },2500);
+  }
+  function execCopy(text){
+    try{
+      var ta=document.createElement('textarea');
+      ta.value=text; ta.style.position='fixed'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      var ok=document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    }catch(e){ return false; }
+  }
+  for(var i=0;i<btns.length;i++){
+    btns[i].addEventListener('click',function(){
+      var btn=this, url=btn.getAttribute('data-url');
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(url).then(function(){ copied(btn,true); },function(){ copied(btn,execCopy(url)); });
+      }else{ copied(btn,execCopy(url)); }
+    });
+  }
+})();
+(function(){
   // 中継ページ(/r/:ref)の計測。LPから引き継いだ sid で lp_events に繋ぐ。
-  // gate_view=表示 / gate_open=「LINEで開く」クリック。CTA→LINE認証の離脱切り分け用。
+  // gate_view=表示（detail=mobile:<端末の種類>）/ gate_open=ボタンを押した（detail=mobile:<端末の種類>:<data-gate>）。
+  // 端末の種類: android_wv / ios_inapp / android / ios。ボタン: intent / liff / chrome / copy（TB-1826）。
+  var V='${variant}';
   try{
     var p=new URLSearchParams(location.search);
     var sid=p.get('sid');
@@ -511,11 +572,11 @@ ${longPressHint}
         if(navigator.sendBeacon){navigator.sendBeacon(EP,b);}else{var x=new XMLHttpRequest();x.open('POST',EP,true);x.send(b);}
       }catch(e){}
     }
-    send('gate_view', 'mobile');
+    send('gate_view', 'mobile:'+V);
     document.addEventListener('click',function(ev){
       var el=ev.target;
       while(el&&el!==document){
-        if(el.tagName==='A'&&el.className&&String(el.className).indexOf('btn')>-1){ send('gate_open', 'mobile'); break; }
+        if(el.getAttribute&&el.getAttribute('data-gate')){ send('gate_open', 'mobile:'+V+':'+el.getAttribute('data-gate')); break; }
         el=el.parentNode;
       }
     },true);
