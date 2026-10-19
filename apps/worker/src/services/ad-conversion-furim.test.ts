@@ -10,27 +10,31 @@ vi.mock('@line-crm/db', async (orig) => ({
   logAdConversion,
 }));
 
-const { sendAdConversions, buildGoogleConversionEvent, googleConversionRecord } = await import('./ad-conversion.js');
+const { sendAdConversions, buildGoogleConversionEvent, googleConversionRecord, pickFriendAddClickRef } = await import('./ad-conversion.js');
 
-function dbWithFriend(lineUserId: string) {
+const FRIEND_AT = '2026-10-17T19:45:26.400+09:00';
+const CLICK_AT = '2026-10-17T19:45:28.005+09:00';
+
+function dbWithFriend(lineUserId: string, refs: Array<Record<string, unknown>> = [], friendAt = FRIEND_AT) {
   return {
     prepare: (sql: string) => ({
-      bind: () => ({ first: async () => (/FROM friends/.test(sql) ? { line_user_id: lineUserId } : null) }),
+      bind: () => ({
+        first: async () => (/FROM friends/.test(sql) ? { line_user_id: lineUserId, created_at: friendAt } : null),
+        all: async () => ({ results: /FROM ref_tracking/.test(sql) ? refs.map((r) => ({ created_at: CLICK_AT, ...r })) : [] }),
+      }),
     }),
   } as unknown as D1Database;
 }
 
 describe('広告のオフライン CV 送信から検証用アカウントを除く（Capsec #301）', () => {
   it('あじゃぱー（TEST_LINE_IDS）は、gclid があっても媒体の一覧を読まずに終える', async () => {
-    getRefTrackingWithClickIds.mockResolvedValueOnce({ gclid: 'CjwKCA_test' });
-    await sendAdConversions(dbWithFriend('Ue4941a030cb2ec8758095fb0fffff344'), 'f1', 'line_friend_add');
+    await sendAdConversions(dbWithFriend('Ue4941a030cb2ec8758095fb0fffff344', [{ gclid: 'CjwKCA_test' }]), 'f1', 'line_friend_add');
     expect(getActiveAdPlatforms).not.toHaveBeenCalled();
   });
 
   it('通常の友だちは今までどおり媒体の一覧を読んで送信に進む', async () => {
-    getRefTrackingWithClickIds.mockResolvedValueOnce({ gclid: 'CjwKCA_real' });
     getActiveAdPlatforms.mockResolvedValueOnce([]);
-    await sendAdConversions(dbWithFriend('U0000000000000000000000000000abcd'), 'f2', 'line_friend_add');
+    await sendAdConversions(dbWithFriend('U0000000000000000000000000000abcd', [{ gclid: 'CjwKCA_real' }]), 'f2', 'line_friend_add');
     expect(getActiveAdPlatforms).toHaveBeenCalledTimes(1);
   });
 });
@@ -75,11 +79,10 @@ describe('Google への CV 送信内容を取り消しの照合用に残す（Ca
       sentBody = JSON.parse(String(init?.body));
       return { ok: true, json: async () => ({ events: [{}] }), text: async () => '' };
     }));
-    getRefTrackingWithClickIds.mockResolvedValueOnce({ gclid: 'CjwKCA_real' });
     getActiveAdPlatforms.mockResolvedValueOnce([{ id: 'p1', name: 'google', config: JSON.stringify({ customer_id: '8394293197', conversion_action_id: '7123456789', oauth_token: 'tok' }) }]);
     logAdConversion.mockClear();
 
-    await sendAdConversions(dbWithFriend('U0000000000000000000000000000abcd'), 'f3', 'line_friend_add');
+    await sendAdConversions(dbWithFriend('U0000000000000000000000000000abcd', [{ gclid: 'CjwKCA_real' }]), 'f3', 'line_friend_add');
 
     const call = logAdConversion.mock.calls.find((c) => (c[1] as { status: string }).status === 'sent');
     expect(call).toBeTruthy();
@@ -103,11 +106,10 @@ describe('Google braid offline CV (TB-363)', () => {
   it.each(cases)('selects only $type and logs the identifier for line_friend_add', async ({ ref, type, value }) => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ events: [{}] })));
     vi.stubGlobal('fetch', fetchMock);
-    getRefTrackingWithClickIds.mockResolvedValueOnce(ref);
     getActiveAdPlatforms.mockResolvedValueOnce([{ id: 'p-google', name: 'google', config: JSON.stringify(config) }]);
     logAdConversion.mockClear();
     try {
-      await sendAdConversions(dbWithFriend('U-normal'), 'f-braid', 'line_friend_add');
+      await sendAdConversions(dbWithFriend('U-normal', [ref]), 'f-braid', 'line_friend_add');
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [, init] = (fetchMock.mock.calls as unknown as [string, RequestInit][])[0];
       const event = JSON.parse(String(init.body)).events[0];
@@ -127,11 +129,10 @@ describe('Google braid offline CV (TB-363)', () => {
 
   it('keeps the chosen braid identifier in failed logs, even with a Meta click ID', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('rejected', { status: 400 })));
-    getRefTrackingWithClickIds.mockResolvedValueOnce({ fbclid: 'META', wbraid: 'WB_TEST' });
     getActiveAdPlatforms.mockResolvedValueOnce([{ id: 'p-google', name: 'google', config: JSON.stringify(config) }]);
     logAdConversion.mockClear();
     try {
-      await sendAdConversions(dbWithFriend('U-normal'), 'f-braid', 'line_friend_add');
+      await sendAdConversions(dbWithFriend('U-normal', [{ fbclid: 'META', wbraid: 'WB_TEST' }]), 'f-braid', 'line_friend_add');
       expect(logAdConversion.mock.calls[0][1]).toMatchObject({ clickId: 'WB_TEST', clickIdType: 'wbraid', status: 'failed' });
     } finally {
       vi.unstubAllGlobals();
@@ -141,10 +142,9 @@ describe('Google braid offline CV (TB-363)', () => {
   it('does not send without a Google click identifier', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    getRefTrackingWithClickIds.mockResolvedValueOnce({ fbclid: 'META' });
     getActiveAdPlatforms.mockResolvedValueOnce([{ id: 'p-google', name: 'google', config: JSON.stringify(config) }]);
     try {
-      await sendAdConversions(dbWithFriend('U-normal'), 'f-braid', 'line_friend_add');
+      await sendAdConversions(dbWithFriend('U-normal', [{ fbclid: 'META' }]), 'f-braid', 'line_friend_add');
       expect(fetchMock).not.toHaveBeenCalled();
       expect(() => buildGoogleConversionEvent(config, {})).toThrow('requires a click identifier');
     } finally {
@@ -196,11 +196,10 @@ describe('Google ingest の応答（requestId）を response_body に残す（TB
   const config = { customer_id: '8394293197', conversion_action_id: '7714135877', oauth_token: 'tok' };
   const run = async (status: number, body: unknown) => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status })));
-    getRefTrackingWithClickIds.mockResolvedValueOnce({ gbraid: 'GB_TEST' });
     getActiveAdPlatforms.mockResolvedValueOnce([{ id: 'p-google', name: 'google', config: JSON.stringify(config) }]);
     logAdConversion.mockClear();
     try {
-      await sendAdConversions(dbWithFriend('U-normal'), 'f-1694', 'line_friend_add');
+      await sendAdConversions(dbWithFriend('U-normal', [{ gbraid: 'GB_TEST' }]), 'f-1694', 'line_friend_add');
     } finally {
       vi.unstubAllGlobals();
     }
@@ -246,5 +245,66 @@ describe('Google ingest の応答（requestId）を response_body に残す（TB
     const logged = await run(400, 'rejected');
     expect(logged.status).toBe('failed');
     expect(logged.responseBody).toBeNull();
+  });
+});
+
+describe('友だち追加の CV は、登録前の広告クリックだけを送る（TB-1801）', () => {
+  const config = { customer_id: 'test-customer', conversion_action_id: 'test-action', oauth_token: 'test-token' };
+
+  it.each([
+    { name: 'efa6ad6a: ブログ経由で登録した 9 時間後のクリック', friendAt: '2026-10-15T09:15:16.375+09:00', clickAt: '2026-10-15T18:18:59.018+09:00' },
+    { name: '4ea9a2c2: 拡張ポップで登録した 5 日後のクリック', friendAt: '2026-10-11T13:46:49.244+09:00', clickAt: '2026-10-16T15:39:18.769+09:00' },
+  ])('$name は送らない', async ({ friendAt, clickAt }) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    getActiveAdPlatforms.mockClear();
+    try {
+      await sendAdConversions(dbWithFriend('U-normal', [{ gclid: 'GC_LATE', gbraid: 'GB_LATE', created_at: clickAt }], friendAt), 'f-late', 'line_friend_add');
+      expect(getActiveAdPlatforms).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('広告経由の登録（LIFF がクリック ID を作成の 2 秒後に記録）は送る', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ events: [{}] })));
+    vi.stubGlobal('fetch', fetchMock);
+    getActiveAdPlatforms.mockResolvedValueOnce([{ id: 'p-google', name: 'google', config: JSON.stringify(config) }]);
+    try {
+      await sendAdConversions(dbWithFriend('U-normal', [{ gclid: 'GC_OK', created_at: '2026-10-17T19:45:28.005+09:00' }], '2026-10-17T19:45:26.400+09:00'), 'f-ok', 'line_friend_add');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String((fetchMock.mock.calls as unknown as [string, RequestInit][])[0][1].body)).events[0].adIdentifiers).toEqual({ gclid: 'GC_OK' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('登録時のクリックと後日のクリックがあれば、登録時のクリック ID で送る', () => {
+    const rows = [
+      { gclid: 'GC_LATER', created_at: '2026-10-20T10:00:00.000+09:00' },
+      { gclid: 'GC_AT_ADD', created_at: '2026-10-17T19:45:28.005+09:00' },
+    ];
+    expect(pickFriendAddClickRef(rows, '2026-10-17T19:45:26.400+09:00')?.gclid).toBe('GC_AT_ADD');
+  });
+
+  it('記録の遅れは 10 分まで許し、それを超えたら送らない。日時の形式が混ざっても同じ', () => {
+    const friendAt = '2026-10-17 19:45:26';
+    expect(pickFriendAddClickRef([{ created_at: '2026-10-17T19:55:26.000+09:00' }], friendAt)).not.toBeNull();
+    expect(pickFriendAddClickRef([{ created_at: '2026-10-17T10:55:27.000Z' }], friendAt)).toBeNull();
+    expect(pickFriendAddClickRef([{ created_at: '2026-10-17T19:45:20.000+09:00' }], friendAt)).not.toBeNull();
+  });
+
+  it('友だちの登録日時が読めなければ送らない', () => {
+    expect(pickFriendAddClickRef([{ created_at: '2026-10-17T19:45:28.005+09:00' }], null)).toBeNull();
+  });
+
+  it('友だち追加以外のイベントは今までどおり最新のクリックで送る', async () => {
+    getRefTrackingWithClickIds.mockResolvedValueOnce({ gclid: 'GC_LATEST' });
+    getActiveAdPlatforms.mockClear();
+    getActiveAdPlatforms.mockResolvedValueOnce([]);
+    await sendAdConversions(dbWithFriend('U-normal', []), 'f-purchase', 'purchase');
+    expect(getRefTrackingWithClickIds).toHaveBeenCalledWith(expect.anything(), 'f-purchase');
+    expect(getActiveAdPlatforms).toHaveBeenCalledTimes(1);
   });
 });
