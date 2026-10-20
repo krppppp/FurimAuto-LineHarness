@@ -39,9 +39,14 @@ export type UnlockCandidate = {
   subscription_id: string | null;
   subscription_end_at: string | null;
   packages: string | null;
+  features?: string | null;
   key_code: string | null;
   plan_label: string | null;
 };
+
+function csv(v: string | null | undefined): string[] {
+  return String(v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+}
 
 type UnlockRow = {
   id: string;
@@ -73,15 +78,24 @@ export function cycleKey(subscriptionId: string, renewalMs: number): string {
   return `${subscriptionId}:${formatJstDateTime(renewalMs).slice(0, 10)}`;
 }
 
-/** 下位プランの有料会員か（D1 だけで分かる部分。解約予約は Stripe で別に見る） */
+/** 下位プランの有料会員か（D1 だけで分かる部分。解約予約は Stripe で別に見る）。機能単品（features だけ）の人も入れる（TB-1906） */
 export function isEligibleCustomer(c: UnlockCandidate): boolean {
-  const pkgs = String(c.packages ?? '').split(',').map((s) => s.trim()).filter(Boolean);
-  if (pkgs.length === 0) return false;
+  const pkgs = csv(c.packages);
+  if (pkgs.length === 0 && csv(c.features).length === 0) return false;
   if (pkgs.includes('premium') || pkgs.includes('trial')) return false;
   if (!c.subscription_id) return false;
   if (!String(c.plan_label ?? '').startsWith('PBプラン:')) return false;
   if (String(c.key_code ?? '').startsWith(TRIAL_KEYCODE_PREFIX)) return false;
   return true;
+}
+
+// 機能単品の人は 11 月の更新分から（TB-1021 の決定・2026-10-20）
+const FEATURES_ONLY_FROM_MS = Date.parse('2026-11-01T00:00:00+09:00');
+
+/** この更新日から開放の対象になっているか（機能単品の人だけ開始日がある） */
+export function isStartedFor(c: UnlockCandidate, renewalMs: number): boolean {
+  if (csv(c.packages).length > 0) return true;
+  return renewalMs >= FEATURES_ONLY_FROM_MS;
 }
 
 /** 開放の窓（更新 7 日前〜2 日前）に入っているか */
@@ -266,7 +280,7 @@ async function grantUnlocks(
 ): Promise<void> {
   const dryRun = !!opts.dryRun;
   const where = opts.onlyLineUserId ? 'WHERE line_user_id = ?' : "WHERE subscription_source = 'plan-builder' AND subscription_id IS NOT NULL";
-  const stmt = db.prepare(`SELECT line_user_id, subscription_id, subscription_end_at, packages, key_code, plan_label FROM furim_customers ${where}`);
+  const stmt = db.prepare(`SELECT line_user_id, subscription_id, subscription_end_at, packages, features, key_code, plan_label FROM furim_customers ${where}`);
   const candidates = await (opts.onlyLineUserId ? stmt.bind(opts.onlyLineUserId) : stmt).all<UnlockCandidate>();
   let unlockFlags: Record<string, string> | null = null;
   const excluded = excludedSubscriptions(env);
@@ -283,6 +297,10 @@ async function grantUnlocks(
     const renewalMs = renewalAtMs(c.subscription_end_at);
     if (renewalMs == null || !isInGrantWindow(renewalMs, nowMs)) {
       if (opts.onlyLineUserId) result.rejected.push({ lineUserId: c.line_user_id, reason: 'outsideWindow' });
+      continue;
+    }
+    if (!isStartedFor(c, renewalMs)) {
+      if (opts.onlyLineUserId) result.rejected.push({ lineUserId: c.line_user_id, reason: 'beforeStart' });
       continue;
     }
     const cycle = cycleKey(c.subscription_id!, renewalMs);

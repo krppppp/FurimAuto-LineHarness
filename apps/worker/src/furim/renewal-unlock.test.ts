@@ -4,6 +4,7 @@ import {
   isEligibleCustomer,
   isInGrantWindow,
   isSendHour,
+  isStartedFor,
   nextStage,
   overlayUnlockFlags,
   renewalAtMs,
@@ -19,6 +20,7 @@ const base = {
   subscription_id: 'sub_1',
   subscription_end_at: '2026-10-13T10:00:00.000+09:00',
   packages: 'm_full',
+  features: null,
   key_code: 'pb_abc',
   plan_label: 'PBプラン:メルカリ 全自動化プラン',
 };
@@ -33,6 +35,27 @@ describe('対象の判定', () => {
     expect(isEligibleCustomer({ ...base, subscription_id: null })).toBe(false);
     expect(isEligibleCustomer({ ...base, plan_label: 'キャンセル済み' })).toBe(false);
     expect(isEligibleCustomer({ ...base, key_code: '2weektrial_x' })).toBe(false);
+  });
+
+  it('機能単品（features だけ）の PB 有料会員も通す（TB-1906）。試用・解約済み・subscription 無しは外したまま', () => {
+    const single = { ...base, packages: '', features: 'mChangePrice', plan_label: 'PBプラン:メルカリ 値下げ' };
+    expect(isEligibleCustomer(single)).toBe(true);
+    expect(isEligibleCustomer({ ...single, packages: null, features: 'mChangePrice,rChangePrice' })).toBe(true);
+    expect(isEligibleCustomer({ ...base, packages: 'm_full', features: 'rChangePrice' })).toBe(true);
+    expect(isEligibleCustomer({ ...single, features: '' })).toBe(false);
+    expect(isEligibleCustomer({ ...single, features: ' , ' })).toBe(false);
+    expect(isEligibleCustomer({ ...single, packages: 'premium' })).toBe(false);
+    expect(isEligibleCustomer({ ...single, packages: 'trial' })).toBe(false);
+    expect(isEligibleCustomer({ ...single, subscription_id: null })).toBe(false);
+    expect(isEligibleCustomer({ ...single, plan_label: 'キャンセル済み' })).toBe(false);
+    expect(isEligibleCustomer({ ...single, key_code: '2weektrial_x' })).toBe(false);
+  });
+
+  it('機能単品の人は 11/1（JST）以降の更新から。パッケージのある人は日付で外さない（TB-1021 の決定）', () => {
+    const single = { ...base, packages: '', features: 'mChangePrice' };
+    expect(isStartedFor(single, at('2026-10-31T23:59:59+09:00'))).toBe(false);
+    expect(isStartedFor(single, at('2026-11-01T00:00:00+09:00'))).toBe(true);
+    expect(isStartedFor(base, at('2026-10-25T10:00:00+09:00'))).toBe(true);
   });
 
   it('更新日時は subscription_end_at の 24h 前。窓は 7 日前〜2 日前', () => {
@@ -123,6 +146,17 @@ describe('外す subscription（TB-1014）', () => {
     const r = await runRenewalUnlock(db, null, undefined, env, { nowMs: now, manual: true, dryRun: true, skipStripeCheck: true });
     expect(r.granted).toEqual([]);
     expect(r.rejected).toEqual([{ lineUserId: 'Ux', reason: 'excluded' }]);
+  });
+  it('機能単品の人は 11/1 以降の更新だけ開ける（10/30 更新は beforeStart）', async () => {
+    const single = { ...base, packages: '', features: 'mChangePrice' };
+    const nowOct28 = at('2026-10-28T10:00:00+09:00');
+    const nov = fakeDb([{ ...single, line_user_id: 'Unov', subscription_end_at: '2026-11-02T10:00:00.000+09:00' }], []);
+    const r1 = await runRenewalUnlock(nov.db, null, undefined, env, { nowMs: nowOct28, manual: true, dryRun: true, skipStripeCheck: true, onlyLineUserId: 'Unov' });
+    expect(r1.granted).toEqual(['Unov']);
+    const oct = fakeDb([{ ...single, line_user_id: 'Uoct', subscription_end_at: '2026-10-31T18:00:00.000+09:00' }], []);
+    const r2 = await runRenewalUnlock(oct.db, null, undefined, env, { nowMs: nowOct28, manual: true, dryRun: true, skipStripeCheck: true, onlyLineUserId: 'Uoct' });
+    expect(r2.granted).toEqual([]);
+    expect(r2.rejected).toEqual([{ lineUserId: 'Uoct', reason: 'beforeStart' }]);
   });
   it('開放の記録が既にあっても、外す人には案内を送らない', async () => {
     const push = vi.fn();
