@@ -11,7 +11,7 @@ const isExcluded = (lineUserId: string | null | undefined) => !!lineUserId && EX
 const sec = (v: string | null | undefined) => String(v ?? '').replace(' ', 'T').slice(0, 19);
 const monthOf = (v: string | null | undefined) => sec(v).slice(0, 7);
 
-export const ROUTE_GROUPS = ['広告', '運用（SEO・SNS）', '拡張機能', '紹介', 'その他', '経路なし'] as const;
+export const ROUTE_GROUPS = ['広告', '運用（SEO・SNS）', '拡張機能', '紹介', '代理店', 'その他', '経路なし'] as const;
 export type RouteGroup = (typeof ROUTE_GROUPS)[number];
 
 export const SEGMENT_GROUPS = ['有料化', 'セグメント5〜8', 'セグメント4', 'セグメント3', 'セグメント2', 'セグメント1', 'ブロック', '対象外'] as const;
@@ -133,8 +133,10 @@ function emptySegments(): Record<SegmentGroup, number> {
 }
 
 export function routeGroupOf(refCode: string | null, isReferral: boolean): RouteGroup {
-  if (isReferral) return '紹介';
   const r = (refCode ?? '').trim();
+  // 紹介パートナー（TB-1968）。紹介された側の特典で紹介の記録が付いても、アンバサダーの紹介とは分ける
+  if (r.startsWith('agency_')) return '代理店';
+  if (isReferral) return '紹介';
   if (!r) return '経路なし';
   if (r.startsWith('ad_')) return '広告';
   if (r.startsWith('org_')) return '運用（SEO・SNS）';
@@ -255,7 +257,7 @@ export async function buildMonthlyDashboard(
     const ref = (f.ref_code ?? '').trim();
     const isReferral = referred.has(f.id) || (ref !== '' && affiliateCodes.has(ref));
     const group = routeGroupOf(ref, isReferral);
-    const label = isReferral ? '紹介' : ref ? (routeName.get(ref) ?? ref) : '(経路なし)';
+    const label = isReferral && group === '紹介' ? '紹介' : ref ? (routeName.get(ref) ?? ref) : '(経路なし)';
     return { group, label };
   };
 
