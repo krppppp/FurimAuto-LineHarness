@@ -226,12 +226,14 @@ export async function processReferral(
 
   // アンバサダー（affiliates.code＝アンバサダーコード）
   const affiliate = await getAffiliateByCode(targetDb, ambassadorCode);
+  // 紹介パートナー（TB-1967）: LINE 友だちでも会員でもない紹介元。被紹介者の特典だけ動かし、紹介元への報酬・通知はしない
+  const isPartner = !!affiliate && !affiliate.friend_id && affiliate.code.startsWith('agency_');
   const ambassadorFriend = affiliate?.friend_id ? await getFriendById(targetDb, affiliate.friend_id) : null;
-  if (!affiliate || !ambassadorFriend?.line_user_id || !env.STRIPE_SECRET_KEY) {
+  if (!affiliate || (!isPartner && !ambassadorFriend?.line_user_id) || !env.STRIPE_SECRET_KEY) {
     if (!opts.silent) await notifyIntroduced([{ type: 'text', text: `友達紹介コードが有効ではないようです。\n確認後、弊アカウントからご連絡差し上げます。` } as never]);
     return { ok: false, reason: 'invalid_code' };
   }
-  const ambassadorLineUserId = ambassadorFriend.line_user_id;
+  const ambassadorLineUserId = ambassadorFriend?.line_user_id ?? null;
 
   // 自己紹介除外（アンバサダー自身が自分のURL/codeで登録した場合）
   if (ambassadorLineUserId === introducedLineUserId) {
@@ -245,7 +247,7 @@ export async function processReferral(
   }
 
   const introducedStripeID = await resolveStripeCustomerId(targetDb, introducedLineUserId);
-  const ambassadorStripeID = await resolveStripeCustomerId(targetDb, ambassadorLineUserId);
+  const ambassadorStripeID = ambassadorLineUserId ? await resolveStripeCustomerId(targetDb, ambassadorLineUserId) : null;
   // 被紹介者の Stripe 顧客はフォロー時の automation が作る。まだ無ければ保留（cron が拾う）
   if (!introducedStripeID) {
     return { ok: false, reason: 'introduced_not_registered' };
@@ -258,10 +260,9 @@ export async function processReferral(
   }
 
   // アンバサダー報酬クーポン: 10 枚まで。額はアンバサダーの現サブスク月額（Stripe 実額）で決める
-  const counts = await countReferrals(targetDb, affiliate.id);
   let ambassadorCouponName: string | null = null;
   let ambassadorCouponId: string | null = null;
-  if (counts.rewarded < REWARD_COUPON_LIMIT) {
+  if (!isPartner && (await countReferrals(targetDb, affiliate.id)).rewarded < REWARD_COUPON_LIMIT) {
     ambassadorCouponName = await resolveAmbassadorCouponName(ambassadorCode, env, targetDb);
     ambassadorCouponId = ambassadorCouponName ? await getCouponId(targetDb, ambassadorCouponName) : null;
     if (!ambassadorCouponId) ambassadorCouponName = null;
@@ -270,11 +271,11 @@ export async function processReferral(
   // 台帳に記録（introduced_friend_id UNIQUE。ここで弾かれたら同時送信の 2 回目）
   const referralId = await recordReferral(targetDb, {
     affiliateId: affiliate.id,
-    ambassadorFriendId: ambassadorFriend.id,
+    ambassadorFriendId: ambassadorFriend?.id ?? null,
     introducedFriendId: introducedFriend.id,
-    refCode: opts.refCode ?? null,
+    refCode: opts.refCode ?? (isPartner ? affiliate.code : null),
     source: opts.silent ? 'retry' : opts.replyToken ? 'keyword' : 'url',
-    ambassadorPlanName: (ambassadorFriend as { plan_name?: string | null }).plan_name ?? null,
+    ambassadorPlanName: (ambassadorFriend as { plan_name?: string | null } | null)?.plan_name ?? null,
     rewardCouponName: ambassadorCouponName,
     rewardCouponId: ambassadorCouponId,
     introducedCouponId: introducedCouponID,
@@ -299,36 +300,38 @@ export async function processReferral(
 
   await notifyIntroduced([{ type: 'text', text: `友達紹介コードの確認が取れました😆\n\n無料試用期間を1週間追加して、友達登録から3週間ご利用いただけます。\n\n更に月額プランにご登録の際に、初月の利用料が半額になるクーポンを付与させていただきました♪\n\nそれではキーコードを発行して、3週間存分に使いまわして売り上げUPさせてください⭐️` } as never]);
 
-  const introducedLineDisplayName = introducedFriend.display_name ?? '';
-  let pushText = `【お友達の${introducedLineDisplayName}様があなたの友達紹介コードを入力しました】\n\n`;
-  if (ambassadorCouponName && ambassadorStripeID) {
-    const ambassadorRes = await fetch(`https://api.stripe.com/v1/customers/${ambassadorStripeID}`, {
-      headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
-    }).then(r => r.json()) as { discount?: unknown };
+  if (ambassadorFriend && ambassadorLineUserId) {
+    const introducedLineDisplayName = introducedFriend.display_name ?? '';
+    let pushText = `【お友達の${introducedLineDisplayName}様があなたの友達紹介コードを入力しました】\n\n`;
+    if (ambassadorCouponName && ambassadorStripeID) {
+      const ambassadorRes = await fetch(`https://api.stripe.com/v1/customers/${ambassadorStripeID}`, {
+        headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
+      }).then(r => r.json()) as { discount?: unknown };
 
-    if (!ambassadorRes.discount) {
-      // 未適用の報酬クーポン（今回分を含む古い順の 1 枚）を Stripe に適用してから適用済みにする
-      const pending = await findUnappliedReward(targetDb, ambassadorFriend.id);
-      if (pending) {
-        const applyRes = await fetch(`https://api.stripe.com/v1/customers/${ambassadorStripeID}`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ coupon: pending.reward_coupon_id }).toString(),
-        });
-        if (applyRes.ok) {
-          await markRewardApplied(targetDb, pending.id);
-          pushText += `それに伴い${pending.reward_coupon_name}を付与いたしましたので、次回以降のお支払い時に自動で適用されます。\n\nリッチメニューの月額会員ページから、次回の支払額についてクーポン値引きが適用されているのを確認してください。`;
-        } else {
-          console.error('[furim] processReferral: 報酬クーポンの Stripe 適用失敗', await applyRes.text());
+      if (!ambassadorRes.discount) {
+        // 未適用の報酬クーポン（今回分を含む古い順の 1 枚）を Stripe に適用してから適用済みにする
+        const pending = await findUnappliedReward(targetDb, ambassadorFriend.id);
+        if (pending) {
+          const applyRes = await fetch(`https://api.stripe.com/v1/customers/${ambassadorStripeID}`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ coupon: pending.reward_coupon_id }).toString(),
+          });
+          if (applyRes.ok) {
+            await markRewardApplied(targetDb, pending.id);
+            pushText += `それに伴い${pending.reward_coupon_name}を付与いたしましたので、次回以降のお支払い時に自動で適用されます。\n\nリッチメニューの月額会員ページから、次回の支払額についてクーポン値引きが適用されているのを確認してください。`;
+          } else {
+            console.error('[furim] processReferral: 報酬クーポンの Stripe 適用失敗', await applyRes.text());
+          }
         }
+      } else {
+        pushText += 'すでに以前のクーポンを次回の支払いに適用しているので、今回分のクーポンは未来の支払いに充当されます。';
       }
     } else {
-      pushText += 'すでに以前のクーポンを次回の支払いに適用しているので、今回分のクーポンは未来の支払いに充当されます。';
+      pushText += '数多くのご紹介のご協力、誠に感謝いたします。';
     }
-  } else {
-    pushText += '数多くのご紹介のご協力、誠に感謝いたします。';
+    await lineClient.pushMessage(ambassadorLineUserId, [{ type: 'text', text: pushText } as never]);
   }
-  await lineClient.pushMessage(ambassadorLineUserId, [{ type: 'text', text: pushText } as never]);
 
   // シナリオ切り替え: 通常シナリオを完了させ、Referralシナリオに登録
   if (targetDb) {
@@ -349,7 +352,7 @@ export async function processReferral(
 
       // アンバサダーLvタグ更新（アンバサダー本人）。紹介数は D1 の台帳の件数
       {
-        {
+        if (ambassadorFriend) {
           const count = (await countReferrals(targetDb, affiliate.id)).total;
 
           // 既存アンバサダーLvタグを全削除
