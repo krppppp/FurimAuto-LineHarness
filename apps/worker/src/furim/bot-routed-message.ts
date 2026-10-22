@@ -175,7 +175,7 @@ export async function recordBotHandlerError(
   db: D1Database | undefined,
   lineUserId: string,
   label: string,
-  stage: 'handler' | 'fallback_push',
+  stage: 'handler' | 'fallback_push' | 'set_sent_gift_batches',
   err: unknown,
 ): Promise<void> {
   if (!db) return;
