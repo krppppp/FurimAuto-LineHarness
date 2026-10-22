@@ -3,7 +3,12 @@
 // 下位プラン（PB 有料・premium 以外）の会員に、サブスク更新日の 7 日前から更新日まで trial パッケージ相当を開ける。
 // - furim_feature_flags は書き換えない。furim_renewal_unlocks に期限付きで記録し、ext-auth が読むときだけ上乗せする
 //   （30 分のシート取り込み・更新日の applyPlanBuilderSync と取り合わない。キーコードの再発行もしない）
-// - 1 人につき更新 1 回ぶんに 1 回（cycle の UNIQUE）。試用・premium・解約予約（Stripe で確認）は対象外
+// - 1 回のキャンペーン（回）で 1 人 1 回（TB-2010）。回は env の FURIM_RENEWAL_UNLOCK_ROUND_FROM〜_UNTIL で決める
+//   - FROM 以降に終わる開放の行がある人には 2 回目を開けない（次の回は FROM を新しい日にすれば開け直せる）
+//   - UNTIL より前の更新日の人だけ開ける。UNTIL＝回を決めた日の 1 か月後＋2 日にすると、その日の有料会員全員に
+//     1 回ずつ窓が来て、後から入った人（最初の更新が 1 か月後）は入らない。UNTIL を過ぎたら開放は止まる
+//   - UNTIL が無ければ開けない（止めっぱなし。案内の送信は続く）
+// - 試用・premium・解約予約（Stripe で確認）は対象外
 // - 案内は 3 通: 開放時（7 日前）・4 日前・前日。送るのは 9〜23 時 JST だけ
 // - cron は env.FURIM_RENEWAL_UNLOCK === 'on' のときだけ動く（本番は文面の OK が出るまで off のまま）
 // - env.FURIM_RENEWAL_UNLOCK_EXCLUDE_SUBS（subscription_id のカンマ区切り）の人には開けず、案内も送らない
@@ -30,6 +35,8 @@ export type RenewalUnlockEnv = {
   STRIPE_SECRET_KEY?: string;
   PLAN_BUILDER_LIFF_URL?: string;
   FURIM_RENEWAL_UNLOCK_EXCLUDE_SUBS?: string;
+  FURIM_RENEWAL_UNLOCK_ROUND_FROM?: string;
+  FURIM_RENEWAL_UNLOCK_ROUND_UNTIL?: string;
 };
 
 type LineClientLike = { pushMessage(to: string, messages: unknown[]): Promise<unknown> };
@@ -39,9 +46,14 @@ export type UnlockCandidate = {
   subscription_id: string | null;
   subscription_end_at: string | null;
   packages: string | null;
+  features?: string | null;
   key_code: string | null;
   plan_label: string | null;
 };
+
+function csv(v: string | null | undefined): string[] {
+  return String(v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+}
 
 type UnlockRow = {
   id: string;
@@ -73,15 +85,35 @@ export function cycleKey(subscriptionId: string, renewalMs: number): string {
   return `${subscriptionId}:${formatJstDateTime(renewalMs).slice(0, 10)}`;
 }
 
-/** 下位プランの有料会員か（D1 だけで分かる部分。解約予約は Stripe で別に見る） */
+/** 下位プランの有料会員か（D1 だけで分かる部分。解約予約は Stripe で別に見る）。機能単品（features だけ）の人も入れる（TB-1906） */
 export function isEligibleCustomer(c: UnlockCandidate): boolean {
-  const pkgs = String(c.packages ?? '').split(',').map((s) => s.trim()).filter(Boolean);
-  if (pkgs.length === 0) return false;
+  const pkgs = csv(c.packages);
+  if (pkgs.length === 0 && csv(c.features).length === 0) return false;
   if (pkgs.includes('premium') || pkgs.includes('trial')) return false;
   if (!c.subscription_id) return false;
   if (!String(c.plan_label ?? '').startsWith('PBプラン:')) return false;
   if (String(c.key_code ?? '').startsWith(TRIAL_KEYCODE_PREFIX)) return false;
   return true;
+}
+
+export type UnlockRound = { fromMs: number; untilMs: number | null };
+
+/** 'YYYY-MM-DD' は JST の 0 時。読めなければ null */
+function parseRoundDate(v: string | undefined): number | null {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  const ms = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00+09:00` : s);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** 今の回。FROM が無ければ過去の開放すべてを数える（1 人 1 回のまま） */
+export function unlockRound(env: RenewalUnlockEnv): UnlockRound {
+  return { fromMs: parseRoundDate(env.FURIM_RENEWAL_UNLOCK_ROUND_FROM) ?? 0, untilMs: parseRoundDate(env.FURIM_RENEWAL_UNLOCK_ROUND_UNTIL) };
+}
+
+/** この回が終わっているか（UNTIL より前の更新日の窓がもう来ない） */
+export function isRoundEnded(round: UnlockRound, nowMs: number): boolean {
+  return round.untilMs == null || round.untilMs - nowMs <= MIN_GRANT_LEAD_MS;
 }
 
 /** 開放の窓（更新 7 日前〜2 日前）に入っているか */
@@ -199,6 +231,10 @@ export function renewalUnlockMessages(stage: 1 | 2 | 3, untilMs: number, env: Re
 
 export type RenewalUnlockResult = {
   skipped?: 'disabled' | 'outsideHours';
+  /** この回の開放が終わっている（UNTIL を過ぎた・UNTIL が無い）。案内の送信は続く */
+  roundEnded?: boolean;
+  /** 開放を走らせたときだけ: この回でまだ開けていない人（D1 で対象・外す人を除く・UNTIL より前の更新） */
+  remaining?: number;
   granted: string[];
   rejected: Array<{ lineUserId: string; reason: string }>;
   sent: Array<{ lineUserId: string; stage: number }>;
@@ -265,13 +301,21 @@ async function grantUnlocks(
   result: RenewalUnlockResult,
 ): Promise<void> {
   const dryRun = !!opts.dryRun;
+  const round = unlockRound(env);
+  if (isRoundEnded(round, nowMs)) {
+    result.roundEnded = true;
+    result.remaining = 0;
+    return;
+  }
   const where = opts.onlyLineUserId ? 'WHERE line_user_id = ?' : "WHERE subscription_source = 'plan-builder' AND subscription_id IS NOT NULL";
-  const stmt = db.prepare(`SELECT line_user_id, subscription_id, subscription_end_at, packages, key_code, plan_label FROM furim_customers ${where}`);
+  const stmt = db.prepare(`SELECT line_user_id, subscription_id, subscription_end_at, packages, features, key_code, plan_label FROM furim_customers ${where}`);
   const candidates = await (opts.onlyLineUserId ? stmt.bind(opts.onlyLineUserId) : stmt).all<UnlockCandidate>();
   let unlockFlags: Record<string, string> | null = null;
   const excluded = excludedSubscriptions(env);
+  const doneRows = await db.prepare('SELECT DISTINCT line_user_id FROM furim_renewal_unlocks WHERE until_ms > ?').bind(round.fromMs).all<{ line_user_id: string }>();
+  const done = new Set((doneRows.results ?? []).map((r) => r.line_user_id));
+  result.remaining = 0;
   for (const c of candidates.results ?? []) {
-    if (result.granted.length >= MAX_GRANTS_PER_RUN) break;
     if (!isEligibleCustomer(c)) {
       if (opts.onlyLineUserId) result.rejected.push({ lineUserId: c.line_user_id, reason: 'notEligible' });
       continue;
@@ -280,14 +324,22 @@ async function grantUnlocks(
       result.rejected.push({ lineUserId: c.line_user_id, reason: 'excluded' });
       continue;
     }
+    if (done.has(c.line_user_id)) {
+      if (opts.onlyLineUserId) result.rejected.push({ lineUserId: c.line_user_id, reason: 'alreadyUnlocked' });
+      continue;
+    }
     const renewalMs = renewalAtMs(c.subscription_end_at);
-    if (renewalMs == null || !isInGrantWindow(renewalMs, nowMs)) {
+    if (renewalMs == null || renewalMs <= nowMs || renewalMs >= round.untilMs!) {
+      if (opts.onlyLineUserId) result.rejected.push({ lineUserId: c.line_user_id, reason: 'afterRound' });
+      continue;
+    }
+    result.remaining++;
+    if (!isInGrantWindow(renewalMs, nowMs)) {
       if (opts.onlyLineUserId) result.rejected.push({ lineUserId: c.line_user_id, reason: 'outsideWindow' });
       continue;
     }
+    if (result.granted.length >= MAX_GRANTS_PER_RUN) continue;
     const cycle = cycleKey(c.subscription_id!, renewalMs);
-    const exists = await db.prepare('SELECT 1 FROM furim_renewal_unlocks WHERE line_user_id = ? AND cycle = ?').bind(c.line_user_id, cycle).first();
-    if (exists) continue;
     if (!opts.skipStripeCheck) {
       const check = await checkStripeSubscription(env, c.subscription_id!);
       if (!check.ok) {
@@ -297,6 +349,7 @@ async function grantUnlocks(
     }
     if (dryRun) {
       result.granted.push(c.line_user_id);
+      result.remaining--;
       continue;
     }
     unlockFlags ??= unlockFlagsFromMaster(await loadFurimMaster(db));
@@ -310,6 +363,7 @@ async function grantUnlocks(
     if (!ins.meta?.changes) continue;
     await invalidateExtCache(kv, c.key_code);
     result.granted.push(c.line_user_id);
+    result.remaining--;
     console.log('[furim/renewal-unlock] granted', JSON.stringify({ lineUserId: c.line_user_id, cycle, until: formatJstDateTime(renewalMs) }));
   }
 }
