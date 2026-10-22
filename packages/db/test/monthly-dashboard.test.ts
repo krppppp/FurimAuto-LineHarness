@@ -254,6 +254,25 @@ describe('月次ダッシュボード（TB-1189）', () => {
     expect(r.routeDetail).toHaveLength(5);
   });
 
+  test('紹介パートナー（agency_）は紹介の記録があっても「代理店」に分け、名前ごとに出す（TB-1968）', async () => {
+    const sqlite = setupDb();
+    seed(sqlite);
+    const friend = sqlite.prepare('INSERT INTO friends VALUES (?, ?, ?, ?, ?)');
+    friend.run('fa1', 'UA1', '2026-10-03T09:00:00.000+09:00', 'agency_konposamurai', 1);
+    friend.run('fa2', 'UA2', '2026-10-04T09:00:00.000+09:00', 'agency_konposamurai', 1);
+    friend.run('fa3', 'UA3', '2026-10-05T09:00:00.000+09:00', 'agency_furimanavi', 1);
+    sqlite.prepare("INSERT INTO furim_referrals VALUES ('fa1')").run();
+    const r = await buildMonthlyDashboard(asD1(sqlite), SUBS, '2026-10-08T09:00:00.000+09:00', { start: '2026-10-01', end: '2026-10-08' });
+    expect(r.buckets.reduce((a, b) => a + b.routesAdded['代理店'], 0)).toBe(3);
+    expect(r.buckets.reduce((a, b) => a + b.routesAdded['紹介'], 0)).toBe(1); // f5 だけ
+    expect(r.routeDetail).toEqual(
+      expect.arrayContaining([
+        { route: 'agency_konposamurai', group: '代理店', added: 2, paid: 0 },
+        { route: 'agency_furimanavi', group: '代理店', added: 1, paid: 0 },
+      ]),
+    );
+  });
+
   test('日付のずらし', () => {
     expect(addMonths('2026-01', -1)).toBe('2025-12');
     expect(addMonths('2026-12', 1)).toBe('2027-01');
@@ -268,5 +287,6 @@ describe('月次ダッシュボード（TB-1189）', () => {
     expect(routeGroupOf('org_x', false)).toBe('運用（SEO・SNS）');
     expect(routeGroupOf('', false)).toBe('経路なし');
     expect(routeGroupOf('ad_meta', true)).toBe('紹介');
+    expect(routeGroupOf('agency_konposamurai', true)).toBe('代理店');
   });
 });

@@ -11,7 +11,7 @@ import DateRangePicker, { jstToday, rangeOf, selectionFromSearch, selectionToSea
  * 定義は apps/worker/src/furim/monthly-dashboard.ts。画面の注記と合わせて直す。
  */
 
-const ROUTE_GROUPS = ['広告', '運用（SEO・SNS）', '拡張機能', '紹介', 'その他', '経路なし'] as const
+const ROUTE_GROUPS = ['広告', '運用（SEO・SNS）', '拡張機能', '紹介', '代理店', 'その他', '経路なし'] as const
 const SEGMENT_KEYS = ['有料化', 'セグメント5〜8', 'セグメント4', 'セグメント3', 'セグメント1〜2', 'ブロック', '対象外'] as const
 
 type Card = { value: number | null; prev: number | null }
@@ -53,10 +53,10 @@ type Monthly = {
 }
 
 // 色は分類ごとに固定（dataviz の検証済みパレット）。経路なし・ブロックは灰色
-const CAT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4']
+const CAT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#8a5cd1']
 const GRAY = '#a3a3a3'
 const LIGHT_GRAY = '#d4d4d4'
-const ROUTE_COLORS: Record<string, string> = { 広告: CAT[0], '運用（SEO・SNS）': CAT[1], 拡張機能: CAT[2], 紹介: CAT[3], その他: CAT[4], 経路なし: GRAY }
+const ROUTE_COLORS: Record<string, string> = { 広告: CAT[0], '運用（SEO・SNS）': CAT[1], 拡張機能: CAT[2], 紹介: CAT[3], 代理店: CAT[5], その他: CAT[4], 経路なし: GRAY }
 // 段階は青の濃淡（濃いほど先まで進んだ）
 const SEGMENT_COLORS: Record<string, string> = {
   有料化: '#104281',
@@ -427,7 +427,7 @@ export default function MonthlyDashboardPage() {
           </Section>
 
           <div>
-            <Section title="流入経路別の友だち追加" note="ref_code の頭（ad_・org_・ext_）で分類。紹介は紹介リンク・紹介の記録がある人。経路なしは ref_code が空の人">
+            <Section title="流入経路別の友だち追加" note="ref_code の頭（ad_・org_・ext_・agency_）で分類。代理店は紹介パートナーの紹介リンク（agency_）。紹介はアンバサダーの紹介リンク・紹介の記録がある人。経路なしは ref_code が空の人">
               <ChartOrTable asTable={asTable} granularity={g} points={routesAdded} series={routeSeries} columns={routeColumns} stacked />
             </Section>
             <Section title="流入経路別の新規加入" note={`その${unit}に新規加入した人を、友だち追加したときの流入経路で分けたもの`}>
