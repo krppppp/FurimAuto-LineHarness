@@ -213,6 +213,28 @@ describe('processReferral（D1 だけで完結・Capsec #244）', () => {
     expect(insert?.args).not.toContain('アンバサダー1500円引きクーポン');
     expect((client.pushMessage.mock.calls[1][1] as { text: string }[])[0].text).toContain('数多くのご紹介');
   });
+
+  it('紹介パートナー（affiliates.friend_id NULL）: 被紹介者の特典だけ動き、紹介元への報酬・通知は動かない（TB-1967）', async () => {
+    const calls = stubStripe();
+    const client = makeClient();
+    const { db, writes } = makeReferralDb({ affiliate: { id: 'affP', code: 'agency_konposamurai', friend_id: null } });
+
+    const result = await processReferral(client as never, 'Uintroduced', 'agency_konposamurai', env, db as never, { refCode: 'agency_konposamurai' });
+
+    expect(result).toEqual({ ok: true });
+    const insert = writes.find((w) => /INSERT INTO furim_referrals/.test(w.sql));
+    expect(insert?.args.slice(0, 5)).toEqual([expect.any(String), 'affP', null, 'friend1', 'agency_konposamurai']);
+    expect(insert?.args).not.toContain('アンバサダー1500円引きクーポン');
+    const introducedPost = calls.find((c) => c.url.endsWith('/v1/customers/cus_intro') && c.method === 'POST');
+    expect(introducedPost?.body).toContain('coupon=IDLf7QBx');
+    expect(introducedPost?.body).toContain('metadata%5BambassadorStripeID%5D=&');
+    expect(writes.find((w) => /INSERT INTO furim_customers/.test(w.sql) && w.sql.includes('subscription_end_at'))?.args).toContain('2026-10-04T12:00:00.000+09:00');
+    expect(calls.some((c) => /subscriptions\?customer=|\/v1\/customers\/cus_amb/.test(c.url))).toBe(false);
+    expect(client.pushMessage).toHaveBeenCalledOnce();
+    expect(client.pushMessage.mock.calls[0][0]).toBe('Uintroduced');
+    expect(writes.some((w) => /UPDATE furim_referrals SET reward_applied_at/.test(w.sql))).toBe(false);
+    expect(writes.some((w) => /INSERT OR IGNORE INTO friend_tags/.test(w.sql))).toBe(true);
+  });
 });
 
 // キーコードは D1 furim_customers から読む（Capsec #243）。GAS getKeyCode は呼ばない
