@@ -158,6 +158,8 @@ export type Env = {
     FURIM_RENEWAL_UNLOCK?: string;
     PLAN_BUILDER_LIFF_URL?: string;
     FURIM_RENEWAL_UNLOCK_EXCLUDE_SUBS?: string;
+    FURIM_RENEWAL_UNLOCK_ROUND_FROM?: string;
+    FURIM_RENEWAL_UNLOCK_ROUND_UNTIL?: string;
     FIREBASE_DATABASE_URL?: string;
     FIREBASE_DB_SECRET?: string;
     STRIPE_SECRET_KEY?: string;

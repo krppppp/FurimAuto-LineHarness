@@ -62,6 +62,9 @@ FURIM_AMBASSADOR_OFFER_ID = "e1fa71aa-2d1d-4fb6-8daa-0e448c95ad32"
 # dev はテスト Stripe の PriceID（dev シート「チケット単価一覧」と同値）
 FURIM_TICKET_LIFF_URL = "https://liff.line.me/1661091589-dduTkcxr"
 FURIM_TICKET_PRICE_IDS = '{"15":"price_1SFCnRF2C7KcCkFfwuJjlCnl","14":"price_1SFpRyF2C7KcCkFfAtxvQ9ug","13":"price_1SFpS5F2C7KcCkFfkMV4iadi","10":"price_1SFpSAF2C7KcCkFfC8HafSTC"}'
+# 更新 7 日前の全機能開放の「回」（TB-2010。prod と同じ値）
+FURIM_RENEWAL_UNLOCK_ROUND_FROM = "2026-10-05"
+FURIM_RENEWAL_UNLOCK_ROUND_UNTIL = "2026-11-25"
 
 # ─── DEV環境（Worker名: line-harness）────────────────────────────────────────
 [env.dev]
@@ -107,6 +110,9 @@ FURIM_AMBASSADOR_OFFER_ID = "e1fa71aa-2d1d-4fb6-8daa-0e448c95ad32"
 # コピー出品チケット決済 LIFF と単価別 PriceID（dev=テスト Stripe。Capsec #243）
 FURIM_TICKET_LIFF_URL = "https://liff.line.me/1661091589-dduTkcxr"
 FURIM_TICKET_PRICE_IDS = '{"15":"price_1SFCnRF2C7KcCkFfwuJjlCnl","14":"price_1SFpRyF2C7KcCkFfAtxvQ9ug","13":"price_1SFpS5F2C7KcCkFfkMV4iadi","10":"price_1SFpSAF2C7KcCkFfC8HafSTC"}'
+# 更新 7 日前の全機能開放の「回」（TB-2010。prod と同じ値）
+FURIM_RENEWAL_UNLOCK_ROUND_FROM = "2026-10-05"
+FURIM_RENEWAL_UNLOCK_ROUND_UNTIL = "2026-11-25"
 
 # ─── PROD環境（Worker名: line-harness-prod）─────────────────────────────────
 [env.prod]
@@ -163,3 +169,8 @@ FURIM_TICKET_PRICE_IDS = '{"15":"price_1SFCiyF2C7KcCkFfzJ7IuaTA","14":"price_1SF
 FURIM_RENEWAL_UNLOCK_EXCLUDE_SUBS = "sub_1NOIaAF2C7KcCkFfgwQUHq2t,sub_1UF5NbF2C7KcCkFf9FysLUR1"
 # 開放と案内の cron を動かす（くろさん文面 OK 確認カード 6965c69d・F事業リーダー決定 c89c8b58。止めるときはこの行を消してデプロイ）
 FURIM_RENEWAL_UNLOCK = "on"
+# 更新 7 日前の全機能開放の「回」（TB-2010）。FROM 以降に開放した人には 2 回目を開けない。
+# UNTIL より前の更新日の人だけ開ける（回を決めた 2026-10-22 の 1 か月後＋2 日。後から入った人は入らない）。
+# UNTIL の 2 日前を過ぎると開放は止まる。次に回すときは FROM と UNTIL を新しい日にしてデプロイ
+FURIM_RENEWAL_UNLOCK_ROUND_FROM = "2026-10-05"
+FURIM_RENEWAL_UNLOCK_ROUND_UNTIL = "2026-11-25"
