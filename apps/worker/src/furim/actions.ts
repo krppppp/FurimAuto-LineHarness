@@ -446,10 +446,6 @@ async function actionLimitedGift(
     const introText = newBatches.length === 1 ? newBatches[0].introText : `🎁 ${newBatches.length}つの特典が新たに解放されました！\n特典をお届けします📩`;
     const updatedSentBatches = [...sentBatches, ...newBatches.map((b) => b.batchNo)];
 
-    if (env.FIREBASE_DATABASE_URL) {
-      await setSentGiftBatches(env.FIREBASE_DATABASE_URL, lineUserId, updatedSentBatches);
-    }
-
     const extraMessages = newBatches.flatMap((b) => b.deliveryMessages ? b.deliveryMessages() : []);
     const listMessage = buildReceivedListFlex(updatedSentBatches);
     const nextLocked = GIFT_BATCHES.find((b) => !updatedSentBatches.includes(b.batchNo));
@@ -458,7 +454,17 @@ async function actionLimitedGift(
       messages.push({ type: 'text', text: `💡 次の特典について\n${nextLocked.lockedHint}` });
       messages.push(...nextLocked.buildActionMessages());
     }
-    await lineClient.replyMessage(replyToken, (messages as unknown[]).slice(0, 5) as never[]);
+    // 送信済みは届けたあとに書く（TB-186: 先に書くと、返信だけ失敗したとき未受領のまま受け取り済みになっていた）
+    await replyOrPush(lineClient, replyToken, lineUserId, (messages as unknown[]).slice(0, 5) as never[]);
+
+    if (env.FIREBASE_DATABASE_URL) {
+      try {
+        await setSentGiftBatches(env.FIREBASE_DATABASE_URL, lineUserId, updatedSentBatches);
+      } catch (err) {
+        console.error('[furim] setSentGiftBatches failed after delivery:', lineUserId, err);
+        await recordBotHandlerError(db, lineUserId, 'handleFurimAction:限定特典GET', 'set_sent_gift_batches', err);
+      }
+    }
     return;
   }
 

@@ -15,6 +15,7 @@ vi.mock('@line-crm/db', () => ({
 }));
 
 const { handleFurimAction } = await import('./actions.js');
+const { setSentGiftBatches } = await import('./firebase-client.js') as unknown as { setSentGiftBatches: ReturnType<typeof vi.fn> };
 
 function makeClient() {
   return {
@@ -178,6 +179,46 @@ describe('actionLimitedGift (限定特典GET)', () => {
     await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】限定特典GET', env, db);
     const messages = client.replyMessage.mock.calls[0][1] as Array<{ type: string; text?: string }>;
     expect(messages.some((m) => (m.text ?? '').includes('アンケートにご回答いただくと'))).toBe(true);
+  });
+
+  // TB-186: 送信済みは届けたあとに書く（返信だけ失敗すると未受領のまま受け取り済みになっていた）
+  const surveyed = { survey_answer: '紹介', key_code_issued: 0, device_activated: 0, free30_ticket: 0, youtube_coupon: null, extend_keyword: null };
+  const fbEnv = { FIREBASE_DATABASE_URL: 'https://fb.example' };
+
+  it('reply が失敗したら push で特典を届け、そのあとで送信済みを書く', async () => {
+    const client = makeClient();
+    client.replyMessage.mockRejectedValueOnce(new Error('Invalid reply token'));
+    const { db } = makeDb({ customer: surveyed });
+
+    await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】限定特典GET', fbEnv, db);
+
+    expect(client.pushMessage).toHaveBeenCalledTimes(1);
+    const pushed = client.pushMessage.mock.calls[0][1] as Array<{ text?: string }>;
+    expect(pushed[0].text).toContain('③ ロードマップ❸');
+    expect(setSentGiftBatches).toHaveBeenCalledTimes(1);
+    expect(setSentGiftBatches.mock.invocationCallOrder[0]).toBeGreaterThan(client.pushMessage.mock.invocationCallOrder[0]);
+  });
+
+  it('reply も push も失敗したら送信済みにしない', async () => {
+    const client = makeClient();
+    client.replyMessage.mockRejectedValue(new Error('Invalid reply token'));
+    client.pushMessage.mockRejectedValue(new Error('push failed'));
+    const { db } = makeDb({ customer: surveyed });
+
+    await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】限定特典GET', fbEnv, db);
+
+    expect(setSentGiftBatches).not.toHaveBeenCalled();
+  });
+
+  it('届けたあとの送信済みの書き込みが失敗しても、エラー案内は送らない', async () => {
+    const client = makeClient();
+    setSentGiftBatches.mockRejectedValueOnce(new Error('firebase down'));
+    const { db } = makeDb({ customer: surveyed });
+
+    await handleFurimAction(client as never, 'Uxxx', 'rt', '【リッチメニュー】限定特典GET', fbEnv, db);
+
+    expect(client.replyMessage).toHaveBeenCalledTimes(1);
+    expect(client.pushMessage).not.toHaveBeenCalled();
   });
 });
 
