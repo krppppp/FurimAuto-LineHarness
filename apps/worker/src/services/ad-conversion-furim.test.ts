@@ -10,7 +10,7 @@ vi.mock('@line-crm/db', async (orig) => ({
   logAdConversion,
 }));
 
-const { sendAdConversions, buildGoogleConversionEvent, googleConversionRecord, pickFriendAddClickRef } = await import('./ad-conversion.js');
+const { sendAdConversions, buildGoogleConversionEvent, googleConversionRecord, pickFriendAddClickRef, buildMetaConversionEvent } = await import('./ad-conversion.js');
 
 const FRIEND_AT = '2026-10-17T19:45:26.400+09:00';
 const CLICK_AT = '2026-10-17T19:45:28.005+09:00';
@@ -306,5 +306,107 @@ describe('友だち追加の CV は、登録前の広告クリックだけを送
     await sendAdConversions(dbWithFriend('U-normal', []), 'f-purchase', 'purchase');
     expect(getRefTrackingWithClickIds).toHaveBeenCalledWith(expect.anything(), 'f-purchase');
     expect(getActiveAdPlatforms).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Meta CAPI に友だち追加を CompleteRegistration で送る（TB-1790）', () => {
+  const ref = { fbclid: 'FB_TEST', ip_address: '203.0.113.1', user_agent: 'UA', created_at: '2026-10-16T10:05:00.000+09:00' };
+  const now = new Date('2026-10-17T03:00:00.000Z');
+  const ctx = { friendId: 'friend-1', followedAt: '2026-10-16T10:10:00.000+09:00', firstSeenAt: '2026-10-16T10:00:00.000+09:00', page: '/lp/service/' };
+
+  it('名前・event_id・フォロー時刻・最初の view の時刻の fbc・LP の URL・external_id を入れる', async () => {
+    const ev = await buildMetaConversionEvent(ref, 'line_friend_add', undefined, ctx, now);
+    const expectedHash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('friend-1')))]
+      .map((b) => b.toString(16).padStart(2, '0')).join('');
+    expect(expectedHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(ev).toEqual({
+      event_name: 'CompleteRegistration',
+      event_time: Math.floor(Date.parse('2026-10-16T10:10:00.000+09:00') / 1000),
+      event_id: 'friend-1:line_friend_add',
+      action_source: 'website',
+      event_source_url: 'https://furimauto.com/lp/service/',
+      user_data: {
+        fbc: `fb.1.${Date.parse('2026-10-16T10:00:00.000+09:00')}.FB_TEST`,
+        external_id: expectedHash,
+        client_ip_address: '203.0.113.1',
+        client_user_agent: 'UA',
+      },
+    });
+  });
+
+  it('LP の view が無ければ fbc は ref_tracking.created_at、URL は既定の LP', async () => {
+    const ev = await buildMetaConversionEvent(ref, 'line_friend_add', undefined, { ...ctx, firstSeenAt: null, page: null }, now);
+    expect((ev!.user_data as { fbc: string }).fbc).toBe(`fb.1.${Date.parse(ref.created_at)}.FB_TEST`);
+    expect(ev!.event_source_url).toBe('https://furimauto.com/service/');
+  });
+
+  it('fbc の時刻はフォロー時刻より後にしない', async () => {
+    const ev = await buildMetaConversionEvent(ref, 'line_friend_add', undefined, { ...ctx, firstSeenAt: '2026-10-16T11:00:00.000+09:00' }, now);
+    expect((ev!.user_data as { fbc: string }).fbc).toBe(`fb.1.${Date.parse(ctx.followedAt)}.FB_TEST`);
+  });
+
+  it('フォローから 7 日を超えたら送らない（null）', async () => {
+    expect(await buildMetaConversionEvent(ref, 'line_friend_add', undefined, ctx, new Date('2026-10-23T01:09:00.000Z'))).not.toBeNull();
+    expect(await buildMetaConversionEvent(ref, 'line_friend_add', undefined, ctx, new Date('2026-10-23T01:11:00.000Z'))).toBeNull();
+  });
+
+  const metaPlatform = [{ id: 'p-meta', name: 'meta', config: JSON.stringify({ pixel_id: '1026661405227668', access_token: 'tok', test_event_code: 'TEST123' }) }];
+  function dbForMeta(followedAt: string, view: { page: string; created_at: string } | null) {
+    const sqls: string[] = [];
+    const db = {
+      prepare: (sql: string) => ({
+        bind: () => ({
+          first: async () => {
+            sqls.push(sql);
+            if (/FROM friends/.test(sql)) return { line_user_id: 'U-normal', created_at: followedAt };
+            if (/FROM lp_events/.test(sql)) return view;
+            return null;
+          },
+          all: async () => ({ results: /FROM ref_tracking/.test(sql) ? [{ ...ref, lp_session_id: 'sid-1' }] : [] }),
+        }),
+      }),
+    } as unknown as D1Database;
+    return { db, sqls };
+  }
+  const run = async (response: Response, followedAt = new Date(Date.now() - 60_000).toISOString()) => {
+    const fetchMock = vi.fn(async () => response);
+    vi.stubGlobal('fetch', fetchMock);
+    getActiveAdPlatforms.mockResolvedValueOnce(metaPlatform);
+    logAdConversion.mockClear();
+    const { db } = dbForMeta(followedAt, { page: '/lp/switch/', created_at: new Date(Date.now() - 120_000).toISOString() });
+    try {
+      await sendAdConversions(db, 'friend-1', 'line_friend_add');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    return { fetchMock, logged: logAdConversion.mock.calls[0]?.[1] as { status: string; errorMessage?: string } | undefined };
+  };
+
+  it('events_received=1 なら送信済みにする。本文に test_event_code と LP の URL が入る', async () => {
+    const { fetchMock, logged } = await run(new Response(JSON.stringify({ events_received: 1, fbtrace_id: 'tr' })));
+    const [url, init] = (fetchMock.mock.calls as unknown as [string, RequestInit][])[0];
+    expect(url).toBe('https://graph.facebook.com/v21.0/1026661405227668/events');
+    const body = JSON.parse(String(init.body));
+    expect(body.test_event_code).toBe('TEST123');
+    expect(body.data[0]).toMatchObject({ event_name: 'CompleteRegistration', event_id: 'friend-1:line_friend_add', event_source_url: 'https://furimauto.com/lp/switch/' });
+    expect(logged).toMatchObject({ status: 'sent', clickId: 'FB_TEST', clickIdType: 'fbclid' });
+  });
+
+  it('200 でも events_received が 1 でなければ failed にする', async () => {
+    const { logged } = await run(new Response(JSON.stringify({ events_received: 0, fbtrace_id: 'tr' })));
+    expect(logged).toMatchObject({ status: 'failed' });
+    expect(logged!.errorMessage).toContain('events_received=0');
+  });
+
+  it('フォローから 7 日を超えた友だちは送らず、記録も残さない', async () => {
+    const { fetchMock, logged } = await run(new Response('{}'), new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString());
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(logged).toBeUndefined();
+  });
+
+  it('エラーの記録にアクセストークンを残さない', async () => {
+    const { logged } = await run(new Response('bad', { status: 400 }));
+    expect(logged!.status).toBe('failed');
+    expect(JSON.stringify(logged)).not.toContain('tok');
   });
 });

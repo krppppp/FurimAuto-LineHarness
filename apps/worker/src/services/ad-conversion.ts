@@ -90,7 +90,13 @@ export async function sendAdConversions(
       switch (platform.name) {
         case 'meta':
           if (ref.fbclid) {
-            await sendMetaConversion(config, ref, eventName, eventValue);
+            const metaEvent = await buildMetaConversionEvent(
+              ref, eventName, eventValue,
+              { friendId, followedAt: friend?.created_at ?? null, ...(await getMetaLandingView(db, ref.lp_session_id)) },
+            );
+            // Meta が受け付けるのは 7 日以内。古いフォローは送らない（TB-1790）
+            if (!metaEvent) break;
+            await sendMetaConversion(config, metaEvent);
             await logAdConversion(db, {
               platformId: platform.id, friendId, eventName,
               clickId: ref.fbclid, clickIdType: 'fbclid', status: 'sent',
@@ -184,20 +190,60 @@ export async function retryMissedAdConversions(db: D1Database): Promise<void> {
   }
 }
 
-async function sendMetaConversion(
-  config: AdPlatformConfig,
-  ref: RefTracking,
+// ピクセルの CTA クリック（Lead）と名前を分け、二重に数えないようにする（TB-1731）
+const META_EVENT_NAMES: Record<string, string> = { line_friend_add: 'CompleteRegistration' };
+const META_SITE_ORIGIN = 'https://furimauto.com';
+const META_DEFAULT_SOURCE_URL = `${META_SITE_ORIGIN}/service/`;
+const META_MAX_EVENT_AGE_MS = 7 * 24 * 60 * 60_000;
+
+type MetaLandingView = { firstSeenAt: string | null; page: string | null };
+
+/** fbclid を最初に見た LP の view（中継の /r/ は除く）。sid が無い・view が無いときは null */
+async function getMetaLandingView(db: D1Database, lpSessionId: string | null): Promise<MetaLandingView> {
+  if (!lpSessionId) return { firstSeenAt: null, page: null };
+  const row = await db
+    .prepare(
+      `SELECT page, created_at FROM lp_events
+       WHERE session_id = ? AND event_type = 'view' AND page NOT LIKE '/r/%'
+       ORDER BY created_at ASC, id ASC LIMIT 1`,
+    )
+    .bind(lpSessionId)
+    .first<{ page: string; created_at: string }>();
+  return { firstSeenAt: row?.created_at ?? null, page: row?.page ?? null };
+}
+
+function parseTime(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Meta CAPI に送る 1 件。フォローから 7 日を超えていたら null（送らない） */
+export async function buildMetaConversionEvent(
+  ref: Pick<RefTracking, 'fbclid' | 'ip_address' | 'user_agent' | 'created_at'>,
   eventName: string,
-  eventValue?: number,
-): Promise<void> {
-  const url = `https://graph.facebook.com/v21.0/${config.pixel_id}/events`;
+  eventValue: number | undefined,
+  ctx: { friendId: string; followedAt: string | null } & MetaLandingView,
+  now: Date = new Date(),
+): Promise<Record<string, unknown> | null> {
+  const followedMs = parseTime(ctx.followedAt) ?? now.getTime();
+  if (now.getTime() - followedMs > META_MAX_EVENT_AGE_MS) return null;
+  const firstSeenMs = Math.min(parseTime(ctx.firstSeenAt) ?? parseTime(ref.created_at) ?? followedMs, followedMs);
 
   const eventData: Record<string, unknown> = {
-    event_name: eventName,
-    event_time: Math.floor(Date.now() / 1000),
+    event_name: META_EVENT_NAMES[eventName] ?? eventName,
+    event_time: Math.floor(followedMs / 1000),
+    event_id: `${ctx.friendId}:${eventName}`,
     action_source: 'website',
+    event_source_url: ctx.page?.startsWith('/') ? `${META_SITE_ORIGIN}${ctx.page}` : META_DEFAULT_SOURCE_URL,
     user_data: {
-      fbc: `fb.1.${Date.now()}.${ref.fbclid}`,
+      fbc: `fb.1.${firstSeenMs}.${ref.fbclid}`,
+      external_id: await sha256Hex(ctx.friendId),
       client_ip_address: ref.ip_address || undefined,
       client_user_agent: ref.user_agent || undefined,
     },
@@ -206,6 +252,14 @@ async function sendMetaConversion(
   if (eventValue) {
     eventData.custom_data = { currency: 'JPY', value: eventValue };
   }
+  return eventData;
+}
+
+export async function sendMetaConversion(
+  config: AdPlatformConfig,
+  eventData: Record<string, unknown>,
+): Promise<{ events_received?: number; fbtrace_id?: string }> {
+  const url = `https://graph.facebook.com/v21.0/${config.pixel_id}/events`;
 
   const body: Record<string, unknown> = {
     data: [eventData],
@@ -226,6 +280,12 @@ async function sendMetaConversion(
     const errorBody = await response.text();
     throw new Error(`Meta CAPI error: ${response.status} ${errorBody}`);
   }
+  // 200 でも受け付けた件数が足りなければ失敗として残す（TB-1790）
+  const result = await response.json<{ events_received?: number; fbtrace_id?: string }>();
+  if (result.events_received !== 1) {
+    throw new Error(`Meta CAPI events_received=${result.events_received ?? 'missing'} fbtrace_id=${result.fbtrace_id ?? ''}`);
+  }
+  return result;
 }
 
 async function sendXConversion(
