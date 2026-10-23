@@ -640,7 +640,7 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     ...baseEnv,
     STRIPE_SECRET_KEY: 'sk_test_dummy',
     FIREBASE_DATABASE_URL: 'https://example.firebaseio.com',
-    GEMINI_API_KEY: 'gemini-key',
+    AI: { run: vi.fn() },
     GITHUB_PAT: 'github-pat',
   };
 
@@ -806,7 +806,7 @@ describe('POST /webhook — 解約理由の自由記述（TB-740）', () => {
     ...baseEnv,
     STRIPE_SECRET_KEY: 'sk_test_dummy',
     FIREBASE_DATABASE_URL: 'https://example.firebaseio.com',
-    GEMINI_API_KEY: 'gemini-key',
+    AI: { run: vi.fn() },
     GITHUB_PAT: 'github-pat',
   };
 

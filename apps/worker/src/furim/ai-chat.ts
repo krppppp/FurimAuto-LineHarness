@@ -13,10 +13,13 @@ import { recordBotHandlerError } from './bot-routed-message.js';
  * - 機能ごとの解説動画の案内（旧 FUNCTION_URLS）と、「答えが見つからないとき」の長尺動画への誘導はやめる
  * - AI が出した章の id は、説明書を取得したときに作った見出し id の一覧にあるときだけ URL にする（作り話の id で飛ばないリンクを送らない）
  * - 1 問 1 答で furim_ai_chat_logs に 1 行残す（くろさん「誰がどの質問でどういった回答をしたのかを D1 で」）
+ *
+ * 2026-10-23（TB-2156）: Gemini の前払いクレジット切れ（402）で止まったため、補充せず Cloudflare Workers AI（無料枠）に切り替えた。
+ * モデルは Gemma 4 26B。思考（reasoning）を切らないと 1 回 45 秒かかり webhook の打ち切りに間に合わないので enable_thinking=false で呼ぶ
  */
 
 export type AIChatEnv = {
-  GEMINI_API_KEY: string;
+  AI: { run(model: string, input: unknown): Promise<unknown> };
   GITHUB_PAT: string;
   FIREBASE_DATABASE_URL: string;
   /** 説明書の本文のキャッシュと、直近の使用量の記録に使う */
@@ -38,7 +41,7 @@ export const JOIN_STEPS_TEXT =
   '有料プランは次の4ステップでお申し込みいただけます。\n1. リッチメニューの「ガイド」タブ →「プラン診断」をタップ\n2. 自動返信で届くURLをタップ\n3. プランを選択して申し込み\n4. その後LINEに送られてくる決済URLからクレジットカード決済';
 export const PLAN_CHANGE_STEPS_TEXT =
   'ご契約中のプランの変更・機能やサイトの追加は、次の4ステップでお手続きいただけます。\n1. リッチメニューの「ガイド」タブ →「プラン診断」をタップ\n2. 自動返信で届くURLをタップ（今のご契約内容が選ばれた状態で開きます）\n3. 変更したい内容に選び直して「この内容にプラン変更する」をタップし、確認画面の金額を見て確定\n4. LINEに「プラン変更が完了しました」が届いたら、続けて届く新しいキーコードを拡張機能に入力し直してください\n・決済URLは届きません。月額が上がる変更は、残り期間の差額（日割り）が登録済みのカードに請求され、すぐに切り替わります。下がる変更は返金なしで、次回の更新日に切り替わります（新しいキーコードは更新日に届きます）。\n・一度解約して申し込み直す必要はありません。\n・開いた画面で今のご契約内容が選ばれていない場合や、ご契約中なのに「決済ページへ進む」ボタンが届いた場合は、申し込み・決済をせずに、リッチメニュー下部の「AIチャットボットを終了する」→「追加サポートを希望する」からご連絡ください。';
-const GEMINI_ERROR_TEXT ='AIからの応答中にエラーが発生しました。少し時間をおいて、もう一度お試しください。';
+const AI_ERROR_TEXT ='AIからの応答中にエラーが発生しました。少し時間をおいて、もう一度お試しください。';
 
 const SPEC_FILE_PATHS = ['faq.md'];
 
@@ -67,34 +70,38 @@ async function fetchSpecFiles(githubPat: string): Promise<string> {
   return results.filter(Boolean).join('\n\n---\n\n');
 }
 
-/**
- * 429 の再試行は短く、合計の上限つき。webhook の処理は応答後の約 30 秒で打ち切られるため、
- * 以前の 10・20・40・80 秒の待ちでは、再試行に入った時点で返信が出ないまま打ち切られていた
- */
-const RETRY_DELAYS_MS = [2000, 4000];
-const GEMINI_DEADLINE_MS = 20_000;
+export const AI_MODEL = '@cf/google/gemma-4-26b-a4b-it';
+/** webhook の処理は応答後の約 30 秒で打ち切られるため、それより前に諦めてエラーの返信と記録を残す */
+const AI_DEADLINE_MS = 20_000;
 
-async function callGeminiWithRetry(apiKey: string, body: unknown, startedAt: number): Promise<Response> {
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const delay = RETRY_DELAYS_MS[attempt];
-    if (res.status === 429 && delay !== undefined && Date.now() - startedAt + delay < GEMINI_DEADLINE_MS) {
-      console.warn(`[furim/ai-chat] 429 retry ${attempt + 1}/${RETRY_DELAYS_MS.length} after ${delay}ms`);
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      continue;
-    }
-    return res;
+type WorkersAIResult = {
+  choices?: Array<{ message?: { content?: string | null } }>;
+  response?: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+};
+
+async function callWorkersAI(ai: AIChatEnv['AI'], content: string): Promise<WorkersAIResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout ${AI_DEADLINE_MS}ms`)), AI_DEADLINE_MS);
+  });
+  try {
+    return (await Promise.race([
+      ai.run(AI_MODEL, {
+        messages: [{ role: 'user', content }],
+        max_completion_tokens: 1024,
+        chat_template_kwargs: { enable_thinking: false },
+      }),
+      deadline,
+    ])) as WorkersAIResult;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 /**
- * Gemini に渡すプロンプト。固定の指示・説明書・faq.md を先頭（prefix）、会話履歴とお客様のメッセージを末尾（suffix）に置く。
- * systemInstruction と contents を分けると履歴が増えたときに不安定だった（2026-04-24）ため、1 つの user メッセージの 2 つの part で送る
+ * AI に渡すプロンプト。固定の指示・説明書・faq.md を先頭（prefix）、会話履歴とお客様のメッセージを末尾（suffix）に置く。
+ * systemInstruction と contents を分けると履歴が増えたときに不安定だった（2026-04-24・Gemini）ため、1 つの user メッセージにつなげて送る
  */
 export function buildAIChatPrompt(input: { howtoText: string; faqText: string; history: ChatMessage[]; queryText: string }): { prefix: string; suffix: string } {
   const hasHowto = Boolean(input.howtoText);
@@ -197,7 +204,7 @@ export function parseAIReply(raw: string, validIds: ReadonlySet<string>): Parsed
   return { text, anchorId, anchorRejected, keycodeReset, fallback: text.includes(FALLBACK_MARKER) };
 }
 
-export type GeminiUsage = {
+export type AIUsage = {
   promptTokenCount?: number;
   cachedContentTokenCount?: number;
   candidatesTokenCount?: number;
@@ -225,7 +232,7 @@ type GeneratedReply = {
   answer: string;
   parsed: ParsedAIReply | null;
   howtoSource: string;
-  usage: GeminiUsage;
+  usage: AIUsage;
   error: string | null;
 };
 
@@ -242,21 +249,24 @@ async function generateAIResponse(queryText: string, lineUserId: string, env: AI
   }
 
   const { prefix, suffix } = buildAIChatPrompt({ howtoText: howto.text, faqText, history, queryText });
-  const res = await callGeminiWithRetry(env.GEMINI_API_KEY, {
-    contents: [{ role: 'user', parts: [{ text: prefix }, { text: suffix }] }],
-  }, startedAt);
-
-  if (!res.ok) {
-    const detail = await res.text();
-    console.error('[furim/ai-chat] Gemini API error:', res.status, detail);
-    return { messages: [{ type: 'text', text: GEMINI_ERROR_TEXT }], answer: GEMINI_ERROR_TEXT, parsed: null, howtoSource: howto.source, usage: {}, error: `gemini ${res.status}: ${detail.slice(0, 200)}` };
+  let result: WorkersAIResult;
+  try {
+    result = await callWorkersAI(env.AI, `${prefix}\n${suffix}`);
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    console.error('[furim/ai-chat] Workers AI error:', detail);
+    return { messages: [{ type: 'text', text: AI_ERROR_TEXT }], answer: AI_ERROR_TEXT, parsed: null, howtoSource: howto.source, usage: {}, error: `workers-ai: ${detail.slice(0, 200)}` };
   }
 
-  const json = await res.json() as { candidates?: Array<{ content: { parts: Array<{ text: string }> } }>; usageMetadata?: GeminiUsage };
-  const rawReply = json.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  const usage = json.usageMetadata ?? {};
+  const rawReply = result.choices?.[0]?.message?.content ?? result.response ?? '';
+  const usage: AIUsage = {
+    promptTokenCount: result.usage?.prompt_tokens,
+    cachedContentTokenCount: result.usage?.prompt_tokens_details?.cached_tokens,
+    candidatesTokenCount: result.usage?.completion_tokens,
+    totalTokenCount: result.usage?.total_tokens,
+  };
   if (!rawReply) {
-    return { messages: [{ type: 'text', text: GEMINI_ERROR_TEXT }], answer: GEMINI_ERROR_TEXT, parsed: null, howtoSource: howto.source, usage, error: 'gemini empty reply' };
+    return { messages: [{ type: 'text', text: AI_ERROR_TEXT }], answer: AI_ERROR_TEXT, parsed: null, howtoSource: howto.source, usage, error: 'workers-ai empty reply' };
   }
 
   const parsed = parseAIReply(rawReply, new Set(howto.ids));
@@ -280,6 +290,7 @@ async function generateAIResponse(queryText: string, lineUserId: string, env: AI
   await recordUsage(env.FURIM_EXT_CACHE, {
     at: new Date(startedAt).toISOString(),
     latencyMs: Date.now() - startedAt,
+    model: AI_MODEL,
     howto: howto.source,
     howtoChars: howto.text.length,
     howtoIds: howto.ids.length,
@@ -313,7 +324,7 @@ async function insertChatLog(db: D1Database | undefined, id: string, lineUserId:
 async function finishChatLog(
   db: D1Database | undefined,
   id: string,
-  r: { answer: string; parsed: ParsedAIReply | null; latencyMs: number; replyStatus: 'replied' | 'pushed' | 'failed'; error: string | null; howtoSource: string; usage: GeminiUsage },
+  r: { answer: string; parsed: ParsedAIReply | null; latencyMs: number; replyStatus: 'replied' | 'pushed' | 'failed'; error: string | null; howtoSource: string; usage: AIUsage },
 ): Promise<void> {
   if (!db) return;
   try {

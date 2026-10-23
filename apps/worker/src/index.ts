@@ -164,6 +164,8 @@ export type Env = {
     FIREBASE_DB_SECRET?: string;
     STRIPE_SECRET_KEY?: string;
     GEMINI_API_KEY?: string;
+    // LINE の AI チャットボット（furim/ai-chat.ts・TB-2156 で Gemini から切り替え）
+    AI?: { run(model: string, input: unknown): Promise<unknown> };
     GITHUB_PAT?: string;
     RICHMENU_DEFAULT_HOME?: string;
     RICHMENU_MEMBER_HOME?: string;

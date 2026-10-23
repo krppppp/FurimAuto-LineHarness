@@ -33,6 +33,10 @@ bucket_name = "line-harness-images"
 binding = "FURIM_EXT_CACHE"
 id = "d8574e633feb478088074d0756494352"
 
+# LINE の AI チャットボット（furim/ai-chat.ts）。Gemini の前払い切れで Workers AI の無料枠に切り替えた（TB-2156）
+[ai]
+binding = "AI"
+
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 
@@ -89,6 +93,9 @@ bucket_name = "line-harness-images"
 binding = "FURIM_EXT_CACHE"
 id = "d8574e633feb478088074d0756494352"
 
+[env.dev.ai]
+binding = "AI"
+
 [env.dev.triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 
@@ -135,6 +142,9 @@ bucket_name = "line-harness-images"
 [[env.prod.kv_namespaces]]
 binding = "FURIM_EXT_CACHE"
 id = "0e6c4e7a19d047b9a4a4ca1044c29967"
+
+[env.prod.ai]
+binding = "AI"
 
 [env.prod.triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
