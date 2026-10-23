@@ -13,16 +13,16 @@ function makeDb() {
   return { db, runs };
 }
 
-function stubFetch(geminiText: string) {
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    if (String(url).includes('api.github.com')) {
-      return new Response(JSON.stringify({ content: Buffer.from('料金は月額です', 'utf8').toString('base64') }), { status: 200 });
-    }
-    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: geminiText }] } }], usageMetadata: { promptTokenCount: 40000 } }), { status: 200 });
-  }));
+let aiRun: ReturnType<typeof vi.fn>;
+
+function stubFetch(aiText: string) {
+  vi.stubGlobal('fetch', vi.fn(async () =>
+    new Response(JSON.stringify({ content: Buffer.from('料金は月額です', 'utf8').toString('base64') }), { status: 200 }),
+  ));
+  aiRun = vi.fn(async () => ({ choices: [{ message: { content: aiText } }], usage: { prompt_tokens: 40000, completion_tokens: 80 } }));
 }
 
-const env = (db: D1Database) => ({ GEMINI_API_KEY: 'k', GITHUB_PAT: 'p', FIREBASE_DATABASE_URL: 'https://fb', DB: db });
+const env = (db: D1Database) => ({ AI: { run: aiRun }, GITHUB_PAT: 'p', FIREBASE_DATABASE_URL: 'https://fb', DB: db });
 
 beforeEach(() => {
   vi.unstubAllGlobals();
@@ -84,5 +84,33 @@ describe('handleAIChat（Capsec #307）', () => {
 
     const urls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
     expect(urls).toContain('https://api.github.com/repos/krppppp/furimauto-faq/contents/faq.md');
+  });
+
+  it('Workers AI の Gemma 4 を思考なしで呼ぶ（TB-2156。思考ありだと 45 秒かかり webhook の打ち切りに間に合わない）', async () => {
+    stubFetch('【AIチャットボット】\n料金は月額です。');
+    const { db } = makeDb();
+    const client = { replyMessage: vi.fn(async () => ({})), pushMessage: vi.fn(async () => ({})) };
+
+    await handleAIChat(client as never, 'Uabc', 'rt', '料金は？', env(db));
+
+    const [model, input] = aiRun.mock.calls[0] as [string, { messages: Array<{ role: string; content: string }>; chat_template_kwargs: unknown }];
+    expect(model).toBe('@cf/google/gemma-4-26b-a4b-it');
+    expect(input.chat_template_kwargs).toEqual({ enable_thinking: false });
+    expect(input.messages).toHaveLength(1);
+    expect(input.messages[0].content).toContain('お客様からのメッセージ: 料金は？');
+  });
+
+  it('Workers AI が失敗したら（無料枠の超過など）エラーの文面を返し、error に残す', async () => {
+    stubFetch('');
+    aiRun = vi.fn(async () => { throw new Error('4006: you have used up your daily free allocation of 10,000 neurons'); });
+    const { db, runs } = makeDb();
+    const client = { replyMessage: vi.fn(async () => ({})), pushMessage: vi.fn(async () => ({})) };
+
+    await handleAIChat(client as never, 'Uabc', 'rt', '料金は？', env(db));
+
+    const sent = (client.replyMessage.mock.calls[0] as unknown as [string, Array<{ text: string }>])[1];
+    expect(sent[0].text).toContain('AIからの応答中にエラーが発生しました');
+    const update = runs.find((r) => r.sql.includes('UPDATE furim_ai_chat_logs'))!;
+    expect(String(update.binds[6])).toContain('workers-ai: 4006');
   });
 });
