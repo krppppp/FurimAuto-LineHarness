@@ -27,12 +27,12 @@ import { invalidateExtCache } from '../furim/ext-auth.js';
 
 // X口コミクーポン申請の通知先（くろさん）。申請URLと付与コマンドをpushする
 const X_REVIEW_STAFF_LINE_USER_ID = 'U5d35c3e6b2be0a6ec699b2a1de2aba93';
-import { handleAIChat } from '../furim/ai-chat.js';
+import { handleAIChat, type AIChatEnv } from '../furim/ai-chat.js';
 import { getAiMode } from '../furim/firebase-client.js';
 import { withOutgoingLog } from '../utils/message-log.js';
 import { notifyStaffOfIncomingMessage } from '../services/push-notify.js';
 
-type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; GEMINI_API_KEY?: string; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; WORKER_NAME?: string; FURIM_TICKET_LIFF_URL?: string; FURIM_TICKET_PRICE_IDS?: string; FURIM_EXT_CACHE?: KVNamespace };
+type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; AI?: AIChatEnv['AI']; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; WORKER_NAME?: string; FURIM_TICKET_LIFF_URL?: string; FURIM_TICKET_PRICE_IDS?: string; FURIM_EXT_CACHE?: KVNamespace };
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -741,10 +741,10 @@ async function handleEvent(
     // 下の自動返信チェックで処理する。ai_mode は「AIチャットボットを終了する」を押すまで true の
     // ままなので、ここで return するとボタンを押しても URL が返らない（TB-718 / TB-662）。
     // contains マッチは AIチャット中の自由文とぶつかるため対象外（今までどおり AI が答える）。
-    if (env?.FIREBASE_DATABASE_URL && env?.GEMINI_API_KEY && env?.GITHUB_PAT) {
+    if (env?.FIREBASE_DATABASE_URL && env?.AI && env?.GITHUB_PAT) {
       const isAIMode = await getAiMode(env.FIREBASE_DATABASE_URL, userId);
       if (isAIMode && !(await findExactAutoReply(db, incomingText, lineAccountId))) {
-        await handleAIChat(loggingClient, userId, event.replyToken, incomingText, { GEMINI_API_KEY: env.GEMINI_API_KEY, GITHUB_PAT: env.GITHUB_PAT, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, DB: db });
+        await handleAIChat(loggingClient, userId, event.replyToken, incomingText, { AI: env.AI, GITHUB_PAT: env.GITHUB_PAT, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, DB: db });
         return;
       }
     }
