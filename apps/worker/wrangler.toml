@@ -199,11 +199,11 @@ workers_dev = true
 directory = "dist/client"
 binding = "ASSETS"
 
-# database_id は本番操作「D1 line-crm-fmb を作る」の後に、出力された id に置き換える（それまではデプロイできない）
+# line-crm-fmb は 2026-10-24 09:53 に作成（TB-2209・F事業のリーダー指名 7dd3dfdc）
 [[env.fmb.d1_databases]]
 binding = "DB"
 database_name = "line-crm-fmb"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "1bcb4bcd-c2a2-4b91-94bb-d6eb1de238c8"
 
 [[env.fmb.routes]]
 pattern = "furimauto.com/r/fmb_*"
@@ -218,7 +218,7 @@ enabled = true
 [env.fmb.vars]
 FURIM_MODE = "off"
 WORKER_NAME = "line-harness-fmb"
-D1_DATABASE_ID = "00000000-0000-0000-0000-000000000000"
+D1_DATABASE_ID = "1bcb4bcd-c2a2-4b91-94bb-d6eb1de238c8"
 WORKER_PUBLIC_URL = "https://line-harness-fmb.furimuato.workers.dev"
 LIFF_PUBLIC_URL = "https://line-harness-fmb.furimuato.workers.dev"
 CF_ACCOUNT_ID = "f2b335f4f9d276383643c76f1e5cc6f9"
