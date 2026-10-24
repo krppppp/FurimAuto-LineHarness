@@ -13,25 +13,28 @@ import { defineConfig, loadEnv } from "vite";
 // LIFF ID が焼かれ、友だち追加が「Invalid LIFF ID」で全断する。
 // CLOUDFLARE_ENV=prod のときは `.env.prod` を明示的に読み込んで上書きし、
 // さらに DEV 値のまま通り抜けないようビルド前に落とす。
-const isProdBuild = process.env.CLOUDFLARE_ENV === "prod";
-const prodEnv = isProdBuild ? loadEnv("prod", __dirname, "VITE_") : {};
+// 新 LINE（CLOUDFLARE_ENV=fmb・TB-2209）も同じ形で `.env.fmb` を読み、新 LINE の LINE ログインチャネルの LIFF ID 以外なら落とす。
+const LIFF_ID_PREFIX: Record<string, string> = { prod: "1660804123-", fmb: "2012165991-" };
+const buildEnv = process.env.CLOUDFLARE_ENV ?? "";
+const isPinnedBuild = buildEnv in LIFF_ID_PREFIX;
+const pinnedEnv = isPinnedBuild ? loadEnv(buildEnv, __dirname, "VITE_") : {};
 
-if (isProdBuild) {
-  const liffId = prodEnv.VITE_LIFF_ID;
+if (isPinnedBuild) {
+  const liffId = pinnedEnv.VITE_LIFF_ID;
   if (!liffId) {
-    throw new Error("prod ビルドなのに .env.prod の VITE_LIFF_ID がありません");
+    throw new Error(`${buildEnv} ビルドなのに .env.${buildEnv} の VITE_LIFF_ID がありません`);
   }
-  if (!liffId.startsWith("1660804123-")) {
-    throw new Error(`prod ビルドに本番以外の LIFF ID が指定されています: ${liffId}`);
+  if (!liffId.startsWith(LIFF_ID_PREFIX[buildEnv])) {
+    throw new Error(`${buildEnv} ビルドに ${buildEnv} 以外の LIFF ID が指定されています: ${liffId}`);
   }
 }
 
 export default defineConfig({
   plugins: [cloudflare(), react(), tailwindcss()],
-  define: isProdBuild
+  define: isPinnedBuild
     ? {
-        "import.meta.env.VITE_LIFF_ID": JSON.stringify(prodEnv.VITE_LIFF_ID),
-        "import.meta.env.VITE_BOT_BASIC_ID": JSON.stringify(prodEnv.VITE_BOT_BASIC_ID ?? ""),
+        "import.meta.env.VITE_LIFF_ID": JSON.stringify(pinnedEnv.VITE_LIFF_ID),
+        "import.meta.env.VITE_BOT_BASIC_ID": JSON.stringify(pinnedEnv.VITE_BOT_BASIC_ID ?? ""),
       }
     : {},
 });

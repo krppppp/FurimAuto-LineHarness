@@ -24,6 +24,7 @@ import { FRIEND_TRIAL_DAYS, formatJstIso, generateTrialKeyCode, getFurimCustomer
 import { loadPlanPayload, planFeaturesToFlags, TRIAL_PLAN_NAME } from '../furim/legacy-keywords.js';
 import { upsertFeatureFlags } from '../furim/customer-sync.js';
 import { invalidateExtCache } from '../furim/ext-auth.js';
+import { isFurimOff } from '../furim/mode.js';
 
 // X口コミクーポン申請の通知先（くろさん）。申請URLと付与コマンドをpushする
 const X_REVIEW_STAFF_LINE_USER_ID = 'U5d35c3e6b2be0a6ec699b2a1de2aba93';
@@ -32,7 +33,7 @@ import { getAiMode } from '../furim/firebase-client.js';
 import { withOutgoingLog } from '../utils/message-log.js';
 import { notifyStaffOfIncomingMessage } from '../services/push-notify.js';
 
-type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; AI?: AIChatEnv['AI']; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; WORKER_NAME?: string; FURIM_TICKET_LIFF_URL?: string; FURIM_TICKET_PRICE_IDS?: string; FURIM_EXT_CACHE?: KVNamespace };
+type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; AI?: AIChatEnv['AI']; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; WORKER_NAME?: string; FURIM_TICKET_LIFF_URL?: string; FURIM_TICKET_PRICE_IDS?: string; FURIM_EXT_CACHE?: KVNamespace; FURIM_MODE?: string };
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -236,6 +237,8 @@ async function handleEvent(
   r2?: R2Bucket,
   env?: WebhookEnv,
 ): Promise<void> {
+  // FURIM_MODE=off（新 LINE・TB-2209）では FurimAuto 専用の分岐（試用・キーコード・決済・セミナー・AI チャット等）を通さない
+  const furimOff = isFurimOff(env);
   if (event.type === 'follow') {
     const userId =
       event.source.type === 'user' ? event.source.userId : undefined;
@@ -280,7 +283,7 @@ async function handleEvent(
     // 試用キーコードは Worker が先に生成して D1 に持つ（Capsec #243）。GAS setCustomerData には
     // automation の args {{key_code}} で渡し、シートにも同じ値が書かれる。GAS が遅くても
     // 「キーコード発行」タップは D1 から即返せる。再フォロー・生成済みなら触らない
-    if (isNewUser) {
+    if (isNewUser && !furimOff) {
       try {
         const nowMs = Date.now();
         const existingCustomer = await getFurimCustomer(db, userId);
@@ -353,7 +356,7 @@ async function handleEvent(
     // （auto_replies は contains マッチもあるので、後ろに置くと取り違える）
     const { parseSeminarVoteData, recordSeminarVote, voteReplyText, parseSeminarTopicData, recordSeminarTopicVote, topicReplyText } = await import('../furim/seminar.js');
     // 聞きたい内容アンケート（TB-821）。日程の票と同じく auto_replies より前に処理する
-    const topic = parseSeminarTopicData(postbackData);
+    const topic = furimOff ? null : parseSeminarTopicData(postbackData);
     if (topic) {
       try {
         const result = await recordSeminarTopicVote(db, { weekId: topic.weekId, topicId: topic.topicId, friendId: friend.id, lineUserId: userId });
@@ -363,7 +366,7 @@ async function handleEvent(
       }
       return;
     }
-    const vote = parseSeminarVoteData(postbackData);
+    const vote = furimOff ? null : parseSeminarVoteData(postbackData);
     if (vote) {
       try {
         const result = await recordSeminarVote(db, { weekId: vote.weekId, slotId: vote.slotId, friendId: friend.id, lineUserId: userId });
@@ -534,7 +537,7 @@ async function handleEvent(
 
     // 【プラン変更】PB-XXXXXX: 既存契約者のLIFF申込。新規Checkoutではなく
     // 既存サブスクをin-place更新し、残り期間の差額を日割りで即時決済する
-    if (incomingText.startsWith('【プラン変更】') && env?.STRIPE_SECRET_KEY) {
+    if (!furimOff && incomingText.startsWith('【プラン変更】') && env?.STRIPE_SECRET_KEY) {
       const { handlePlanChangeMessage } = await import('../furim/plan-change.js');
       // handler 自身も失敗を記録・通知するが、その外側（import や record）で落ちた場合も
       // 本人に push が届くように runHandlerSafely で包む（Capsec #240）
@@ -550,7 +553,7 @@ async function handleEvent(
 
     // 【プラン申し込み】PB-XXXXXX: plan-builder LIFFの申込ボタンから送られる申込メッセージ。
     // 申込コードで選択内容を引き、Checkoutリンク（12時間有効）をFlexで返信する
-    if (incomingText.startsWith('【プラン申し込み】') && env?.STRIPE_SECRET_KEY) {
+    if (!furimOff && incomingText.startsWith('【プラン申し込み】') && env?.STRIPE_SECRET_KEY) {
       const { handlePlanApplyMessage } = await import('../furim/plan-apply.js');
       await handlePlanApplyMessage(db, loggingClient, userId, event.replyToken, incomingText, {
         STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
@@ -563,7 +566,7 @@ async function handleEvent(
     // 【ボタン】アクション（TB-765）: Flex・リッチメニューのボタンが送る文。Worker だけで捌き、GAS の有無に依らない。
     // handleButtonAction の分岐に無い語は、AIモード判定より前に exact の auto_reply を引いて返す
     // （AIモード中でもボタンの返事が届くように）。どちらにも無ければ今までどおり「準備中」を返す
-    if (incomingText.includes('【ボタン】') && env) {
+    if (!furimOff && incomingText.includes('【ボタン】') && env) {
       const buttonEnv = env;
       await runHandlerSafely('handleButtonAction', loggingClient, userId, 'もう一度ボタンをタップしてください', async () => {
         const handled = await handleButtonAction(loggingClient, userId, event.replyToken, incomingText, {
@@ -586,13 +589,13 @@ async function handleEvent(
     }
 
     // リッチメニュー切り替え: 【リッチメニュー】プレフィックスのメッセージを処理
-    if (env) {
+    if (env && !furimOff) {
       const richMenuHandled = await handleRichMenuSwitch(db, loggingClient, userId, friend.id, incomingText, event.replyToken, env);
       if (richMenuHandled) return;
     }
 
     // FurimAutoアクション: キーコード発行・会員ページ等の業務処理
-    if (env) {
+    if (env && !furimOff) {
       const furimHandled = await runHandlerSafely('handleFurimAction', loggingClient, userId, 'もう一度お試しください', () => handleFurimAction(loggingClient, userId, event.replyToken, incomingText, {
         FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL,
         STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
@@ -609,7 +612,7 @@ async function handleEvent(
     // 長い文に「キーコードリセット」が含まれても、ここに入れず未返信に残して人が判断する
     const keycodeReset = isKeycodeResetRequest(incomingText);
     const keywordOnly = incomingText.includes('【キーワード】') && !incomingText.includes('キーコードリセット');
-    if ((keywordOnly || keycodeReset) && env) {
+    if ((keywordOnly || keycodeReset) && env && !furimOff) {
       const retryHint = keycodeReset
         ? 'もう一度「キーコードリセット」と送信してください'
         : 'もう一度お試しください';
@@ -622,7 +625,7 @@ async function handleEvent(
     // ガイドタブ「クーポンGET」でポストURLの送信を案内している（2026-08-18〜スクショ運用を廃止）。
     // 受付返信＋タグ付けをし、スタッフへURL直リンク付きで通知する（検索・照合の手間をなくす）
     const xPostUrl = incomingText.match(/https?:\/\/(?:www\.)?(?:x\.com|twitter\.com|mobile\.twitter\.com)\/[A-Za-z0-9_]+\/status\/\d+\S*/)?.[0];
-    if (xPostUrl) {
+    if (xPostUrl && !furimOff) {
       try {
         const tagName = 'X口コミ申請';
         let tag = await db.prepare('SELECT id FROM tags WHERE name = ?').bind(tagName).first<{ id: string }>();
@@ -649,7 +652,7 @@ async function handleEvent(
     }
 
     // Furimanですクーポン（AIチャットモード中でも通す）
-    if ((incomingText.includes('furimanです') || incomingText.includes('Furimanです')) && env?.STRIPE_SECRET_KEY) {
+    if ((incomingText.includes('furimanです') || incomingText.includes('Furimanです')) && env?.STRIPE_SECRET_KEY && !furimOff) {
       try {
         await actionFurimanCoupon(loggingClient, userId, event.replyToken, { FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY }, db);
       } catch (err) {
@@ -666,7 +669,7 @@ async function handleEvent(
     }
 
     // 解説見た/解説みたキーワード（AIチャットモード中でも通す）
-    if ((incomingText.trim() === '解説見た' || incomingText.trim() === '解説みた') && env) {
+    if ((incomingText.trim() === '解説見た' || incomingText.trim() === '解説みた') && env && !furimOff) {
       try {
         await actionExtendTrial(loggingClient, userId, event.replyToken, db, env.FURIM_EXT_CACHE);
       } catch (err) {
@@ -697,7 +700,7 @@ async function handleEvent(
     // ここで return してスタッフの受信箱に残らなかったのが TB-760 の穴。
     // 拾えなければ何もせず今までどおりの経路へ落とす（問い合わせの流れは変えない）
     let cancellationFreeText = false;
-    if (!isBotRoutedMessage) {
+    if (!isBotRoutedMessage && !furimOff) {
       try {
         const { recordCancellationReasonText, CANCELLATION_FREE_TEXT_REPLY } = await import('../furim/cancellation-reason.js');
         cancellationFreeText = await recordCancellationReasonText(db, userId, incomingText);
@@ -711,7 +714,7 @@ async function handleEvent(
     // 聞きたい内容アンケートの「6 その他」（TB-821）: 押してから 1 時間以内の最初の自由文を控える。
     // 解約理由と同じく、拾えたらお礼を返し、チャットの作成/更新とスタッフ通知は通して打ち切る
     let seminarTopicNote = false;
-    if (!isBotRoutedMessage && !cancellationFreeText) {
+    if (!isBotRoutedMessage && !cancellationFreeText && !furimOff) {
       try {
         const { recordSeminarTopicNote, TOPIC_NOTE_REPLY } = await import('../furim/seminar.js');
         seminarTopicNote = await recordSeminarTopicNote(db, friend.id, incomingText);
@@ -741,7 +744,7 @@ async function handleEvent(
     // 下の自動返信チェックで処理する。ai_mode は「AIチャットボットを終了する」を押すまで true の
     // ままなので、ここで return するとボタンを押しても URL が返らない（TB-718 / TB-662）。
     // contains マッチは AIチャット中の自由文とぶつかるため対象外（今までどおり AI が答える）。
-    if (env?.FIREBASE_DATABASE_URL && env?.AI && env?.GITHUB_PAT) {
+    if (!furimOff && env?.FIREBASE_DATABASE_URL && env?.AI && env?.GITHUB_PAT) {
       const isAIMode = await getAiMode(env.FIREBASE_DATABASE_URL, userId);
       if (isAIMode && !(await findExactAutoReply(db, incomingText, lineAccountId))) {
         await handleAIChat(loggingClient, userId, event.replyToken, incomingText, { AI: env.AI, GITHUB_PAT: env.GITHUB_PAT, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, DB: db });

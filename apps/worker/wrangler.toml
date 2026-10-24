@@ -184,3 +184,40 @@ FURIM_RENEWAL_UNLOCK = "on"
 # UNTIL の 2 日前を過ぎると開放は止まる。次に回すときは FROM と UNTIL を新しい日にしてデプロイ
 FURIM_RENEWAL_UNLOCK_ROUND_FROM = "2026-10-05"
 FURIM_RENEWAL_UNLOCK_ROUND_UNTIL = "2026-11-25"
+
+# ─── FMB環境（Worker名: line-harness-fmb）─────────────────────────────────
+# 新 LINE「フリマ物販トレンド情報局」（@533jinxg・プロバイダー 合同会社T4）を同じコードの別 Worker・別 D1 で動かす（TB-1358 案 B・TB-2209）。
+# FURIM_MODE=off で FurimAuto 専用の処理（試用・会員向け cron・キーコード等）を止める。FurimAuto の D1・KV・R2・furimauto.com の route は付けない。
+# 経路 URL は LINE に来る前に見えるので furim を含めない: workers.dev（furimuato）は使わず、t4-corp.com のサブドメインだけで受ける。
+# ビルド: CLOUDFLARE_ENV=fmb pnpm run build（.env.fmb の LIFF ID を焼く・vite.config.ts で取り違えを止める）
+# 本番に出すのは F事業のリーダーが Issue で決めてから（D1 の作成・database_id の置き換え・シークレット・デプロイは 1 操作ずつ）
+[env.fmb]
+workers_dev = false
+
+[env.fmb.assets]
+directory = "dist/client"
+binding = "ASSETS"
+
+# database_id は本番操作「D1 line-crm-fmb を作る」の後に、出力された id に置き換える（それまではデプロイできない）
+[[env.fmb.d1_databases]]
+binding = "DB"
+database_name = "line-crm-fmb"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[env.fmb.routes]]
+pattern = "line.t4-corp.com"
+custom_domain = true
+
+[env.fmb.triggers]
+crons = ["*/5 * * * *", "0 */6 * * *"]
+
+[env.fmb.observability]
+enabled = true
+
+[env.fmb.vars]
+FURIM_MODE = "off"
+WORKER_NAME = "line-harness-fmb"
+D1_DATABASE_ID = "00000000-0000-0000-0000-000000000000"
+WORKER_PUBLIC_URL = "https://line.t4-corp.com"
+LIFF_PUBLIC_URL = "https://line.t4-corp.com"
+CF_ACCOUNT_ID = "f2b335f4f9d276383643c76f1e5cc6f9"

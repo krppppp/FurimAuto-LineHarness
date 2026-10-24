@@ -9,6 +9,7 @@ import {
 } from '@line-crm/db';
 import { processStripeEvent, type StripeWebhookBody } from '../services/stripe-processor.js';
 import type { Env } from '../index.js';
+import { isFurimOff } from '../furim/mode.js';
 
 const stripe = new Hono<Env>();
 
@@ -70,6 +71,8 @@ async function verifyStripeSignature(secret: string, rawBody: string, sigHeader:
 }
 
 stripe.post('/api/integrations/stripe/webhook', async (c) => {
+  // 新 LINE の Worker（FURIM_MODE=off・TB-2209）は決済を持たない。署名の鍵も置かないので、受け口ごと閉じる
+  if (isFurimOff(c.env)) return c.json({ success: false, error: 'Not found' }, 404);
   try {
     const stripeSecret = (c.env as unknown as Record<string, string | undefined>).STRIPE_WEBHOOK_SECRET;
     let body: StripeWebhookBody;

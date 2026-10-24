@@ -644,7 +644,7 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     GITHUB_PAT: 'github-pat',
   };
 
-  async function postText(text: string, opts: { exactAutoReplyKeyword?: string; aiMode?: boolean } = {}) {
+  async function postText(text: string, opts: { exactAutoReplyKeyword?: string; aiMode?: boolean; env?: Record<string, unknown> } = {}) {
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getFriendByLineUserId).mockResolvedValue(aiModeFriend);
     vi.mocked(jstNow).mockReturnValue('2026-07-31T12:00:00.000+09:00');
@@ -715,7 +715,7 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
           ],
         }),
       },
-      { ...aiEnv, DB: db },
+      { ...aiEnv, ...opts.env, DB: db },
       executionCtx,
     );
 
@@ -775,6 +775,24 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     await postText('【ボタン】まだ無いボタン');
     expect(handleAIChat).not.toHaveBeenCalled();
     expect(lineClientMocks.replyMessage).toHaveBeenCalledWith('reply-token', [expect.objectContaining({ text: '現在急ピッチで準備中です！' })]);
+  });
+
+  // TB-2209: 新 LINE の Worker（FURIM_MODE=off）では FurimAuto の分岐を通らず、D1 の auto_reply とイベントだけで答える
+  test('FURIM_MODE=off では「解説見た」「Furimanです」・キーコード系・AIチャットに入らない', async () => {
+    for (const text of ['解説見た', 'Furimanです', 'キーコードリセット', 'こんにちは']) {
+      await postText(text, { env: { FURIM_MODE: 'off' } });
+    }
+    expect(actionExtendTrial).not.toHaveBeenCalled();
+    expect(actionFurimanCoupon).not.toHaveBeenCalled();
+    expect(handleFurimAction).not.toHaveBeenCalled();
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(fireEvent).toHaveBeenCalledTimes(4);
+  });
+
+  test('FURIM_MODE=off でも exact の auto_reply（メニューの言葉）は返る', async () => {
+    await postText('特典', { exactAutoReplyKeyword: '特典', env: { FURIM_MODE: 'off' } });
+    expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
+    expect(handleFurimAction).not.toHaveBeenCalled();
   });
 
   test('既存の【ボタン】アンケート開始 は auto_reply より handleButtonAction が先に答える', async () => {
@@ -952,7 +970,7 @@ describe('POST /webhook — follow（新規）で試用期間を D1 に先に書
     return Object.fromEntries(rows.map((r) => [String(r.args[1]), { value: r.args[2], source: r.args[3] }]));
   }
 
-  async function follow(db: D1Database, existingFriend: Awaited<ReturnType<typeof getFriendByLineUserId>> = null) {
+  async function follow(db: D1Database, existingFriend: Awaited<ReturnType<typeof getFriendByLineUserId>> = null, env: Record<string, unknown> = {}) {
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getFriendByLineUserId).mockResolvedValue(existingFriend);
     vi.mocked(jstNow).mockReturnValue('2026-09-14T12:34:56.789+09:00');
@@ -973,7 +991,7 @@ describe('POST /webhook — follow（新規）で試用期間を D1 に先に書
           events: [{ type: 'follow', replyToken: 'rt', timestamp: NOW_MS, source: { type: 'user', userId: 'U-new' }, webhookEventId: 'ev-follow', deliveryContext: { isRedelivery: false }, mode: 'active' }],
         }),
       },
-      { ...baseEnv, DB: db },
+      { ...baseEnv, ...env, DB: db },
       executionCtx,
     );
     expect(res.status).toBe(200);
@@ -1027,6 +1045,23 @@ describe('POST /webhook — follow（新規）で試用期間を D1 に先に書
     } as Awaited<ReturnType<typeof getFriendByLineUserId>>);
     expect(upserts).toHaveLength(0);
     expect(flagUpserts).toHaveLength(0);
+  });
+
+  // TB-2209: 新 LINE の Worker（FURIM_MODE=off）では試用のキーコード・期間・機能フラグを書かない。friend_add（あいさつ等）は今までどおり
+  test('FURIM_MODE=off の新規フォローでは furim_customers・機能フラグを書かず、friend_add だけ発火する', async () => {
+    const { db, upserts, flagUpserts } = followDb(null);
+    await follow(db, null, { FURIM_MODE: 'off' });
+    expect(upserts).toHaveLength(0);
+    expect(flagUpserts).toHaveLength(0);
+    expect(fireEvent).toHaveBeenCalledWith(db, 'friend_add', expect.objectContaining({ eventData: expect.objectContaining({ isNewUser: true }) }), expect.anything(), null, expect.anything());
+  });
+
+  test('FURIM_MODE が off 以外（on・空）なら今までどおり試用を書く', async () => {
+    for (const mode of ['on', '']) {
+      const { db, upserts } = followDb(null);
+      await follow(db, null, { FURIM_MODE: mode });
+      expect(upserts).toHaveLength(1);
+    }
   });
 
   test('試用プランが furim_master に無ければ機能フラグは書かない（TB-300）', async () => {
