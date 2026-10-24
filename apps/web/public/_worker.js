@@ -15,8 +15,17 @@
 
 const PROXY_PREFIXES = ['/api/', '/admin/']
 
+// 本番の管理画面は line.t4-corp.com（Cloudflare Access の内側・TB-2219）。
+// 本番の pages.dev そのものは新しい住所へ飛ばす（Access を通らない入口を残さない）。
+// プレビュー URL (<hash>.line-harness-admin-prod-6mo.pages.dev) は飛ばさない。
+const ADMIN_HOST = 'line.t4-corp.com'
+const LEGACY_PROD_HOST = 'line-harness-admin-prod-6mo.pages.dev'
+
 function workerOrigin(hostname, env) {
   if (env.API_PROXY_ORIGIN) return env.API_PROXY_ORIGIN
+  if (hostname === ADMIN_HOST) {
+    return 'https://line-harness-prod.furimuato.workers.dev'
+  }
   // プレビュー URL (<hash>.<project>.pages.dev) も拾えるよう endsWith で判定
   if (hostname.endsWith('line-harness-admin-prod-6mo.pages.dev')) {
     return 'https://line-harness-prod.furimuato.workers.dev'
@@ -30,6 +39,9 @@ function workerOrigin(hostname, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url)
+    if (url.hostname === LEGACY_PROD_HOST) {
+      return Response.redirect(`https://${ADMIN_HOST}${url.pathname}${url.search}`, 302)
+    }
     if (PROXY_PREFIXES.some((p) => url.pathname.startsWith(p))) {
       const origin = workerOrigin(url.hostname, env)
       if (!origin) {
