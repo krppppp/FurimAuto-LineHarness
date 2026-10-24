@@ -1,7 +1,7 @@
 -- 新 LINE「フリマ物販トレンド情報局」（@533jinxg）の流入経路 8 本と流入タグ・本番の確認用 fmb_test（TB-2209）
 -- 流す先: D1 line-crm-fmb だけ（FurimAuto の line-crm-prod には流さない）
 --   npx wrangler d1 execute line-crm-fmb --remote --file=../../scripts/data/fmb-001-entry-routes.sql
--- 経路名は TB-2192（管理画面の友だち追加経路）のキャンペーン名と同じ。fmb_media_s0_stage は 10/24 に F事業のリーダーが追加（TB-2192 には無い）。URL は https://line.t4-corp.com/r/<ref_code>
+-- 経路名は TB-2192（管理画面の友だち追加経路）のキャンペーン名と同じ。fmb_media_s0_stage は 10/24 に F事業のリーダーが追加（TB-2192 には無い）。URL は https://furimauto.com/r/<ref_code>（furimauto.com/r/fmb_* だけ新 LINE の Worker に向く）
 -- /r/<ref_code> → LIFF → /api/liff/link で friends.ref_code（最初の 1 回だけ）・ref_tracking・下のタグが付く
 -- INSERT OR IGNORE なので 2 回流しても増えない
 

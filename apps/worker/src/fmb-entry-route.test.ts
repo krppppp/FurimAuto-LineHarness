@@ -57,7 +57,7 @@ const env = {
   LINE_CHANNEL_ACCESS_TOKEN: 'fmb-test-access-token',
   LINE_LOGIN_CHANNEL_ID: '2012165991',
   LIFF_URL: `https://liff.line.me/${LIFF_ID}`,
-  WORKER_URL: 'https://line.t4-corp.com',
+  WORKER_URL: 'https://line-harness-fmb.furimuato.workers.dev',
   API_KEY: 'fmb-test-api-key',
 };
 
@@ -67,7 +67,7 @@ const ctx = { waitUntil: (p: Promise<unknown>) => waits.push(p), passThroughOnEx
 const worker = (await import('./index.js')).default;
 
 async function call(path: string, init?: RequestInit) {
-  const res = await worker.fetch(new Request(`https://line.t4-corp.com${path}`, init), env as never, ctx);
+  const res = await worker.fetch(new Request(`https://furimauto.com${path}`, init), env as never, ctx);
   await Promise.all(waits.splice(0));
   return res;
 }
@@ -119,12 +119,14 @@ describe('新 LINE の経路 URL → 友だち追加 → D1（TB-2209）', () =>
     expect(html).not.toContain('furim');
   });
 
-  it('/r/fmb_note（パソコン）は QR だけで、FurimAuto の試用の一文と計測の送り先を出さない', async () => {
+  it('/r/fmb_note（パソコン）は QR だけで、FurimAuto の試用の一文と計測の送り先を出さず、QR の画像は Worker から読む', async () => {
     const res = await call('/r/fmb_note', { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15' } });
     const html = await res.text();
     expect(html).toContain(encodeURIComponent(`https://liff.line.me/${LIFF_ID}?liffId=${LIFF_ID}&ref=fmb_note`));
     expect(html).not.toContain('無料体験');
-    expect(html).not.toContain('furim');
+    expect(html).not.toContain('line-harness-prod');
+    // furimauto.com/r/fmb_* で受けるので、QR の画像は Worker の住所から読む（相対だと WordPress に行って 404）
+    expect(html).toContain('<img src="https://line-harness-fmb.furimuato.workers.dev/api/qr?');
   });
 
   it('LIFF の紐づけ（/api/liff/link）で ref_code・ref_tracking・流入タグが入る', async () => {

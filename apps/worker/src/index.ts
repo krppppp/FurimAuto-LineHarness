@@ -324,6 +324,8 @@ app.get('/r/:ref', async (c) => {
   // FURIM_MODE=off（新 LINE・TB-2209）では FurimAuto の LP 計測（本番 Worker の lp_events）へ送らず、試用の一文も出さない
   const furimOn = !isFurimOff(c.env);
   const lpBeaconEndpoint = furimOn ? 'https://line-harness-prod.furimuato.workers.dev/api/lp-beacon' : '';
+  // 新 LINE の /r は furimauto.com/r/fmb_* で受けるので、相対の /api/qr は WordPress に行って 404 になる。QR は Worker の住所から読む
+  const qrBase = furimOn ? '' : (c.env.WORKER_URL || '');
   const formId = c.req.query('form') || '';
 
   // Resolve LIFF URL — priority:
@@ -621,7 +623,7 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 </div>
 <p class="msg">スマートフォンで QR コードを読み取ってください</p>
 <div class="qr">
-<img src="/api/qr?size=240x240&data=${encodeURIComponent(liffTarget)}" alt="QR Code">
+<img src="${qrBase}/api/qr?size=240x240&data=${encodeURIComponent(liffTarget)}" alt="QR Code">
 </div>
 <p class="hint">LINE アプリのカメラまたは<br>スマートフォンのカメラで読み取れます</p>
 ${furimOn ? '<p class="footer">友だち追加で全機能を無料体験できます</p>' : ''}

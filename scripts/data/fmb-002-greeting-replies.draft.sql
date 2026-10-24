@@ -37,7 +37,7 @@ INSERT OR IGNORE INTO auto_replies (id, keyword, match_type, response_type, resp
   ('fmb-reply-d-8', 'FurimAuto', 'exact', 'text', 'FurimAuto（フリマート）は、フリマ物販トレンド情報局を運営する合同会社T4の自社サービスです。
 【原稿待ち: 短い紹介（配信文担当）】
 ▼くわしく見る
-https://furimauto.com/r/fmb_line', 1, '2026-10-24T00:00:07.000'),
+https://furimauto.com/r/from_fmb', 1, '2026-10-24T00:00:07.000'),
   ('fmb-reply-d-9', 'よくある質問', 'exact', 'text', 'よくあるご質問です。
 
 Q. お金はかかりますか？

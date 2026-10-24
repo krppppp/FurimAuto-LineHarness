@@ -188,11 +188,12 @@ FURIM_RENEWAL_UNLOCK_ROUND_UNTIL = "2026-11-25"
 # ─── FMB環境（Worker名: line-harness-fmb）─────────────────────────────────
 # 新 LINE「フリマ物販トレンド情報局」（@533jinxg・プロバイダー 合同会社T4）を同じコードの別 Worker・別 D1 で動かす（TB-1358 案 B・TB-2209）。
 # FURIM_MODE=off で FurimAuto 専用の処理（試用・会員向け cron・キーコード等）を止める。FurimAuto の D1・KV・R2・furimauto.com の route は付けない。
-# 経路 URL は LINE に来る前に見えるので furim を含めない: workers.dev（furimuato）は使わず、t4-corp.com のサブドメインだけで受ける。
+# 経路 URL は furimauto.com/r/fmb_* だけをこの Worker に向ける（くろさん 10/24・TB-2137「F 事業の一環」）。それ以外の furimauto.com/r/* は今までどおり line-harness-prod。
+# LIFF のエンドポイント・Webhook は利用者に見えない workers.dev（line-harness-fmb.furimuato.workers.dev）で受ける。
 # ビルド: CLOUDFLARE_ENV=fmb pnpm run build（.env.fmb の LIFF ID を焼く・vite.config.ts で取り違えを止める）
 # 本番に出すのは F事業のリーダーが Issue で決めてから（D1 の作成・database_id の置き換え・シークレット・デプロイは 1 操作ずつ）
 [env.fmb]
-workers_dev = false
+workers_dev = true
 
 [env.fmb.assets]
 directory = "dist/client"
@@ -205,8 +206,8 @@ database_name = "line-crm-fmb"
 database_id = "00000000-0000-0000-0000-000000000000"
 
 [[env.fmb.routes]]
-pattern = "line.t4-corp.com"
-custom_domain = true
+pattern = "furimauto.com/r/fmb_*"
+zone_name = "furimauto.com"
 
 [env.fmb.triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
@@ -218,6 +219,6 @@ enabled = true
 FURIM_MODE = "off"
 WORKER_NAME = "line-harness-fmb"
 D1_DATABASE_ID = "00000000-0000-0000-0000-000000000000"
-WORKER_PUBLIC_URL = "https://line.t4-corp.com"
-LIFF_PUBLIC_URL = "https://line.t4-corp.com"
+WORKER_PUBLIC_URL = "https://line-harness-fmb.furimuato.workers.dev"
+LIFF_PUBLIC_URL = "https://line-harness-fmb.furimuato.workers.dev"
 CF_ACCOUNT_ID = "f2b335f4f9d276383643c76f1e5cc6f9"
