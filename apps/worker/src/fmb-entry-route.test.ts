@@ -96,11 +96,12 @@ beforeAll(() => {
 afterAll(() => vi.unstubAllGlobals());
 
 describe('新 LINE の経路 URL → 友だち追加 → D1（TB-2209）', () => {
-  it('seed で 7 本の経路と確認用の 1 本・流入タグが入る', () => {
+  it('seed で 8 本の経路と確認用の 1 本・流入タグが入る', () => {
     const routes = sqlite.prepare(`SELECT er.ref_code, t.name AS tag FROM entry_routes er JOIN tags t ON t.id = er.tag_id ORDER BY er.ref_code`).all();
     expect(routes).toEqual([
       { ref_code: 'fmb_blog', tag: '流入:ブログ' },
       { ref_code: 'fmb_media_s0', tag: '流入:メディアサイト' },
+      { ref_code: 'fmb_media_s0_stage', tag: '流入:メディアサイト' },
       { ref_code: 'fmb_media_top', tag: '流入:メディアサイト' },
       { ref_code: 'fmb_note', tag: '流入:note' },
       { ref_code: 'fmb_other', tag: '流入:その他' },
