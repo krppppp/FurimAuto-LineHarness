@@ -11,6 +11,7 @@
 // 1 回きりにならないので、furim_seminar_weeks.survey_sent_at が NULL の行を条件付き UPDATE で
 // 取れた実行だけが送る（kaisetsu-delivery と同じ枠取り）。
 import { formatJstIso } from './customer-store.js';
+import { notIgnoredSql } from './ignored-friend.js';
 
 export const SEMINAR_VOTE_PREFIX = 'seminar_vote:';
 /** 「どれも都合が合わない」の slot_id */
@@ -659,6 +660,7 @@ export async function remindSeminarSlots(
         `SELECT f.id AS friend_id, f.line_user_id AS line_user_id
            FROM friends f
           WHERE f.is_following = 1 AND f.line_user_id IS NOT NULL AND f.line_user_id != ''
+            AND ${notIgnoredSql('f')}
             AND f.id NOT IN (SELECT friend_id FROM furim_seminar_votes WHERE week_id = ? AND slot_id = ?)`,
       )
       .bind(weekId, slot.slot_id)

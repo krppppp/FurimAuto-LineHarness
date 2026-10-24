@@ -31,6 +31,7 @@ import { handleAIChat, type AIChatEnv } from '../furim/ai-chat.js';
 import { getAiMode } from '../furim/firebase-client.js';
 import { withOutgoingLog } from '../utils/message-log.js';
 import { notifyStaffOfIncomingMessage } from '../services/push-notify.js';
+import { isIgnoredFriend } from '../furim/ignored-friend.js';
 
 type WebhookEnv = RichMenuEnv & FurimActionsEnv & { LIFF_URL?: string; AI?: AIChatEnv['AI']; GITHUB_PAT?: string; VAPID_PUBLIC_KEY?: string; VAPID_PRIVATE_KEY?: string; VAPID_SUBJECT?: string; WORKER_NAME?: string; FURIM_TICKET_LIFF_URL?: string; FURIM_TICKET_PRICE_IDS?: string; FURIM_EXT_CACHE?: KVNamespace };
 import type { Env } from '../index.js';
@@ -307,6 +308,8 @@ async function handleEvent(
     }
 
     // タグ付与・リッチメニュー設定・ウェルカムメッセージ・リフォロー処理は friend_add Automation で管理
+    // 「対応しない」の友だちはオートメーションを動かさない（TB-2236）
+    if (await isIgnoredFriend(db, friend.id)) return;
 
     // イベントバス発火: friend_add（replyToken を渡してオートメーション内で使用）
     // 新規フォロー時だけ広告CV（line_friend_add）を送る。再フォローで二重計上しないよう isNewUser で絞る。
@@ -346,6 +349,8 @@ async function handleEvent(
 
     const friend = await ensureFriendFromWebhookUser(db, lineClient, userId, lineAccountId);
     if (!friend) return;
+
+    if (await isIgnoredFriend(db, friend.id)) return;
 
     const postbackData = (event as unknown as { postback: { data: string } }).postback.data;
 
@@ -490,6 +495,8 @@ async function handleEvent(
       )
       .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, jstNow())
       .run();
+    // 「対応しない」の友だちは記録だけ。未読・通知にしない（TB-2236）
+    if (await isIgnoredFriend(db, friend.id)) return;
     // text と同様、非 text の自発メッセージ (画像/スタンプ等) でも chat を unread に戻す。
     // これが無いと resolved 除外 (unanswered-inbox CANDIDATES_SQL) が「解決済み後に
     // 画像だけ送ってきた友だち」をバッジ・未対応一覧から永久に落としてしまう。
@@ -531,6 +538,8 @@ async function handleEvent(
       )
       .bind(logId, friend.id, textMessage.text, textMessage.quoteToken ?? null, now)
       .run();
+    // 「対応しない」の友だちは記録だけ。返信・AI チャット・通知・オートメーションに進まない（TB-2236）
+    if (await isIgnoredFriend(db, friend.id)) return;
 
     // 【プラン変更】PB-XXXXXX: 既存契約者のLIFF申込。新規Checkoutではなく
     // 既存サブスクをin-place更新し、残り期間の差額を日割りで即時決済する

@@ -15,6 +15,7 @@ import {
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
+import { isIgnoredFriend } from '../furim/ignored-friend.js';
 
 /**
  * Replace template variables in message content.
@@ -145,7 +146,7 @@ async function processSingleDelivery(
   if (!claimed) return 0;
 
   const friend = await getFriendById(db, fs.friend_id);
-  if (!friend || !friend.is_following) {
+  if (!friend || !friend.is_following || await isIgnoredFriend(db, friend.id)) {
     await completeFriendScenario(db, fs.id);
     return 0;
   }

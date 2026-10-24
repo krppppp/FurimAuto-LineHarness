@@ -7,6 +7,7 @@
 //   （くろさん TB-25 786cc267。subscription_id が残っていても終了日時が過ぎていれば対象）。サブアカは入れない
 import { formatJstIso } from './customer-store.js';
 import { ACTIVE_TRIAL_PROMO, TRIAL_PROMOS } from './trial-promo.js';
+import { notIgnoredSql } from './ignored-friend.js';
 
 export const TRIAL_GIFT_BUTTON_TEXT = '【ボタン】1週間無料プレゼントを受け取る';
 const MULTICAST_LIMIT = 500;
@@ -72,6 +73,7 @@ export async function selectTrialGiftTargets(db: D1Database, nowMs = Date.now())
     .prepare(
       `SELECT c.line_user_id FROM furim_customers c JOIN friends f ON f.line_user_id = c.line_user_id
        WHERE f.is_following = 1
+         AND ${notIgnoredSql('f')}
          AND c.subscription_end_at IS NOT NULL AND c.subscription_end_at < ?
          AND (
            ((c.subscription_id IS NULL OR c.subscription_id = '')
