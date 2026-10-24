@@ -1,3 +1,5 @@
+import { notIgnoredSql } from '../furim/ignored-friend.js'
+
 export interface SegmentRule {
   type: 'tag_exists' | 'tag_not_exists' | 'metadata_equals' | 'metadata_not_equals' | 'ref_code' | 'is_following'
   value: string | boolean | { key: string; value: string }
@@ -93,7 +95,8 @@ export function buildSegmentQuery(condition: SegmentCondition): { sql: string; b
 
   const separator = condition.operator === 'AND' ? ' AND ' : ' OR '
   const where = clauses.length > 0 ? clauses.join(separator) : '1=1'
-  const sql = `SELECT f.id, f.line_user_id FROM friends f WHERE ${where}`
+  // 「対応しない」の友だちはどのセグメントにも入れない（TB-2236）
+  const sql = `SELECT f.id, f.line_user_id FROM friends f WHERE (${where}) AND ${notIgnoredSql('f')}`
 
   return { sql, bindings }
 }

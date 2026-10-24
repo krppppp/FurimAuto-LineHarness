@@ -35,6 +35,7 @@ import { AutomationActionRow, MessageRow,
 import { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { sendAdConversions } from './ad-conversion.js';
+import { isIgnoredFriend } from '../furim/ignored-friend.js';
 
 export interface EventPayload {
   friendId?: string;
@@ -73,6 +74,9 @@ export async function fireEvent(
   lineAccountId?: string | null,
   env?: ActionEnv,
 ): Promise<boolean> {
+  // 「対応しない」の友だちにはオートメーションを動かさない（TB-2236）
+  if (payload.friendId && await isIgnoredFriend(db, payload.friendId)) return false;
+
   // Phase 1: fire webhooks, apply scoring rules, and ad conversion postback concurrently.
   const phase1: Promise<unknown>[] = [
     fireOutgoingWebhooks(db, eventType, payload),

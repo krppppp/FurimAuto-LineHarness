@@ -1,4 +1,5 @@
 import { URL_TOKEN_SQL } from '../lib/url-token.js';
+import { notIgnoredSql } from '../furim/ignored-friend.js';
 
 export interface DedupPreviewPerAccount {
   accountId: string;
@@ -80,6 +81,7 @@ export async function computeDedupBroadcastPreview(
     WHERE is_following = 1
       AND line_account_id IN (${inPlaceholders})
       AND line_account_id IS NOT NULL
+      AND ${notIgnoredSql('friends')}
       ${tagJoinForSelectedCount}
     GROUP BY line_account_id
   `;
@@ -110,6 +112,7 @@ export async function computeDedupBroadcastPreview(
       WHERE f.is_following = 1
         AND f.line_account_id IN (${inPlaceholders})
         AND f.line_account_id IS NOT NULL
+        AND ${notIgnoredSql('f')}
         ${tagJoinForRanked}
     ),
     ranked AS (
