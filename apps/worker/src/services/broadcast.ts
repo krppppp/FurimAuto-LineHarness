@@ -14,6 +14,7 @@ import type { Broadcast } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
+import { getIgnoredFriendIds } from '../furim/ignored-friend.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -109,7 +110,8 @@ export async function processBroadcastSend(
       }
 
       const friends = await getFriendsByTag(db, broadcast.target_tag_id);
-      const followingFriends = friends.filter((f) => f.is_following);
+      const ignored = await getIgnoredFriendIds(db);
+      const followingFriends = friends.filter((f) => f.is_following && !ignored.has(f.id));
       totalCount = followingFriends.length;
 
       // Send in batches with stealth delays to mimic human patterns
@@ -375,7 +377,8 @@ async function processQueuedBroadcastBatches(
   } else if (broadcast.target_tag_id) {
     const { getFriendsByTag } = await import('@line-crm/db');
     const tagFriends = await getFriendsByTag(db, broadcast.target_tag_id);
-    friends = tagFriends.filter(f => f.is_following).map(f => ({ id: f.id, line_user_id: f.line_user_id }));
+    const ignored = await getIgnoredFriendIds(db);
+    friends = tagFriends.filter(f => f.is_following && !ignored.has(f.id)).map(f => ({ id: f.id, line_user_id: f.line_user_id }));
   } else {
     // target_type='all' でキューに入ることはないが、念のため
     const { requestId } = await lineClient.broadcast(queuedMessages);

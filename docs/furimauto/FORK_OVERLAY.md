@@ -24,6 +24,7 @@
 - apps/worker/src/routes/stripe.ts — gasGet(LINE_ID↔Stripe_ID 変換)・updateIntroductionCoupon。stripe_invoice_paid / stripe_payment_failed / stripe_subscription_deleted / stripe_ticket_purchased / cv_fire で fireEvent | upstream stripe.ts の各イベント処理に GAS連携＋fireEvent を再注入
 - apps/worker/src/middleware/auth.ts — `/liff` を auth 除外に追加（upstream は `/setup` 除外。両方残す） | 1行再適用
 - apps/worker/src/services/step-delivery.ts — `buildMessage` に video 分岐を追加（ステップ配信に解説動画を含むため。upstreamは text/image/flex のみ）。DB側は migration 047_scenario_steps_allow_video.sql で `scenario_steps.message_type` CHECK に 'video' を追加 | video case を再適用。schema.sql は無改変、video許可は 047 migration が担う
+- apps/worker/src/routes/webhook.ts / services/event-bus.ts / services/step-delivery.ts / services/broadcast.ts / services/segment-query.ts / services/dedup-broadcast.ts / services/unanswered-inbox.ts — 「対応しない」タグの友だちを無視する（TB-2236・2026-10-25）。webhook は受信を messages_log に書いた直後に `isIgnoredFriend` で return（text・非 text・postback・follow の fireEvent 前）。`fireEvent` 先頭・ステップ配信の is_following 判定に同じ確認。セグメントの SQL・複数アカウント配信の 2 本・未返信の CANDIDATES_SQL に `notIgnoredSql()`、タグ配信の 2 か所は `getIgnoredFriendIds` で除く。中身は furim/ignored-friend.ts | 各 1〜3 行を再注入。テストは furim/ignored-friend.test.ts・routes/webhook-ignored.test.ts
 
 ### db / shared
 - packages/db/src/scenarios.ts — getScenarioByName / completeFriendActiveScenarios を追記（upstream は getScenarioById / completeFriendScenario）。**呼び出し側(furim/)を upstream API に寄せる方針なので、ここは将来削除候補** | upstream採用。乖離が出たら furim/ 側を upstream API に合わせる

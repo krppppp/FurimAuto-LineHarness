@@ -1,4 +1,5 @@
 import { BOT_OUTGOINGS_SQL, isBotHandledIncoming, type BotOutgoing } from '../furim/bot-routed-message.js';
+import { notIgnoredSql } from '../furim/ignored-friend.js';
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 2000;
@@ -115,6 +116,7 @@ const CANDIDATES_SQL = `
   JOIN agg ON agg.friend_id = f.id
   LEFT JOIN latest_chat lc ON lc.friend_id = f.id
   WHERE f.is_following = 1
+    AND ${notIgnoredSql('f')}
     AND (la.id IS NULL OR la.is_active = 1)
     AND agg.last_incoming IS NOT NULL
     AND (agg.last_manual IS NULL OR agg.last_manual < agg.last_incoming)

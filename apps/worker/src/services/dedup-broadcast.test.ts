@@ -78,7 +78,7 @@ describe('computeDedupBroadcastPreview', () => {
       },
     } as unknown as D1Database;
     await computeDedupBroadcastPreview(capturingDb2, ['acc1'], ['acc1']);
-    expect(preparedSqls2.find((s) => s.includes('COUNT(*) AS cnt'))).not.toMatch(/friend_tags/);
+    expect(preparedSqls2.find((s) => s.includes('COUNT(*) AS cnt'))).not.toMatch(/ft\.tag_id = \?/);
   });
 
   it('single-account: returns all friends, no reduction', async () => {

@@ -10,7 +10,7 @@ FurimAuto に特化した仕様・運用ドキュメント。OSS（フォーク�
 
 - **アクティブブランチ**: `furim/upstream-rebase`（upstream最新ベース＋FurimAuto独自を再適用した版）。origin(SSH)にpush済み。
 - **DEV**: worker `line-harness`（`https://line-harness.furimuato.workers.dev`）。検証用DB `line-crm-rebase`。管理UI `https://furim-dev.line-harness-admin-7je.pages.dev/`（key: `dev-furimauto-key`）。
-- **本番**: worker `line-harness-prod`（rebaseコード適用済み）／DB `line-crm-prod`（実顧客643・タグ28・シナリオ14・automation8）／管理UI `https://line-harness-admin-prod-6mo.pages.dev/`（Pages本番ブランチは **FurimAuto**）。本番反映は **差分前進**で完了（破壊なし）。
+- **本番**: worker `line-harness-prod`（rebaseコード適用済み）／DB `line-crm-prod`（実顧客643・タグ28・シナリオ14・automation8）／管理UI `https://line.t4-corp.com/`（Cloudflare Access で守る・2026-10-24 TB-2219。旧 `line-harness-admin-prod-6mo.pages.dev` は 302 で飛ぶ。Pages本番ブランチは **FurimAuto**）。本番反映は **差分前進**で完了（破壊なし）。
 - **MCPサーバー**: `packages/mcp-server` を `claude mcp add` で登録済み（`line-harness-dev` / `line-harness-prod`、各29ツール）。次回claude起動から自然言語でLINE運用（配信/タグ/分析）可能。**本番broadcastは実顧客に飛ぶので実行前に対象・本文確認**。
 
 ### このセッション(2026-06-12)でやったこと
@@ -75,7 +75,7 @@ cd apps/worker && pnpm run build && npx wrangler deploy --config dist/line_harne
 # worker デプロイ（本番）
 cd apps/worker && CLOUDFLARE_ENV=prod pnpm run build && npx wrangler deploy --config dist/line_harness/wrangler.json
 # web デプロイ（本番。本番ブランチは FurimAuto）
-cd apps/web && NEXT_PUBLIC_API_URL=https://line-harness-prod.furimuato.workers.dev pnpm build && npx wrangler pages deploy out --project-name=line-harness-admin-prod --branch=FurimAuto
+cd apps/web && NEXT_PUBLIC_API_URL=https://line.t4-corp.com pnpm build && npx wrangler pages deploy out --project-name=line-harness-admin-prod --branch=FurimAuto
 
 # シナリオ/automation seed（--rebase=line-crm-rebase / --prod=line-crm-prod）
 node scripts/seed-furimauto-all-scenarios.mjs          # 14シナリオ（要 WORKER_URL/API_KEY）
