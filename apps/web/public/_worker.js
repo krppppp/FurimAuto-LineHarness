@@ -21,10 +21,23 @@ const PROXY_PREFIXES = ['/api/', '/admin/']
 const ADMIN_HOST = 'line.t4-corp.com'
 const LEGACY_PROD_HOST = 'line-harness-admin-prod-6mo.pages.dev'
 
+// 新 LINE「フリマ物販トレンド情報局」の管理画面は trend.t4-corp.com（Pages line-harness-admin-fmb・Access の内側・TB-2396）。
+// 同じ _worker.js を別の Pages に出す。pages.dev は同じく新しい住所へ飛ばす。
+const FMB_ADMIN_HOST = 'trend.t4-corp.com'
+const FMB_PAGES_HOST = 'line-harness-admin-fmb.pages.dev'
+
+const CANONICAL_HOSTS = {
+  [LEGACY_PROD_HOST]: ADMIN_HOST,
+  [FMB_PAGES_HOST]: FMB_ADMIN_HOST,
+}
+
 function workerOrigin(hostname, env) {
   if (env.API_PROXY_ORIGIN) return env.API_PROXY_ORIGIN
   if (hostname === ADMIN_HOST) {
     return 'https://line-harness-prod.furimuato.workers.dev'
+  }
+  if (hostname === FMB_ADMIN_HOST || hostname.endsWith(FMB_PAGES_HOST)) {
+    return 'https://line-harness-fmb.furimuato.workers.dev'
   }
   // プレビュー URL (<hash>.<project>.pages.dev) も拾えるよう endsWith で判定
   if (hostname.endsWith('line-harness-admin-prod-6mo.pages.dev')) {
@@ -39,8 +52,9 @@ function workerOrigin(hostname, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url)
-    if (url.hostname === LEGACY_PROD_HOST) {
-      return Response.redirect(`https://${ADMIN_HOST}${url.pathname}${url.search}`, 302)
+    const canonicalHost = CANONICAL_HOSTS[url.hostname]
+    if (canonicalHost) {
+      return Response.redirect(`https://${canonicalHost}${url.pathname}${url.search}`, 302)
     }
     if (PROXY_PREFIXES.some((p) => url.pathname.startsWith(p))) {
       const origin = workerOrigin(url.hostname, env)
