@@ -15,19 +15,24 @@
 
 const PROXY_PREFIXES = ['/api/', '/admin/']
 
-// 本番の管理画面は line.t4-corp.com（Cloudflare Access の内側・TB-2219）。
+// 本番の管理画面は furimauto-line.t4-corp.com（Cloudflare Access の内側・TB-2546。旧 line.t4-corp.com は TB-2219）。
 // 本番の pages.dev そのものは新しい住所へ飛ばす（Access を通らない入口を残さない）。
 // プレビュー URL (<hash>.line-harness-admin-prod-6mo.pages.dev) は飛ばさない。
-const ADMIN_HOST = 'line.t4-corp.com'
+const ADMIN_HOST = 'furimauto-line.t4-corp.com'
+const LEGACY_ADMIN_HOST = 'line.t4-corp.com'
 const LEGACY_PROD_HOST = 'line-harness-admin-prod-6mo.pages.dev'
 
-// 新 LINE「フリマ物販トレンド情報局」の管理画面は trend.t4-corp.com（Pages line-harness-admin-fmb・Access の内側・TB-2396）。
+// 新 LINE「フリマ物販トレンド情報局」の管理画面は trend-line.t4-corp.com（Pages line-harness-admin-fmb・Access の内側・TB-2546。旧 trend.t4-corp.com は TB-2396）。
 // 同じ _worker.js を別の Pages に出す。pages.dev は同じく新しい住所へ飛ばす。
-const FMB_ADMIN_HOST = 'trend.t4-corp.com'
+const FMB_ADMIN_HOST = 'trend-line.t4-corp.com'
+const LEGACY_FMB_ADMIN_HOST = 'trend.t4-corp.com'
 const FMB_PAGES_HOST = 'line-harness-admin-fmb.pages.dev'
 
+// 旧住所（line.・trend.）は新しい住所へ 302 で残す。外すかは 11 月末に別 Issue。
 const CANONICAL_HOSTS = {
+  [LEGACY_ADMIN_HOST]: ADMIN_HOST,
   [LEGACY_PROD_HOST]: ADMIN_HOST,
+  [LEGACY_FMB_ADMIN_HOST]: FMB_ADMIN_HOST,
   [FMB_PAGES_HOST]: FMB_ADMIN_HOST,
 }
 
