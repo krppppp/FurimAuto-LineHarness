@@ -556,7 +556,7 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 </div>
 <p class="msg">スマートフォンで QR コードを読み取ってください</p>
 <div class="qr">
-<img src="/api/qr?size=240x240&data=${encodeURIComponent(liffTarget)}" alt="QR Code">
+<img src="${c.env.WORKER_PUBLIC_URL ?? ''}/api/qr?size=240x240&data=${encodeURIComponent(liffTarget)}" alt="QR Code">
 </div>
 <p class="hint">LINE アプリのカメラまたは<br>スマートフォンのカメラで読み取れます</p>
 <p class="footer">友だち追加で全機能を無料体験できます</p>
@@ -845,7 +845,7 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 </div>
 <p class="msg">スマートフォンで QR コードを読み取ってください</p>
 <div class="qr">
-<img src="/api/qr?size=240x240&data=${encodeURIComponent(liffTarget)}" alt="QR Code">
+<img src="${c.env.WORKER_PUBLIC_URL ?? ''}/api/qr?size=240x240&data=${encodeURIComponent(liffTarget)}" alt="QR Code">
 </div>
 <p class="hint">LINE アプリのカメラまたは<br>スマートフォンのカメラで読み取れます</p>
 </div>
