@@ -741,9 +741,13 @@ async function handleEvent(
     // 下の自動返信チェックで処理する。ai_mode は「AIチャットボットを終了する」を押すまで true の
     // ままなので、ここで return するとボタンを押しても URL が返らない（TB-718 / TB-662）。
     // contains マッチは AIチャット中の自由文とぶつかるため対象外（今までどおり AI が答える）。
+    // AI が答える手打ちの文も管理画面の「未読」には入れる（TB-2371）。スタッフ通知は送らない
     if (env?.FIREBASE_DATABASE_URL && env?.AI && env?.GITHUB_PAT) {
       const isAIMode = await getAiMode(env.FIREBASE_DATABASE_URL, userId);
       if (isAIMode && !(await findExactAutoReply(db, incomingText, lineAccountId))) {
+        if (!isBotRoutedMessage) {
+          await upsertChatOnMessage(db, friend.id);
+        }
         await handleAIChat(loggingClient, userId, event.replyToken, incomingText, { AI: env.AI, GITHUB_PAT: env.GITHUB_PAT, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, DB: db });
         return;
       }
