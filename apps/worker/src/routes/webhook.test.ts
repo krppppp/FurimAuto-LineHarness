@@ -63,6 +63,10 @@ vi.mock('../furim/firebase-client.js', async () => {
   return { ...actual, getAiMode: vi.fn() };
 });
 
+vi.mock('../services/push-notify.js', () => ({
+  notifyStaffOfIncomingMessage: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { verifySignature } from '@line-crm/line-sdk';
 import {
   addTagToFriend,
@@ -86,6 +90,7 @@ import { fireEvent } from '../services/event-bus.js';
 import { actionExtendTrial, actionFurimanCoupon, handleFurimAction } from '../furim/actions.js';
 import { handleAIChat } from '../furim/ai-chat.js';
 import { getAiMode } from '../furim/firebase-client.js';
+import { notifyStaffOfIncomingMessage } from '../services/push-notify.js';
 import { webhook } from './webhook.js';
 import { evaluateKeyCodeSet, KEY_CODE_ERROR } from '../furim/ext-auth.js';
 import type { FurimCustomer } from '../furim/customer-store.js';
@@ -783,6 +788,36 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     expect(lineClientMocks.replyMessage).toHaveBeenCalledTimes(1);
     expect(vi.mocked(fireEvent)).not.toHaveBeenCalled();
   });
+
+  // TB-2371: AI が答えた手打ちの文も管理画面の「未読」に入れる。スタッフ通知は今までどおり AI モード中は送らない
+  test('AIモードONの手打ちの文は AI が答えてもチャットを unread にする', async () => {
+    await postText('解約したいのですがどうすればいいですか');
+    expect(handleAIChat).toHaveBeenCalledTimes(1);
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(expect.anything(), 'friend-ai-1');
+    expect(notifyStaffOfIncomingMessage).not.toHaveBeenCalled();
+  });
+
+  test('AIモードONでもリッチメニューの文は unread にしない', async () => {
+    await postText('【リッチメニュー】ヘルプ');
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('AIモードONでも定型キーワードは unread にしない', async () => {
+    await postText('料金');
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('AIモードONでも【ボタン】xxx は unread にしない', async () => {
+    await postText('【ボタン】ライブ参加', { exactAutoReplyKeyword: '【ボタン】ライブ参加' });
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+  });
+
+  test('AIモードOFFの手打ちの文は今までどおり unread にしてスタッフに通知する', async () => {
+    await postText('使い方を教えてください', { aiMode: false });
+    expect(handleAIChat).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(expect.anything(), 'friend-ai-1');
+    expect(notifyStaffOfIncomingMessage).toHaveBeenCalledTimes(1);
+  });
 });
 
 // TB-740 子2: 5択を押した直後の自由記述だけを reason_text に控え、その 1 通は AIチャットに流さない
@@ -884,11 +919,11 @@ describe('POST /webhook — 解約理由の自由記述（TB-740）', () => {
     expect(upsertChatOnMessage).toHaveBeenCalledWith(expect.anything(), 'friend-cx-1');
   });
 
-  test('24時間を過ぎたテキストは記録せず、今までどおり AIチャットに流れる', async () => {
+  test('24時間を過ぎたテキストは記録せず、今までどおり AIチャットに流れる（未読には入れる・TB-2371）', async () => {
     const { updates } = await postFreeText('別件の問い合わせです', '2026-07-29T12:00:00.000+09:00');
     expect(updates.some((s) => /UPDATE furim_cancellations SET reason_text/.test(s))).toBe(false);
     expect(handleAIChat).toHaveBeenCalledTimes(1);
-    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(expect.anything(), 'friend-cx-1');
   });
 
   test('5択に未回答（reason_answered_at が NULL）なら今までどおり AIチャットに流れる', async () => {
