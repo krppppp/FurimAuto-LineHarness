@@ -10,8 +10,8 @@ FurimAuto に特化した仕様・運用ドキュメント。OSS（フォーク�
 
 - **アクティブブランチ**: `furim/upstream-rebase`（upstream最新ベース＋FurimAuto独自を再適用した版）。origin(SSH)にpush済み。
 - **DEV**: worker `line-harness`（`https://line-harness.furimuato.workers.dev`）。検証用DB `line-crm-rebase`。管理UI `https://furim-dev.line-harness-admin-7je.pages.dev/`（key: `dev-furimauto-key`）。
-- **本番**: worker `line-harness-prod`（rebaseコード適用済み）／DB `line-crm-prod`（実顧客643・タグ28・シナリオ14・automation8）／管理UI `https://furimauto-line.t4-corp.com/`（Cloudflare Access で守る・2026-10-28 TB-2546 で line. から付け替え。旧 `line.t4-corp.com`・`line-harness-admin-prod-6mo.pages.dev` は 302 で飛ぶ。Pages本番ブランチは **FurimAuto**）。本番反映は **差分前進**で完了（破壊なし）。
-- **新 LINE（フリマ物販トレンド情報局 @533jinxg）**: worker `line-harness-fmb`／DB `line-crm-fmb`／管理UI `https://trend-line.t4-corp.com/`（Pages `line-harness-admin-fmb`・本番ブランチ **fmb**・2026-10-27 TB-2396、2026-10-28 TB-2546 で trend. から付け替え。旧 `trend.t4-corp.com`・`line-harness-admin-fmb.pages.dev` は 302 で飛ぶ）。ログインの API キーは prod.env の `FMB_LINE_HARNESS_API_KEY`（FurimAuto とは別）。
+- **本番**: worker `line-harness-prod`（rebaseコード適用済み）／DB `line-crm-prod`（実顧客643・タグ28・シナリオ14・automation8）／管理UI `https://furimauto-line.t4-corp.com/`（Cloudflare Access で守る・2026-10-28 TB-2546 で line. から付け替え。`line-harness-admin-prod-6mo.pages.dev` は 302 で飛ぶ。旧 `line.t4-corp.com` は LINE の一覧ページ（Pages `t4-line-portal`・TB-2565）。Pages本番ブランチは **FurimAuto**）。本番反映は **差分前進**で完了（破壊なし）。
+- **新 LINE（フリマ物販トレンド情報局 @533jinxg）**: worker `line-harness-fmb`／DB `line-crm-fmb`／管理UI `https://trend-line.t4-corp.com/`（Pages `line-harness-admin-fmb`・本番ブランチ **fmb**・2026-10-27 TB-2396、2026-10-28 TB-2546 で trend. から付け替え。`line-harness-admin-fmb.pages.dev` は 302 で飛ぶ。旧 `trend.t4-corp.com` は廃止・TB-2565）。ログインの API キーは prod.env の `FMB_LINE_HARNESS_API_KEY`（FurimAuto とは別）。
 - **MCPサーバー**: `packages/mcp-server` を `claude mcp add` で登録済み（`line-harness-dev` / `line-harness-prod`、各29ツール）。次回claude起動から自然言語でLINE運用（配信/タグ/分析）可能。**本番broadcastは実顧客に飛ぶので実行前に対象・本文確認**。
 
 ### このセッション(2026-06-12)でやったこと
