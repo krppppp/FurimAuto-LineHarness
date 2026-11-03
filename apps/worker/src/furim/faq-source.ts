@@ -4,7 +4,7 @@
  * これまでは毎メッセージ private の GitHub（krppppp/furimauto-faq）を GITHUB_PAT で取りに行き、
  * 失敗しても console.warn して空文字を返すだけだったため、9/24 ごろから 40 日、AI に faq.md が 1 文字も渡っていなかった（TB-2975）。
  *
- * - 本文は KV（FURIM_EXT_CACHE）の FAQ_CACHE_KEY に置く。期限なし。書き込みは scripts/furimauto/push-faq-kv.mjs（faq.md を直したら流す）
+ * - 本文は KV（FURIM_EXT_CACHE）の FAQ_CACHE_KEY に置く。期限なし。書き込みは scripts/push-faq-kv.mjs（LineHarness のルートで・faq.md を直したら流す）
  * - Worker は実行時に GitHub を見に行かない（PAT を使わない）
  * - KV に無い・壊れている・短すぎるときは text='' と error を返す。呼び出し側が furim_ext_errors に残す
  */
