@@ -11,7 +11,7 @@ export type RichMenuEnv = {
   FIREBASE_DATABASE_URL?: string;
 };
 
-async function isMember(db: D1Database, friendId: string): Promise<boolean> {
+export async function isMember(db: D1Database, friendId: string): Promise<boolean> {
   const result = await db
     .prepare(
       `SELECT 1 FROM friend_tags ft

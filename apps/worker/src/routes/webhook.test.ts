@@ -748,6 +748,13 @@ describe('POST /webhook — 特定キーワードはAIチャットモード中�
     expect(actionExtendTrial).not.toHaveBeenCalled();
   });
 
+  test('月額会員タグの無い人には member: false を渡す（TB-2976）', async () => {
+    await postText('解約したい');
+    expect(handleAIChat).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handleAIChat).mock.calls[0][5]).toEqual({ member: false });
+    expect(vi.mocked(handleAIChat).mock.calls[0][4]).not.toHaveProperty('GITHUB_PAT');
+  });
+
   // TB-718: ai_mode は「AIチャットボットを終了する」を押すまで true のままなので、
   // ボタン文言（exact の auto_reply）が AI の定型文に吸われていた
   test('AIモードONでも exact の auto_reply にマッチする文言は自動返信が返る', async () => {

@@ -13,7 +13,7 @@ import {
 import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
-import { handleRichMenuSwitch } from '../furim/rich-menu.js';
+import { handleRichMenuSwitch, isMember } from '../furim/rich-menu.js';
 import type { RichMenuEnv } from '../furim/rich-menu.js';
 import { handleFurimAction, actionFurimanCoupon, actionExtendTrial } from '../furim/actions.js';
 import type { FurimActionsEnv } from '../furim/actions.js';
@@ -751,13 +751,18 @@ async function handleEvent(
     // ままなので、ここで return するとボタンを押しても URL が返らない（TB-718 / TB-662）。
     // contains マッチは AIチャット中の自由文とぶつかるため対象外（今までどおり AI が答える）。
     // AI が答える手打ちの文も管理画面の「未読」には入れる（TB-2371）。スタッフ通知は送らない
-    if (env?.FIREBASE_DATABASE_URL && env?.AI && env?.GITHUB_PAT) {
+    // faq.md は KV から読むので GITHUB_PAT は要らない。月額会員かどうかを渡し、非会員の解約の問い合わせに会員向けの案内を出さない（TB-2976）
+    if (env?.FIREBASE_DATABASE_URL && env?.AI) {
       const isAIMode = await getAiMode(env.FIREBASE_DATABASE_URL, userId);
       if (isAIMode && !(await findExactAutoReply(db, incomingText, lineAccountId))) {
         if (!isBotRoutedMessage) {
           await upsertChatOnMessage(db, friend.id);
         }
-        await handleAIChat(loggingClient, userId, event.replyToken, incomingText, { AI: env.AI, GITHUB_PAT: env.GITHUB_PAT, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, DB: db });
+        const member = await isMember(db, friend.id).catch((e) => {
+          console.error('[webhook] AI チャットの会員判定に失敗（会員として扱う）:', userId, e);
+          return undefined;
+        });
+        await handleAIChat(loggingClient, userId, event.replyToken, incomingText, { AI: env.AI, FIREBASE_DATABASE_URL: env.FIREBASE_DATABASE_URL, FURIM_EXT_CACHE: env.FURIM_EXT_CACHE, DB: db }, { member });
         return;
       }
     }

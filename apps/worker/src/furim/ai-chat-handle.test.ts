@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./firebase-client.js', () => ({ getChatHistory: vi.fn(async () => []), saveChatHistory: vi.fn(async () => undefined) }));
-vi.mock('./howto-source.js', () => ({ loadHowtoText: vi.fn(async () => ({ text: '## 再出品機能 〔id: msRelist〕\n本文', ids: ['msRelist'], source: 'cache' })) }));
+vi.mock('./howto-source.js', () => ({ loadHowtoText: vi.fn(async () => ({ text: '## 再出品機能 〔id: msRelist〕\n本文', ids: ['msRelist', 'planCancel'], source: 'cache' })) }));
 
 const { handleAIChat } = await import('./ai-chat.js');
 
@@ -15,14 +15,23 @@ function makeDb() {
 
 let aiRun: ReturnType<typeof vi.fn>;
 
+const FAQ_TEXT = '# よくある質問\n' + '無料期間が終わっても自動で請求されることはありません。\n'.repeat(200);
+
+function makeKv(faqValue: string | null = JSON.stringify({ text: FAQ_TEXT })) {
+  const puts: Array<[string, string]> = [];
+  const kv = {
+    get: vi.fn(async (key: string) => (key === 'furim:ai-chat:faq-text:v1' ? faqValue : null)),
+    put: vi.fn(async (key: string, value: string) => { puts.push([key, value]); }),
+  } as unknown as KVNamespace;
+  return { kv, puts };
+}
+
 function stubFetch(aiText: string) {
-  vi.stubGlobal('fetch', vi.fn(async () =>
-    new Response(JSON.stringify({ content: Buffer.from('料金は月額です', 'utf8').toString('base64') }), { status: 200 }),
-  ));
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 500 })));
   aiRun = vi.fn(async () => ({ choices: [{ message: { content: aiText } }], usage: { prompt_tokens: 40000, completion_tokens: 80 } }));
 }
 
-const env = (db: D1Database) => ({ AI: { run: aiRun }, GITHUB_PAT: 'p', FIREBASE_DATABASE_URL: 'https://fb', DB: db });
+const env = (db: D1Database, kv: KVNamespace = makeKv().kv) => ({ AI: { run: aiRun }, FIREBASE_DATABASE_URL: 'https://fb', FURIM_EXT_CACHE: kv, DB: db });
 
 beforeEach(() => {
   vi.unstubAllGlobals();
@@ -75,15 +84,82 @@ describe('handleAIChat（Capsec #307）', () => {
     expect(runs.find((r) => r.sql.includes('UPDATE furim_ai_chat_logs'))!.binds[5]).toBe('failed');
   });
 
-  it('faq.md は furimauto-faq のルートから取る（#329 で T4ClaudeCompany から移した）', async () => {
+  it('faq.md は KV から読んで AI に渡し、GitHub には取りに行かない（TB-2976）', async () => {
     stubFetch('【AIチャットボット】\n料金は月額です。');
+    const { db, runs } = makeDb();
+    const { kv, puts } = makeKv();
+    const client = { replyMessage: vi.fn(async () => ({})), pushMessage: vi.fn(async () => ({})) };
+
+    await handleAIChat(client as never, 'Uabc', 'rt', '料金は？', env(db, kv));
+
+    const urls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes('api.github.com'))).toBe(false);
+    const [, input] = aiRun.mock.calls[0] as [string, { messages: Array<{ content: string }> }];
+    expect(input.messages[0].content).toContain('【資料2: よくある質問（faq.md）】');
+    expect(input.messages[0].content).toContain('無料期間が終わっても自動で請求されることはありません。');
+    expect(runs.some((r) => r.sql.includes("'botHandler'"))).toBe(false);
+    const usage = JSON.parse(puts.find(([k]) => k === 'furim:ai-chat:recent-usage')![1])[0];
+    expect(usage.faqChars).toBe(FAQ_TEXT.length);
+    expect(usage.faq).toBe('kv');
+  });
+
+  it('KV に faq.md が無ければ説明書だけで答え、取得失敗を botHandler（faq_load）で D1 に残す（TB-2976）', async () => {
+    stubFetch('【AIチャットボット】\n料金は月額です。');
+    const { db, runs } = makeDb();
+    const { kv, puts } = makeKv(null);
+    const client = { replyMessage: vi.fn(async () => ({})), pushMessage: vi.fn(async () => ({})) };
+
+    await handleAIChat(client as never, 'Uabc', 'rt', '料金は？', env(db, kv));
+
+    const sent = (client.replyMessage.mock.calls[0] as unknown as [string, Array<{ text: string }>])[1];
+    expect(sent[0].text).toBe('【AIチャットボット】\n料金は月額です。');
+    const rec = runs.find((r) => r.sql.includes("'botHandler'"))!;
+    expect(rec.binds[1]).toBe('Uabc');
+    expect(String(rec.binds[2])).toContain('handleAIChat / faq_load / faq: KV に furim:ai-chat:faq-text:v1 が無い');
+    const usage = JSON.parse(puts.find(([k]) => k === 'furim:ai-chat:recent-usage')![1])[0];
+    expect(usage.faqChars).toBe(0);
+    expect(usage.faq).toBe('failed');
+  });
+
+  it('壊れた（短すぎる）faq.md は渡さず、失敗として残す（TB-2976）', async () => {
+    stubFetch('【AIチャットボット】\n料金は月額です。');
+    const { db, runs } = makeDb();
+    const { kv } = makeKv(JSON.stringify({ text: '短い' }));
+    const client = { replyMessage: vi.fn(async () => ({})), pushMessage: vi.fn(async () => ({})) };
+
+    await handleAIChat(client as never, 'Uabc', 'rt', '料金は？', env(db, kv));
+
+    const [, input] = aiRun.mock.calls[0] as [string, { messages: Array<{ content: string }> }];
+    expect(input.messages[0].content).not.toContain('【資料2: よくある質問（faq.md）】');
+    expect(String(runs.find((r) => r.sql.includes("'botHandler'"))!.binds[2])).toContain('本文が短すぎる (2 chars)');
+  });
+
+  it('非会員には会員向けの章（月額プランのキャンセル等）の URL を付けず、作り話と同じく anchorRejected に残す（TB-2976）', async () => {
+    stubFetch('【AIチャットボット】\n有料会員ではないため、解約のお手続きは不要です。\n[[howto:planCancel]]');
+    const { db, runs } = makeDb();
+    const client = { replyMessage: vi.fn(async () => ({})), pushMessage: vi.fn(async () => ({})) };
+
+    await handleAIChat(client as never, 'Uabc', 'rt', '解約したい', env(db), { member: false });
+
+    const sent = (client.replyMessage.mock.calls[0] as unknown as [string, Array<{ text: string }>])[1];
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).not.toContain('furimauto.com/howto');
+    const [, input] = aiRun.mock.calls[0] as [string, { messages: Array<{ content: string }> }];
+    expect(input.messages[0].content).toContain('有料会員（月額会員）ではありません');
+    const update = runs.find((r) => r.sql.includes('UPDATE furim_ai_chat_logs'))!;
+    expect(update.binds[1]).toBeNull();
+    expect(update.binds[2]).toBe('planCancel');
+  });
+
+  it('会員には今までどおり会員向けの章の URL も付ける（TB-2976）', async () => {
+    stubFetch('【AIチャットボット】\n解約は月額プランのキャンセルの章をご覧ください。\n[[howto:planCancel]]');
     const { db } = makeDb();
     const client = { replyMessage: vi.fn(async () => ({})), pushMessage: vi.fn(async () => ({})) };
 
-    await handleAIChat(client as never, 'Uabc', 'rt', '料金は？', env(db));
+    await handleAIChat(client as never, 'Uabc', 'rt', '解約したい', env(db), { member: true });
 
-    const urls = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
-    expect(urls).toContain('https://api.github.com/repos/krppppp/furimauto-faq/contents/faq.md');
+    const sent = (client.replyMessage.mock.calls[0] as unknown as [string, Array<{ text: string }>])[1];
+    expect(sent[1].text).toContain('https://furimauto.com/howto/#planCancel');
   });
 
   it('Workers AI の Gemma 4 を思考なしで呼ぶ（TB-2156。思考ありだと 45 秒かかり webhook の打ち切りに間に合わない）', async () => {

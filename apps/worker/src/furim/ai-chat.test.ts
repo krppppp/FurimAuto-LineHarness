@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FALLBACK_TEXT, JOIN_STEPS_TEXT, PLAN_CHANGE_STEPS_TEXT, buildAIChatPrompt, decodeBase64Utf8, howtoAnchorUrl, parseAIReply } from './ai-chat.js';
+import { FALLBACK_TEXT, JOIN_STEPS_TEXT, PLAN_CHANGE_STEPS_TEXT, MEMBER_ONLY_HOWTO_IDS, buildAIChatPrompt, howtoAnchorUrl, parseAIReply } from './ai-chat.js';
 
 describe('AI チャットのプロンプト（Capsec #307）', () => {
   const history = [
@@ -99,10 +99,25 @@ describe('AI の返答の後処理（Capsec #307 方針変更）', () => {
   });
 });
 
-describe('faq.md の取得（Capsec #307）', () => {
-  it('GitHub API の base64 を UTF-8 として戻す（atob だけだと日本語が文字化けしていた）', () => {
-    const b64 = Buffer.from('# よくある質問\n料金は月額です。', 'utf8').toString('base64').replace(/(.{20})/g, '$1\n');
-    expect(decodeBase64Utf8(b64)).toBe('# よくある質問\n料金は月額です。');
-    expect(atob(b64.replace(/\n/g, ''))).not.toBe('# よくある質問\n料金は月額です。');
+describe('非会員の解約の問い合わせ（TB-2976）', () => {
+  it('月額会員でないときは、解約不要・請求なし・会員向けの章とボタンを案内しない指示を末尾に足す。先頭は変えない', () => {
+    const member = buildAIChatPrompt({ howtoText: 'H', faqText: 'F', history: [], queryText: '解約したい', member: true });
+    const nonMember = buildAIChatPrompt({ howtoText: 'H', faqText: 'F', history: [], queryText: '解約したい', member: false });
+    expect(nonMember.prefix).toBe(member.prefix);
+    expect(nonMember.suffix).toContain('有料会員（月額会員）ではありません');
+    expect(nonMember.suffix).toContain('解約のお手続きは不要');
+    expect(nonMember.suffix).toContain('無料期間が終わっても自動で請求されることはありません');
+    expect(nonMember.suffix).toContain('会員情報の確認');
+    expect(nonMember.suffix.indexOf('有料会員（月額会員）ではありません')).toBeLessThan(nonMember.suffix.indexOf('お客様からのメッセージ: 解約したい'));
+    expect(member.suffix).not.toContain('有料会員（月額会員）ではありません');
+  });
+
+  it('会員かどうか分からないときは今までどおり（何も足さない）', () => {
+    const unknown = buildAIChatPrompt({ howtoText: 'H', faqText: 'F', history: [], queryText: '解約したい' });
+    expect(unknown.suffix).toBe('お客様からのメッセージ: 解約したい');
+  });
+
+  it('会員向けの章は 会員情報の確認・確認ページの発行・請求先・月額プランのキャンセル の 4 つ', () => {
+    expect([...MEMBER_ONLY_HOWTO_IDS].sort()).toEqual(['billing', 'billingUrl', 'controllBillingInfo', 'planCancel']);
   });
 });

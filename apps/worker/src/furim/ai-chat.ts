@@ -2,6 +2,7 @@ import type { LineClient } from '@line-crm/line-sdk';
 import { jstNow } from '@line-crm/db';
 import { getChatHistory, saveChatHistory } from './firebase-client.js';
 import { loadHowtoText } from './howto-source.js';
+import { loadFaqText } from './faq-source.js';
 import { recordBotHandlerError } from './bot-routed-message.js';
 
 /**
@@ -16,13 +17,15 @@ import { recordBotHandlerError } from './bot-routed-message.js';
  *
  * 2026-10-23（TB-2156）: Gemini の前払いクレジット切れ（402）で止まったため、補充せず Cloudflare Workers AI（無料枠）に切り替えた。
  * モデルは Gemma 4 26B。思考（reasoning）を切らないと 1 回 45 秒かかり webhook の打ち切りに間に合わないので enable_thinking=false で呼ぶ
+ *
+ * 2026-11-03（TB-2976）: faq.md は実行時に GitHub へ取りに行かず KV から読む（faq-source.ts）。読めなければ botHandler（faq_load）で D1 に残す。
+ * 月額会員でない人には解約不要・請求なしと答えさせ、会員向けの章（MEMBER_ONLY_HOWTO_IDS）の URL は付けない
  */
 
 export type AIChatEnv = {
   AI: { run(model: string, input: unknown): Promise<unknown> };
-  GITHUB_PAT: string;
   FIREBASE_DATABASE_URL: string;
-  /** 説明書の本文のキャッシュと、直近の使用量の記録に使う */
+  /** 説明書の本文のキャッシュ・faq.md の本文・直近の使用量の記録に使う */
   FURIM_EXT_CACHE?: KVNamespace;
   /** 会話の記録（furim_ai_chat_logs）と、取得・送信の失敗の記録に使う */
   DB?: D1Database;
@@ -43,32 +46,15 @@ export const PLAN_CHANGE_STEPS_TEXT =
   'ご契約中のプランの変更・機能やサイトの追加は、次の4ステップでお手続きいただけます。\n1. リッチメニューの「ガイド」タブ →「プラン診断」をタップ\n2. 自動返信で届くURLをタップ（今のご契約内容が選ばれた状態で開きます）\n3. 変更したい内容に選び直して「この内容にプラン変更する」をタップし、確認画面の金額を見て確定\n4. LINEに「プラン変更が完了しました」が届いたら、続けて届く新しいキーコードを拡張機能に入力し直してください\n・決済URLは届きません。月額が上がる変更は、残り期間の差額（日割り）が登録済みのカードに請求され、すぐに切り替わります。下がる変更は返金なしで、次回の更新日に切り替わります（新しいキーコードは更新日に届きます）。\n・一度解約して申し込み直す必要はありません。\n・開いた画面で今のご契約内容が選ばれていない場合や、ご契約中なのに「決済ページへ進む」ボタンが届いた場合は、申し込み・決済をせずに、リッチメニュー下部の「AIチャットボットを終了する」→「追加サポートを希望する」からご連絡ください。';
 const AI_ERROR_TEXT ='AIからの応答中にエラーが発生しました。少し時間をおいて、もう一度お試しください。';
 
-const SPEC_FILE_PATHS = ['faq.md'];
+/** 月額会員だけが使う章（会員情報の確認・確認ページの発行・請求先・月額プランのキャンセル）。非会員には URL を付けない（TB-2976） */
+export const MEMBER_ONLY_HOWTO_IDS: ReadonlySet<string> = new Set(['billing', 'billingUrl', 'controllBillingInfo', 'planCancel']);
 
-/** base64 → UTF-8 の文字列。atob だけだと日本語が 1 バイト 1 文字の文字化けのまま AI に渡っていた（2026-09-17 まで） */
-export function decodeBase64Utf8(b64: string): string {
-  const binary = atob(b64.replace(/\n/g, ''));
-  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-  return new TextDecoder('utf-8').decode(bytes);
-}
-
-async function fetchSpecFiles(githubPat: string): Promise<string> {
-  const results = await Promise.all(
-    SPEC_FILE_PATHS.map(async (filePath) => {
-      // GitHub APIはUser-Agent必須（無いと403。Workersのfetchは自動付与しない）
-      const res = await fetch(`https://api.github.com/repos/krppppp/furimauto-faq/contents/${filePath}`, {
-        headers: { Authorization: `Bearer ${githubPat}`, Accept: 'application/vnd.github.v3+json', 'User-Agent': 'line-harness-worker' },
-      });
-      if (!res.ok) {
-        console.warn(`[furim/ai-chat] spec fetch failed: ${filePath} (${res.status})`);
-        return '';
-      }
-      const json = await res.json() as { content: string };
-      return decodeBase64Utf8(json.content);
-    })
-  );
-  return results.filter(Boolean).join('\n\n---\n\n');
-}
+const NON_MEMBER_NOTE = `【このお客様の契約状況】
+このお客様は有料会員（月額会員）ではありません（無料お試し中か、まだお申し込みをしていない方です）。
+- 解約・退会・キャンセル・請求を止めたい趣旨のメッセージには、「有料会員ではないため、解約のお手続きは不要です。無料期間が終わっても自動で請求されることはありません。」という趣旨で答えてください。
+- 資料1の「会員情報の確認」「会員情報確認ページの発行」「請求先情報確認・変更」「月額プランのキャンセル」の章と、リッチメニューの「会員情報の確認」ボタン（会員情報の確認ページ）は、このお客様のメニューに無いので案内しないでください。[[howto:…]] にもこれらの章の id は書かないでください。
+----------------------------
+`;
 
 export const AI_MODEL = '@cf/google/gemma-4-26b-a4b-it';
 /** webhook の処理は応答後の約 30 秒で打ち切られるため、それより前に諦めてエラーの返信と記録を残す */
@@ -103,7 +89,7 @@ async function callWorkersAI(ai: AIChatEnv['AI'], content: string): Promise<Work
  * AI に渡すプロンプト。固定の指示・説明書・faq.md を先頭（prefix）、会話履歴とお客様のメッセージを末尾（suffix）に置く。
  * systemInstruction と contents を分けると履歴が増えたときに不安定だった（2026-04-24・Gemini）ため、1 つの user メッセージにつなげて送る
  */
-export function buildAIChatPrompt(input: { howtoText: string; faqText: string; history: ChatMessage[]; queryText: string }): { prefix: string; suffix: string } {
+export function buildAIChatPrompt(input: { howtoText: string; faqText: string; history: ChatMessage[]; queryText: string; member?: boolean }): { prefix: string; suffix: string } {
   const hasHowto = Boolean(input.howtoText);
   const sources = [
     hasHowto ? `【資料1: 利用方法説明書（https://furimauto.com/howto/ の本文・最新の仕様）】\n見出しの末尾の〔id: …〕は、その章のページ内リンクの id です。\n\n${input.howtoText}` : '',
@@ -160,7 +146,8 @@ ${sources}
       '\n----------------------------\n'
     : '';
 
-  const suffix = `${historyText}お客様からのメッセージ: ${input.queryText}`;
+  const memberNote = input.member === false ? NON_MEMBER_NOTE : '';
+  const suffix = `${historyText}${memberNote}お客様からのメッセージ: ${input.queryText}`;
   return { prefix, suffix };
 }
 
@@ -236,19 +223,24 @@ type GeneratedReply = {
   error: string | null;
 };
 
-async function generateAIResponse(queryText: string, lineUserId: string, env: AIChatEnv, startedAt: number): Promise<GeneratedReply> {
-  const [faqText, howto, history] = await Promise.all([
-    fetchSpecFiles(env.GITHUB_PAT),
+async function generateAIResponse(queryText: string, lineUserId: string, env: AIChatEnv, startedAt: number, member: boolean | undefined): Promise<GeneratedReply> {
+  const [faq, howto, history] = await Promise.all([
+    loadFaqText(env.FURIM_EXT_CACHE),
     loadHowtoText(env.FURIM_EXT_CACHE, env.DB),
     getChatHistory(env.FIREBASE_DATABASE_URL, lineUserId),
   ]);
+  const faqText = faq.text;
+  if (faq.error) {
+    console.error('[furim/ai-chat] faq.md load failed:', faq.error);
+    await recordBotHandlerError(env.DB, lineUserId, 'handleAIChat', 'faq_load', new Error(faq.error));
+  }
 
   if (!faqText && !howto.text) {
     const answer = '申し訳ありません、関連する情報が見つかりませんでした。';
     return { messages: [{ type: 'text', text: answer }], answer, parsed: null, howtoSource: howto.source, usage: {}, error: 'no sources' };
   }
 
-  const { prefix, suffix } = buildAIChatPrompt({ howtoText: howto.text, faqText, history, queryText });
+  const { prefix, suffix } = buildAIChatPrompt({ howtoText: howto.text, faqText, history, queryText, member });
   let result: WorkersAIResult;
   try {
     result = await callWorkersAI(env.AI, `${prefix}\n${suffix}`);
@@ -269,7 +261,8 @@ async function generateAIResponse(queryText: string, lineUserId: string, env: AI
     return { messages: [{ type: 'text', text: AI_ERROR_TEXT }], answer: AI_ERROR_TEXT, parsed: null, howtoSource: howto.source, usage, error: 'workers-ai empty reply' };
   }
 
-  const parsed = parseAIReply(rawReply, new Set(howto.ids));
+  const validIds = member === false ? howto.ids.filter((id) => !MEMBER_ONLY_HOWTO_IDS.has(id)) : howto.ids;
+  const parsed = parseAIReply(rawReply, new Set(validIds));
 
   // 履歴には、利用者に見せた本文を残す
   const now = Date.now();
@@ -294,7 +287,9 @@ async function generateAIResponse(queryText: string, lineUserId: string, env: AI
     howto: howto.source,
     howtoChars: howto.text.length,
     howtoIds: howto.ids.length,
+    faq: faq.source,
     faqChars: faqText.length,
+    member: member ?? null,
     historyCount: history.length,
     anchorId: parsed.anchorId,
     anchorRejected: parsed.anchorRejected,
@@ -360,13 +355,14 @@ export async function handleAIChat(
   replyToken: string,
   text: string,
   env: AIChatEnv,
+  opts: { member?: boolean } = {},
 ): Promise<void> {
   console.log('[furim/ai-chat] handling:', lineUserId);
   const startedAt = Date.now();
   const logId = crypto.randomUUID();
   await insertChatLog(env.DB, logId, lineUserId, text);
 
-  const generated = await generateAIResponse(text, lineUserId, env, startedAt);
+  const generated = await generateAIResponse(text, lineUserId, env, startedAt, opts.member);
   const messages = generated.messages.slice(0, 5) as never[];
 
   // reply トークンは受信から約 1 分で失効する。失効や一時的な失敗で無返信にならないよう、reply が落ちたら push で送り直す
