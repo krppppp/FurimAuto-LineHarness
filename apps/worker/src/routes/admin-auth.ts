@@ -5,6 +5,7 @@ import {
   CSRF_COOKIE,
   adminSessionCookie,
   authenticateApiToken,
+  cookieSessionToken,
   csrfCookie,
   csrfTokenFromCookie,
   expiredCookie,
@@ -63,15 +64,26 @@ adminAuth.post('/api/auth/logout', async (c) => {
 
 /**
  * GET /api/auth/session — returns the authenticated staff (set by the auth
- * middleware) plus the current CSRF token, refreshing the CSRF cookie if it is
+ * middleware) plus the current CSRF token, minting the CSRF token if it is
  * missing (e.g. after a reload that dropped the in-memory token). This lets the
  * SPA recover the CSRF token without forcing a re-login.
+ *
+ * For cookie-authenticated calls both cookies are re-issued with their current
+ * values and a fresh Max-Age, so the session slides as long as the admin UI is
+ * opened. Bearer callers get no cookies.
  */
 adminAuth.get('/api/auth/session', async (c) => {
   const config = resolveAdminAuthConfig(c.env, { requestOrigin: new URL(c.req.url).origin });
+  const sessionToken = cookieSessionToken(c);
   let csrfToken = csrfTokenFromCookie(c);
   if (!csrfToken) {
     csrfToken = crypto.randomUUID();
+    if (!sessionToken) {
+      c.header('Set-Cookie', csrfCookie(csrfToken, config.sameSite), { append: true });
+    }
+  }
+  if (sessionToken) {
+    c.header('Set-Cookie', adminSessionCookie(sessionToken, config.sameSite), { append: true });
     c.header('Set-Cookie', csrfCookie(csrfToken, config.sameSite), { append: true });
   }
   return c.json({ success: true, data: c.get('staff'), csrfToken });

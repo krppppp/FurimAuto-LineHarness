@@ -7,8 +7,9 @@ export const ADMIN_AUTH_COOKIE = 'lh_admin_session';
 export const CSRF_COOKIE = 'lh_csrf';
 export const CSRF_HEADER = 'x-csrf-token';
 
-// 7 days, matching the previous localStorage session longevity.
-const SESSION_MAX_AGE = 604800;
+// 400 days — Chrome caps cookie lifetime at 400 days, so longer is meaningless.
+// GET /api/auth/session re-issues the cookies, so the session slides while used.
+export const SESSION_MAX_AGE = 34560000;
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -44,6 +45,11 @@ function bearerToken(c: Context<Env>): string | null {
 
 function cookieToken(c: Context<Env>): string | null {
   return parseCookieHeader(c.req.header('Cookie'))[ADMIN_AUTH_COOKIE] || null;
+}
+
+/** Session cookie token, only when the request is cookie-authenticated (no Bearer). */
+export function cookieSessionToken(c: Context<Env>): string | null {
+  return bearerToken(c) ? null : cookieToken(c);
 }
 
 export function csrfTokenFromCookie(c: Context<Env>): string | null {
