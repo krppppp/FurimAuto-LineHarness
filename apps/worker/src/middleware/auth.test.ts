@@ -80,12 +80,13 @@ describe('admin login cookie attributes', () => {
     expect(session).toContain('HttpOnly');
     expect(session).toContain('Secure');
     expect(session).toContain('SameSite=None');
-    expect(session).toContain('Max-Age=604800');
+    expect(session).toContain('Max-Age=34560000');
 
     const csrf = cookieFor(res, 'lh_csrf') ?? '';
     expect(csrf).toContain(`lh_csrf=${body.csrfToken}`);
     expect(csrf).not.toContain('HttpOnly'); // SPA-readable (double-submit)
     expect(csrf).toContain('SameSite=None');
+    expect(csrf).toContain('Max-Age=34560000');
   });
 
   test('same-site (custom domain) login uses SameSite=Lax', async () => {
@@ -230,6 +231,163 @@ describe('session endpoint', () => {
     const body = await res.json() as { csrfToken: string };
     expect(body.csrfToken).toBeTruthy();
     expect(cookieFor(res, 'lh_csrf') ?? '').toContain(`lh_csrf=${body.csrfToken}`);
+  });
+
+  test('cookie-authenticated call re-issues both cookies with the same values and 400-day Max-Age', async () => {
+    const res = await app().request('/api/auth/session', {
+      headers: { Cookie: 'lh_admin_session=staff-key; lh_csrf=token-abc' },
+    }, crossSiteEnv());
+    expect(res.status).toBe(200);
+    const session = cookieFor(res, 'lh_admin_session') ?? '';
+    const csrf = cookieFor(res, 'lh_csrf') ?? '';
+    expect(session).toContain('lh_admin_session=staff-key');
+    expect(session).toContain('HttpOnly');
+    expect(session).toContain('Max-Age=34560000');
+    expect(csrf).toContain('lh_csrf=token-abc');
+    expect(csrf).toContain('Max-Age=34560000');
+    expect(setCookies(res)).toHaveLength(2);
+  });
+
+  test('Bearer call does not re-issue the session cookie', async () => {
+    const res = await app().request('/api/auth/session', {
+      headers: { Authorization: 'Bearer env-key', Cookie: 'lh_csrf=token-abc' },
+    }, crossSiteEnv());
+    expect(res.status).toBe(200);
+    expect(setCookies(res)).toHaveLength(0);
+  });
+
+  test('a cookie holding a revoked key is 401 and gets no cookies', async () => {
+    const res = await app().request('/api/auth/session', {
+      headers: { Cookie: 'lh_admin_session=revoked-key; lh_csrf=token-abc' },
+    }, crossSiteEnv());
+    expect(res.status).toBe(401);
+    expect(setCookies(res)).toHaveLength(0);
+  });
+
+  test('no cookie is 401', async () => {
+    const res = await app().request('/api/auth/session', {}, crossSiteEnv());
+    expect(res.status).toBe(401);
+  });
+});
+
+/**
+ * Minimal browser cookie jar: honours Max-Age against the (fake) clock so the
+ * tests can check what a browser would still send after days pass.
+ */
+function cookieJar() {
+  const store = new Map<string, { value: string; expiresAt: number }>();
+  return {
+    set(name: string, value: string, maxAgeSec: number) {
+      store.set(name, { value, expiresAt: Date.now() + maxAgeSec * 1000 });
+    },
+    absorb(res: Response) {
+      for (const raw of setCookies(res)) {
+        const [pair, ...attrs] = raw.split('; ');
+        const [name, value] = pair.split('=');
+        const maxAge = Number(attrs.find((a) => a.startsWith('Max-Age='))?.slice('Max-Age='.length));
+        if (maxAge <= 0) store.delete(name);
+        else this.set(name, decodeURIComponent(value), maxAge);
+      }
+    },
+    header() {
+      const now = Date.now();
+      return [...store]
+        .filter(([, v]) => v.expiresAt > now)
+        .map(([k, v]) => `${k}=${v.value}`)
+        .join('; ');
+    },
+  };
+}
+
+describe('session lifetime over time', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  async function login(jar: ReturnType<typeof cookieJar>) {
+    const res = await app().request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ apiKey: 'staff-key' }),
+      headers: { 'Content-Type': 'application/json' },
+    }, crossSiteEnv());
+    jar.absorb(res);
+    return res;
+  }
+
+  async function openAdmin(jar: ReturnType<typeof cookieJar>) {
+    const res = await app().request('/api/auth/session', {
+      headers: { Cookie: jar.header() },
+    }, crossSiteEnv());
+    jar.absorb(res);
+    return res;
+  }
+
+  test('still logged in 8 days and 30 days after login', async () => {
+    vi.useFakeTimers();
+    try {
+      const jar = cookieJar();
+      await login(jar);
+      vi.advanceTimersByTime(8 * DAY);
+      expect((await openAdmin(jar)).status).toBe(200);
+      vi.advanceTimersByTime(22 * DAY);
+      expect((await openAdmin(jar)).status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('opening the admin UI keeps sliding the session past 400 days', async () => {
+    vi.useFakeTimers();
+    try {
+      const jar = cookieJar();
+      await login(jar);
+      for (let i = 0; i < 4; i++) {
+        vi.advanceTimersByTime(300 * DAY);
+        expect((await openAdmin(jar)).status).toBe(200);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('an existing 7-day cookie is extended to 400 days on the next open', async () => {
+    vi.useFakeTimers();
+    try {
+      const jar = cookieJar();
+      jar.set('lh_admin_session', 'staff-key', 604800);
+      jar.set('lh_csrf', 'token-abc', 604800);
+      vi.advanceTimersByTime(6 * DAY);
+      const res = await openAdmin(jar);
+      expect(res.status).toBe(200);
+      expect(cookieFor(res, 'lh_admin_session') ?? '').toContain('Max-Age=34560000');
+      vi.advanceTimersByTime(30 * DAY);
+      expect((await openAdmin(jar)).status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('unused for more than 400 days, the browser drops the cookie and it is 401', async () => {
+    vi.useFakeTimers();
+    try {
+      const jar = cookieJar();
+      await login(jar);
+      vi.advanceTimersByTime(401 * DAY);
+      expect((await openAdmin(jar)).status).toBe(401);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('after logout the next open is 401', async () => {
+    vi.useFakeTimers();
+    try {
+      const jar = cookieJar();
+      await login(jar);
+      vi.advanceTimersByTime(8 * DAY);
+      jar.absorb(await app().request('/api/auth/logout', { method: 'POST' }, crossSiteEnv()));
+      expect((await openAdmin(jar)).status).toBe(401);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
