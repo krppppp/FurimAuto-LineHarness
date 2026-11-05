@@ -552,9 +552,11 @@ export default function ChatsPage() {
 
   // Friends list (for the "new direct message" modal) — loaded lazily in the background
   // Previously fetched 800 friends in parallel with chats, which blocked the initial render.
+  // タグは使わないので includeTags=false（付けると友だち 1 人ごとに D1 を 1 本、計 800 本同時に投げ、
+  // その間タブ切り替えの /api/chats が数秒待たされる・TB-3096）
   const loadAllFriends = useCallback(async () => {
     try {
-      const friendRes = await api.friends.list({ accountId: selectedAccountId || undefined, limit: '800' })
+      const friendRes = await api.friends.list({ accountId: selectedAccountId || undefined, limit: '800', includeTags: false })
       if (friendRes.success) {
         setAllFriends((friendRes.data as unknown as { items: FriendItem[] }).items)
       }
