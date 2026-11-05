@@ -8,6 +8,7 @@ import { useAccount } from '@/contexts/account-context'
 import CcPromptButton from '@/components/cc-prompt-button'
 import FlexPreviewComponent from '@/components/flex-preview'
 import ChatCustomerPanel from '@/components/furim/chat-customer-panel'
+import { MARK_READ_STATUS, canMarkRead } from '@/components/furim/chat-read'
 import { type ImageUploaderValue } from '@/components/shared/image-uploader'
 
 interface Chat {
@@ -611,17 +612,7 @@ export default function ChatsPage() {
     }
   }, [selectedChatId, loadChatDetail])
 
-  // 既読相当の遷移: チャットを開いたら未読→対応中に自動更新（LINE準拠。
-  // 「未読に戻す」ボタンで戻した場合は、次の新着まで未読のまま維持される）
-  const markChatRead = useCallback(async (chatId: string) => {
-    try {
-      await api.chats.update(chatId, { status: 'in_progress' })
-      setChats((prev) => prev.map((c) => c.id === chatId ? { ...c, status: 'in_progress' as const } : c))
-      setChatDetail((prev) => (prev && prev.id === chatId) ? { ...prev, status: 'in_progress' as const } : prev)
-      // 未読→対応中で未読が 1 件減るので、サイドバーの未読バッジを即時更新させる
-      window.dispatchEvent(new Event(UNANSWERED_REFRESH_EVENT))
-    } catch { /* 既読化失敗は表示上の問題のみなので無視 */ }
-  }, [])
+  // FurimAuto fork（TB-3105）: 開いた・見ているだけでは未読から外さない（chat-read.ts）
 
   // LINE風リアルタイム更新: 開いている会話をポーリングして新着を反映する。
   // loadChatDetail と違い detailLoading や notes 入力を触らず、変化があった時だけ
@@ -647,10 +638,6 @@ export default function ChatsPage() {
           if (!unchanged) changed = true
           return unchanged ? prev : fresh
         })
-        // 開いて見ている最中に来た新着はその場で既読化（LINE と同じ挙動）
-        if (changed && fresh.status === 'unread' && !document.hidden) {
-          void markChatRead(fresh.id)
-        }
         // 新着を検知したら一覧側の該当行も即時更新して先頭へ（15秒の一覧ポーリングを待たない）
         const lastMsg = (fresh.messages ?? [])[(fresh.messages ?? []).length - 1]
         if (changed && lastMsg) {
@@ -677,7 +664,7 @@ export default function ChatsPage() {
       stopped = true
       window.clearInterval(id)
     }
-  }, [selectedChatId, markChatRead])
+  }, [selectedChatId])
 
   // 一覧の静かな更新: 既存行はサーバ値で置換、新規行は先頭に追加して
   // lastMessageAt 降順を維持する。loadChats と違い loading スピナーを出さない。
@@ -863,8 +850,6 @@ export default function ChatsPage() {
     setSelectedChatId(chatId)
     setMessageContent('')
     setPendingImage(null)
-    const row = chats.find((c) => c.id === chatId)
-    if (row?.status === 'unread') void markChatRead(chatId)
   }
 
   // LINE風の画像送信: アイコンから端末のカメラ/ライブラリを開く。
@@ -1376,6 +1361,15 @@ export default function ChatsPage() {
                   >
                     顧客
                   </button>
+                  {canMarkRead(chatDetail.status) && (
+                    <button
+                      type="button"
+                      onClick={() => handleStatusUpdate(MARK_READ_STATUS)}
+                      className="flex-shrink-0 rounded-md border border-gray-300 bg-white px-2.5 py-1 min-h-[44px] lg:min-h-0 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                    >
+                      既読にする
+                    </button>
+                  )}
                   <div ref={statusMenuRef} className="relative flex-shrink-0">
                     <button
                       type="button"
