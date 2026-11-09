@@ -402,6 +402,11 @@ app.get('/r/:ref', async (c) => {
     const v = c.req.query(k);
     if (v) liffParams.set(k, v);
   }
+  // sid 無し（note 等の外部リンクからの初訪問）でも gate_view を残し、友だち追加の
+  // ref_tracking.lp_session_id と繋がるよう、ここで sid を発行して LIFF にも渡す。
+  const gateSid = c.req.query('sid') ? '' : crypto.randomUUID();
+  if (gateSid) liffParams.set('sid', gateSid);
+  const beaconEndpoint = `${c.env.WORKER_PUBLIC_URL ?? 'https://line-harness-prod.furimuato.workers.dev'}/api/lp-beacon`;
   const gate = c.req.query('gate');
   if (gate) liffParams.set('gate', gate);
   const xh = c.req.query('xh');
@@ -502,8 +507,9 @@ ${longPressHint}
     var p=new URLSearchParams(location.search);
     var sid=p.get('sid');
     if(!sid){ try{ sid=localStorage.getItem('fa_lp_sid'); }catch(e){} }
+    if(!sid) sid='${gateSid}';
     if(!sid) return;
-    var EP='https://line-harness-prod.furimuato.workers.dev/api/lp-beacon';
+    var EP='${beaconEndpoint}';
     var mob=/iphone|ipad|android|mobile/i.test(navigator.userAgent);
     function send(type,detail){
       try{
@@ -569,8 +575,9 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
     var p=new URLSearchParams(location.search);
     var sid=p.get('sid');
     if(!sid){ try{ sid=localStorage.getItem('fa_lp_sid'); }catch(e){} }
+    if(!sid) sid='${gateSid}';
     if(!sid) return;
-    var EP='https://line-harness-prod.furimuato.workers.dev/api/lp-beacon';
+    var EP='${beaconEndpoint}';
     var mob=/iphone|ipad|android|mobile/i.test(navigator.userAgent);
     function send(type,detail){
       try{
