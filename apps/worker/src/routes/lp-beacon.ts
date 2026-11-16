@@ -185,14 +185,23 @@ lpBeacon.post('/api/lp-beacon', async (c) => {
  * 「届いていない」のか「ビーコンが落ちた」のかを分けられなかった。PC の QR ページはビーコンも無い。
  * LP から来た（sid がある）ときだけ書く。page は gate_view と同じ /r/<ref> にそろえる。
  * 転送を遅らせないよう waitUntil で書き、失敗しても転送は止めない。
+ *
+ * PC のまま LINE ログインする道（TB-3475）も同じ表に残す:
+ *   oauth_start = /auth/oauth に来た（PC の QR 画面のボタンなら detail.via=pc_qr）
+ *   oauth_done  = LINE ログインから戻った（detail.friend = 友だちか・detail.isNew = 新規か）
+ *   oauth_friend = 戻った時点で友だち（前は友だちでなかった人だけ。新規と出戻り）
+ * /auth/callback はクエリに sid が無いので、state から取り出した sid・ref を opts で渡す。
  */
+export type ServerHopEvent = 'auth_hit' | 'gate_hit' | 'oauth_start' | 'oauth_done' | 'oauth_friend';
+
 export function recordServerHop(
   c: Context<Env>,
-  eventType: 'auth_hit' | 'gate_hit',
+  eventType: ServerHopEvent,
   ref: string,
+  opts: { sid?: string; detail?: Record<string, unknown> } = {},
 ): void {
   const q = (k: string) => c.req.query(k) || '';
-  const sid = clampStr(q('sid'));
+  const sid = clampStr(opts.sid ?? q('sid'));
   if (!sid || !ref || ref.startsWith('xh:')) return;
   const ua = c.req.header('user-agent') || '';
   const hasClickId = ['gclid', 'gbraid', 'wbraid', 'fbclid', 'twclid', 'ttclid'].some((k) => !!q(k)) ? 1 : 0;
@@ -215,7 +224,7 @@ export function recordServerHop(
         /iphone|ipad|android|mobile/i.test(ua) ? 1 : 0,
         clampStr(c.req.header('referer') || ''),
         jstNow(),
-        clampDetail({ ua: ua.slice(0, 300) }),
+        clampDetail({ ...opts.detail, ua: ua.slice(0, 300) }),
       )
       .run()
       .catch((err: unknown) => console.error(`[lp-server-hop] ${eventType} write failed:`, err));

@@ -26,6 +26,15 @@ import { buildIntroMessage } from '../services/intro-message.js';
 import { notifyAffiliateFriendAdd } from '../services/affiliate-notifier.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
 import { recordServerHop } from './lp-beacon.js';
+import {
+  PC_LOGIN_CSS,
+  PC_LOGIN_VIA,
+  buildPcLoginHref,
+  buildRetryLoginUrl,
+  fetchFriendFlag,
+  notFriendPage,
+  pcLoginBlockHtml,
+} from '../furim/pc-login.js';
 import { EXCLUDED_LINE_IDS, TEST_LINE_IDS } from '../furim/segments.js';
 import type { Env } from '../index.js';
 
@@ -671,6 +680,12 @@ liffRoutes.get('/auth/line', async (c) => {
   }
 
   // PC: show QR code page
+  // TB-3475: QR の下に「このパソコンで LINE にログイン」（/auth/oauth）を置く。sid が無い人にも
+  // ここで発行し、QR 表示（auth_hit）→ ボタン（oauth_start）→ 戻り（oauth_done）を同じ sid で繋ぐ
+  const pcSid = sid || crypto.randomUUID();
+  if (!sid) recordServerHop(c, 'auth_hit', ref, { sid: pcSid, detail: { sidIssued: true } });
+  const pcQrUrl = sid ? qrUrl : `${qrUrl}${qrUrl.includes('?') ? '&' : '?'}sid=${encodeURIComponent(pcSid)}`;
+  const pcLoginHref = buildPcLoginHref(c.env.WORKER_PUBLIC_URL, c.req.query(), pcSid);
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -688,6 +703,7 @@ liffRoutes.get('/auth/line', async (c) => {
     .qr img{display:block;width:240px;height:240px}
     .hint{font-size:13px;color:#999;line-height:1.6}
     .footer{font-size:11px;color:#bbb;margin-top:24px;line-height:1.5}
+    ${PC_LOGIN_CSS}
   </style>
 </head>
 <body>
@@ -697,9 +713,10 @@ liffRoutes.get('/auth/line', async (c) => {
     </div>
     <p class="msg">スマートフォンで QR コードを読み取ってください</p>
     <div class="qr">
-      <img src="${c.env.WORKER_PUBLIC_URL ?? ''}/api/qr?size=240x240&data=${encodeURIComponent(qrUrl)}" alt="QR Code">
+      <img src="${c.env.WORKER_PUBLIC_URL ?? ''}/api/qr?size=240x240&data=${encodeURIComponent(pcQrUrl)}" alt="QR Code">
     </div>
     <p class="hint">LINE アプリのカメラまたは<br>スマートフォンのカメラで読み取れます</p>
+    ${pcLoginBlockHtml(pcLoginHref)}
     <p class="footer">友だち追加で全機能を無料体験できます</p>
   </div>
 </body>
@@ -740,8 +757,10 @@ liffRoutes.get('/auth/oauth', async (c) => {
   const igParam = c.req.query('ig') || '';
   const igaParam = c.req.query('iga') || '';
   const iganParam = c.req.query('igan') || '';
+  const via = c.req.query('via') === PC_LOGIN_VIA ? PC_LOGIN_VIA : '';
   let poolAccount = '';
   const baseUrl = new URL(c.req.url).origin;
+  recordServerHop(c, 'oauth_start', ref, { detail: { via: via || null } });
 
   // Pool / account resolution — same logic as /auth/line
   let channelId = c.env.LINE_LOGIN_CHANNEL_ID;
@@ -776,7 +795,7 @@ liffRoutes.get('/auth/oauth', async (c) => {
     gclid, gbraid, wbraid, yclid, fbclid, twclid, ttclid,
     utmSource, utmMedium, utmCampaign, utmContent, utmTerm, sid,
     account: accountParam || poolAccount, uid: uidParam, ig: igParam,
-    iga: igaParam, igan: iganParam,
+    iga: igaParam, igan: iganParam, via,
   });
   const encodedState = encodeOAuthState(state);
   const loginUrl = new URL('https://access.line.me/oauth2/v2.1/authorize');
@@ -824,8 +843,10 @@ liffRoutes.get('/auth/callback', async (c) => {
   let igParam = '';
   let igaParam = '';
   let iganParam = '';
+  let via = '';
   try {
     const parsed = decodeOAuthState(stateParam);
+    via = parsed.via || '';
     ref = parsed.ref || '';
     redirect = parsed.redirect || '';
     formId = parsed.form || '';
@@ -853,7 +874,31 @@ liffRoutes.get('/auth/callback', async (c) => {
     // ignore
   }
 
+  // PC の QR 画面のボタンから来た人（TB-3475）。ログイン画面でやめた・友だち追加を飛ばした人に
+  // 「もう一度進む」を出すための、同じ state のログイン URL
+  const isPcLogin = via === PC_LOGIN_VIA;
+  const hopDetail = { via: via || null };
+  const resolveLoginChannel = async () => {
+    let id = c.env.LINE_LOGIN_CHANNEL_ID;
+    let secret = c.env.LINE_LOGIN_CHANNEL_SECRET;
+    if (accountParam) {
+      const account = await getLineAccountByChannelId(c.env.DB, accountParam);
+      if (account?.login_channel_id && account?.login_channel_secret) {
+        id = account.login_channel_id;
+        secret = account.login_channel_secret;
+      }
+    }
+    return { id, secret };
+  };
+  const retryUrlFor = (channelId: string) =>
+    buildRetryLoginUrl({ channelId, callbackUrl: `${new URL(c.req.url).origin}/auth/callback`, state: stateParam });
+
   if (error || !code) {
+    if (isPcLogin && stateParam) {
+      recordServerHop(c, 'oauth_done', ref, { sid, detail: { ...hopDetail, canceled: true, error: error || null } });
+      const { id } = await resolveLoginChannel();
+      return c.html(notFriendPage(retryUrlFor(id), 'canceled'));
+    }
     return c.html(errorPage(error || 'Authorization failed'));
   }
 
@@ -862,15 +907,7 @@ liffRoutes.get('/auth/callback', async (c) => {
     const callbackUrl = `${baseUrl}/auth/callback`;
 
     // Multi-account: resolve LINE Login credentials from DB
-    let loginChannelId = c.env.LINE_LOGIN_CHANNEL_ID;
-    let loginChannelSecret = c.env.LINE_LOGIN_CHANNEL_SECRET;
-    if (accountParam) {
-      const account = await getLineAccountByChannelId(c.env.DB, accountParam);
-      if (account?.login_channel_id && account?.login_channel_secret) {
-        loginChannelId = account.login_channel_id;
-        loginChannelSecret = account.login_channel_secret;
-      }
-    }
+    const { id: loginChannelId, secret: loginChannelSecret } = await resolveLoginChannel();
 
     // Exchange code for tokens
     const tokenRes = await fetch('https://api.line.me/oauth2/v2.1/token', {
@@ -944,6 +981,22 @@ liffRoutes.get('/auth/callback', async (c) => {
     const preExistingFriend = await getFriendByLineUserId(db, lineUserId);
     const isNewFriend = !preExistingFriend;
 
+    // 友だちになったかを確かめる（TB-3475）。ログインだけして友だち追加を飛ばした人を friends に
+    // 入れない（入れるとシナリオ登録・「登録完了！」まで進み、ブロック中の人の is_following も 1 に戻る）。
+    // 確かめられなかったとき（null）は今までどおり進める
+    const friendFlag = await fetchFriendFlag(tokens.access_token);
+    const wasFollowing = !!preExistingFriend?.is_following;
+    recordServerHop(c, 'oauth_done', ref, {
+      sid,
+      detail: { ...hopDetail, friend: friendFlag, isNew: isNewFriend, wasFollowing },
+    });
+    if (friendFlag === false) {
+      return c.html(notFriendPage(retryUrlFor(loginChannelId), 'not_friend'));
+    }
+    if (friendFlag === true && !wasFollowing) {
+      recordServerHop(c, 'oauth_friend', ref, { sid, detail: { ...hopDetail, isNew: isNewFriend } });
+    }
+
     // Upsert friend (may not exist yet if webhook hasn't fired)
     const friend = await upsertFriend(db, {
       lineUserId,
@@ -951,6 +1004,11 @@ liffRoutes.get('/auth/callback', async (c) => {
       pictureUrl,
       statusMessage: null,
     });
+    // follow webhook より先にここで friends を作ったときは、/api/liff/link と同じ印を付ける。
+    // 付けないと follow ハンドラが「既にいる人＝出戻り」と判定し、新規の体験付与・あいさつに入らない
+    if (isNewFriend) {
+      await db.prepare(`UPDATE friends SET is_following = 0, metadata = json_set(COALESCE(metadata, '{}'), '$.pendingFollow', 1) WHERE id = ?`).bind(friend.id).run();
+    }
 
     // IG cross-platform UUID linkage (OAuth path — new friends & returning users
     // going through /auth/callback). Existing friends who bypass OAuth hit the
@@ -1265,6 +1323,11 @@ liffRoutes.get('/auth/callback', async (c) => {
       } catch (err) {
         console.error('Form link push error (non-blocking):', err);
       }
+    }
+
+    // PC の QR 画面から来た人は line.me/R/ti/p/（PC では QR の画面がもう一度出る）へ飛ばさず、ここで完了を見せる
+    if (isPcLogin) {
+      return c.html(completionPage(displayName, pictureUrl, ref));
     }
 
     // Redirect to the correct bot's chat after auth

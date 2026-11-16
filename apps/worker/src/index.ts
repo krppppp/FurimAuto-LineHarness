@@ -63,6 +63,7 @@ import { richMenus } from './routes/rich-menus.js';
 import { trackedLinks } from './routes/tracked-links.js';
 import { entryRoutes } from './routes/entry-routes.js';
 import { lpBeacon, recordServerHop } from './routes/lp-beacon.js';
+import { buildPcLoginHref, pcLoginBlockHtml, PC_LOGIN_CSS } from './furim/pc-login.js';
 import { lpAnalytics } from './routes/lp-analytics.js';
 import { furim } from './routes/furim.js';
 import { furimCoupons } from './routes/furim-coupons.js';
@@ -598,6 +599,8 @@ ${extraButtons}
   }
 
   // PC: show QR code page — QR encodes LIFF URL directly
+  // TB-3475: QR の下に「このパソコンで LINE にログイン」（/auth/oauth）を置く。QR はそのまま
+  const pcLoginHref = buildPcLoginHref(c.env.WORKER_PUBLIC_URL, { ...c.req.query(), ref }, c.req.query('sid') || gateSid);
   return c.html(`<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -615,6 +618,7 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 .qr img{display:block;width:240px;height:240px}
 .hint{font-size:13px;color:#999;line-height:1.6}
 .footer{font-size:11px;color:#bbb;margin-top:24px;line-height:1.5}
+${PC_LOGIN_CSS}
 </style>
 </head>
 <body>
@@ -627,6 +631,7 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 <img src="${c.env.WORKER_PUBLIC_URL ?? ''}/api/qr?size=240x240&data=${encodeURIComponent(liffTarget)}" alt="QR Code">
 </div>
 <p class="hint">LINE アプリのカメラまたは<br>スマートフォンのカメラで読み取れます</p>
+${pcLoginBlockHtml(pcLoginHref)}
 <p class="footer">友だち追加で全機能を無料体験できます</p>
 </div>
 <script>
@@ -654,7 +659,7 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
     document.addEventListener('click',function(ev){
       var el=ev.target;
       while(el&&el!==document){
-        if(el.tagName==='A'&&el.className&&String(el.className).indexOf('btn')>-1){ send('gate_open', 'pc'); break; }
+        if(el.getAttribute&&el.getAttribute('data-gate')){ send('gate_open', 'pc:'+el.getAttribute('data-gate')); break; }
         el=el.parentNode;
       }
     },true);
