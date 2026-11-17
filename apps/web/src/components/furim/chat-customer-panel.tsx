@@ -6,7 +6,6 @@ import { api, fetchApi } from '@/lib/api'
 import { toDisplayDateTime } from '@/app/data/datetime'
 import type { AdminTableMeta } from '@/app/data/types'
 import { readRow, tableHref, type Row } from '@/components/data/admin-client'
-import FeaturePanel from '@/components/data/feature-panel'
 import RelatedPanel from '@/components/data/related-panel'
 import TagEditor from '@/components/friends/tag-editor'
 import CouponManager from '@/components/friends/coupon-manager'
@@ -14,10 +13,11 @@ import CustomerFields from './customer-fields'
 
 /**
  * 個別チャットの顧客パネル（Capsec #308・2026-09-17 くろさん OK）。
- * 会話を開いたまま、その人の顧客データの確認と編集・機能フラグ・タグ・クーポン・変更履歴まで、この 1 枚で終わらせる。
- * 部品は友だち管理（タグ・クーポン）と顧客DB の行ドロワー（機能フラグ・関連データ・編集の決まり）と共用する。
+ * 会話を開いたまま、その人の顧客データの確認と編集・タグ・クーポン・自動化処理履歴・変更履歴まで、この 1 枚で終わらせる。
+ * 部品は友だち管理（タグ・クーポン）と顧客DB の行ドロワー（関連データ・編集の決まり）と共用する。
+ * 機能フラグはここには出さない（TB-3562・くろさん。編集は顧客DB の行ドロワーで）。
  *
- * 並び: 本人 → 要点 → タグ → クーポン → 個別メモ → 開閉（機能フラグ・顧客データの全項目・関連データ・リッチメニューと友だち情報）→ 変更履歴 5 件
+ * 並び: 本人 → 要点 → タグ → クーポン → 個別メモ → 開閉（顧客データの全項目・関連データ・リッチメニューと友だち情報）→ 自動化処理履歴（直近 1 週間）→ 変更履歴 5 件
  */
 
 interface FriendDetail {
@@ -151,6 +151,79 @@ function CopyButton({ value }: { value: string }) {
     >
       {done ? 'コピー済' : 'コピー'}
     </button>
+  )
+}
+
+type AutomationItem = {
+  id: string
+  created_at: string
+  service: string | null
+  client: string | null
+  kinds: string[]
+  reservation: boolean
+  result: string
+}
+
+type AutomationState = { kind: 'loading' } | { kind: 'error' } | { kind: 'data'; days: number; total: number; items: AutomationItem[] }
+
+const EXECUTION_LOGS = 'furim_execution_logs'
+
+function AutomationHistory({ lineUserId }: { lineUserId: string }) {
+  const [state, setState] = useState<AutomationState>({ kind: 'loading' })
+
+  useEffect(() => {
+    let alive = true
+    setState({ kind: 'loading' })
+    fetchApi<{ success: boolean; data: { days: number; total: number; items: AutomationItem[] } }>(
+      `/api/furim/person-automation/${encodeURIComponent(lineUserId)}?days=7`,
+    )
+      .then((res) => { if (alive) setState(res.success ? { kind: 'data', ...res.data } : { kind: 'error' }) })
+      .catch(() => { if (alive) setState({ kind: 'error' }) })
+    return () => {
+      alive = false
+    }
+  }, [lineUserId])
+
+  return (
+    <div className="p-4">
+      <div className="flex items-center justify-between mb-1.5">
+        <h4 className="text-[11px] font-medium text-gray-500">
+          自動化処理履歴（直近 1 週間）
+          {state.kind === 'data' && state.total > 0 && <span className="ml-1.5 text-[10px] text-gray-400">{state.total} 件</span>}
+        </h4>
+        <a href={tableHref(EXECUTION_LOGS, { q: lineUserId })} target="_blank" rel="noopener noreferrer" className="text-[11px] text-green-700 hover:underline">
+          もっと見る ↗
+        </a>
+      </div>
+      {state.kind === 'loading' ? (
+        <p className="text-xs text-gray-400">読み込み中...</p>
+      ) : state.kind === 'error' ? (
+        <p className="text-xs text-red-600">自動化処理履歴を取得できませんでした</p>
+      ) : state.items.length === 0 ? (
+        <p className="text-xs text-gray-400">直近 1 週間の自動化はありません</p>
+      ) : (
+        <>
+          <ul className="space-y-1.5 text-xs max-h-80 overflow-y-auto">
+            {state.items.map((a) => (
+              <li key={a.id}>
+                <div className="text-[10px] text-gray-400">
+                  {toDisplayDateTime(a.created_at).slice(0, 16)}
+                  {a.service && `・${a.service}`}
+                  {a.reservation && <span className="ml-1 px-1 rounded bg-gray-100 text-gray-500">予約</span>}
+                </div>
+                <div className="text-gray-700 break-all">
+                  {a.kinds.length > 0 ? a.kinds.join('・') : <span className="text-gray-400">（種類なし）</span>}
+                  <span className="ml-1.5 text-gray-500">{a.result}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {state.total > state.items.length && (
+            <p className="mt-1 text-[10px] text-gray-400">新しい {state.items.length} 件を表示。残りは「もっと見る」で</p>
+          )}
+        </>
+      )}
+    </div>
   )
 }
 
@@ -351,9 +424,6 @@ export default function ChatCustomerPanel({ friendId, chatStatus, onClose, onTag
 
             {customer && (
               <>
-                <Section id="features" title="機能フラグ" badge="切り替えの前に確認">
-                  <FeaturePanel lineUserId={friend.lineUserId} displayName={friend.displayName ?? ''} confirmToggle compact onChanged={refreshAudit} />
-                </Section>
                 <Section id="fields" title="顧客データの全項目" badge="項目ごとに編集">
                   <CustomerFields
                     table={customer.table}
@@ -400,6 +470,8 @@ export default function ChatCustomerPanel({ friendId, chatStatus, onClose, onTag
                   ))}
               </div>
             </Section>
+
+            <AutomationHistory lineUserId={friend.lineUserId} />
 
             {/* 変更履歴（直近 5 件） */}
             <div className="p-4">

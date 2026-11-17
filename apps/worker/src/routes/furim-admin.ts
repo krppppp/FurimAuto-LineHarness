@@ -30,6 +30,7 @@ import {
 } from '../furim/admin-schema.js';
 import { invalidateExtCache } from '../furim/ext-auth.js';
 import { listPersonAudit } from '../furim/person-audit.js';
+import { automationSince, listPersonAutomation } from '../furim/person-automation.js';
 import type { Env } from '../index.js';
 
 /**
@@ -573,6 +574,14 @@ furimAdmin.get('/api/furim/person-audit/:lineUserId', async (c) => {
     new Map((await loadFeatureColumns(c.env.DB)).map((col) => [col.featureKey ?? '', col.label])),
   );
   return c.json({ success: true, data });
+});
+
+// GET /api/furim/person-automation/:lineUserId?days=7 — 1 人分の自動化処理履歴（直近 N 日・新しい順・最大 100 件）。個別チャットの顧客パネル（TB-3562）
+furimAdmin.get('/api/furim/person-automation/:lineUserId', async (c) => {
+  const days = Math.min(Math.max(Number(c.req.query('days') ?? 7) || 7, 1), 31);
+  const since = automationSince(new Date(), days);
+  const data = await listPersonAutomation(c.env.DB, c.req.param('lineUserId')!, since, 100);
+  return c.json({ success: true, data: { since, days, ...data } });
 });
 
 // GET /api/furim/admin/:table/:id/related — その行の本人に紐づく別テーブルの件数と最新 20 件
