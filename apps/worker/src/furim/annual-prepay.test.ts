@@ -15,7 +15,7 @@ vi.mock('../services/push-notify.js', () => ({ sendPushToAll: vi.fn() }));
 const ap = await import('./annual-prepay.js');
 const {
   itemAmount, quoteSubscription, checkoutBlock, checkoutExpiresAt, addMonths, buildCheckoutParams, applyBlock, verifyApplied,
-  createAnnualCheckout, applyAnnualCoupon, recordAnnualPayment, ensureAnnualCoupon,
+  createAnnualCheckout, applyAnnualCoupon, recordAnnualPayment, ensureAnnualCoupon, annualPricing,
 } = ap;
 type AnnualSub = import('./annual-prepay.js').AnnualSub;
 
@@ -41,7 +41,9 @@ function setup() {
   sqlite.exec(migration('068_furim_customers.sql'));
   sqlite.exec('ALTER TABLE furim_customers ADD COLUMN subscription_id TEXT');
   sqlite.exec('CREATE TABLE friends (id TEXT PRIMARY KEY, line_user_id TEXT, display_name TEXT)');
+  sqlite.exec("CREATE TABLE messages_log (id TEXT PRIMARY KEY, friend_id TEXT, direction TEXT, message_type TEXT, content TEXT, created_at TEXT)");
   sqlite.exec(migration('092_furim_annual_prepay.sql'));
+  sqlite.exec(migration('093_furim_annual_prepay_price_months.sql'));
   sqlite.prepare("INSERT INTO furim_customers (line_user_id, stripe_customer_id, subscription_id, created_at, updated_at) VALUES ('U1', 'cus_1', 'sub_1', 'x', 'x')").run();
   sqlite.prepare("INSERT INTO friends VALUES ('f1', 'U1', 'テスト太郎')").run();
   const rows = () => sqlite.prepare('SELECT * FROM furim_annual_prepay').all() as Array<Record<string, unknown>>;
@@ -82,16 +84,17 @@ describe('年払い額の計算（annual_quote.py と同じ決まり）', () => 
     expect(() => itemAmount({ quantity: 1, price: { id: 'price_mc', billing_scheme: 'tiered' } })).toThrow(/tiers not expanded/);
   });
 
-  it('月額 = 全品目 − forever の割引。once・repeating は入れない。年払い = 月額 × 10', () => {
+  it('月額 = 全品目 − forever の割引。once・repeating は入れない。年払い = 月額 × 月数（決算セール 10・常設 11）', () => {
     const once = { id: 'di_once', coupon: { id: 'L5kbS7Pt', amount_off: 1000, duration: 'once' } };
-    const q = quoteSubscription(sub({ discounts: [combo, once] }));
+    const q = quoteSubscription(sub({ discounts: [combo, once] }), 10);
     expect(q).toEqual({ gross: 10480, foreverOff: 1500, monthly: 8980, annual: 89800, otherDiscounts: ['L5kbS7Pt'] });
+    expect(quoteSubscription(sub(), 11).annual).toBe(98780);
     const pct = { id: 'di_pct', coupon: { id: 'pct', percent_off: 10, duration: 'forever' } };
-    expect(quoteSubscription(sub({ discounts: [pct] })).monthly).toBe(10480 - 1048);
+    expect(quoteSubscription(sub({ discounts: [pct] }), 10).monthly).toBe(10480 - 1048);
   });
 
   it('discounts が展開されていなければ止める（金額を間違えて出さない）', () => {
-    expect(() => quoteSubscription(sub({ discounts: ['di_combo'] }))).toThrow(/not expanded/);
+    expect(() => quoteSubscription(sub({ discounts: ['di_combo'] }), 10)).toThrow(/not expanded/);
   });
 });
 
@@ -125,6 +128,29 @@ describe('Checkout の期限', () => {
   });
 });
 
+describe('×10（決算セール）と ×11（常設）の分かれ目', () => {
+  const dl = { saleReplyDeadlineIso: '2026-11-27T19:00:00+09:00', saleCheckoutDeadlineIso: '2026-12-01T00:00:00+09:00' };
+  it('「年払い」の返信が 11/27 19:00 より前なら ×10。期限は 24 時間かつ 12/1 0:00 まで', () => {
+    const now = Date.parse('2026-11-28T10:00:00+09:00');
+    const r = annualPricing({ ...dl, nowMs: now, replyAt: '2026-11-27T18:59:59.999+09:00' });
+    expect(r).toMatchObject({ kind: 'sale', priceMonths: 10, expiresAt: now / 1000 + 86400 });
+    const late = annualPricing({ ...dl, nowMs: Date.parse('2026-11-30T15:00:00+09:00'), replyAt: '2026-11-27T10:00:00.000+09:00' });
+    expect(late).toMatchObject({ kind: 'sale', expiresAt: Date.parse('2026-12-01T00:00:00+09:00') / 1000 });
+  });
+  it('返信が 11/27 19:00 ちょうど以降なら ×11（常設・24 時間）', () => {
+    const now = Date.parse('2026-11-27T20:00:00+09:00');
+    expect(annualPricing({ ...dl, nowMs: now, replyAt: '2026-11-27T19:00:00.000+09:00' })).toMatchObject({ kind: 'standard', priceMonths: 11, expiresAt: now / 1000 + 86400 });
+  });
+  it('返信の記録が無ければ発行した時刻で決める', () => {
+    expect(annualPricing({ ...dl, nowMs: NOW, replyAt: null }).priceMonths).toBe(10);
+    expect(annualPricing({ ...dl, nowMs: Date.parse('2026-11-27T19:00:00+09:00'), replyAt: null }).priceMonths).toBe(11);
+  });
+  it('締切前に返信していても、決算セールの Checkout が出せなくなったら（11/30 23:30 以降）×11', () => {
+    const now = Date.parse('2026-11-30T23:40:00+09:00');
+    expect(annualPricing({ ...dl, nowMs: now, replyAt: '2026-11-27T10:00:00.000+09:00' })).toMatchObject({ kind: 'standard', priceMonths: 11, expiresAt: now / 1000 + 86400 });
+  });
+});
+
 describe('月の足し算（更新日の数え方）', () => {
   it('同じ日・同じ時刻で月を進め、日が無い月は月末に寄せる', () => {
     const jan31 = Date.UTC(2027, 0, 31, 1) / 1000;
@@ -135,7 +161,7 @@ describe('月の足し算（更新日の数え方）', () => {
 
 describe('Checkout の中身', () => {
   const p = buildCheckoutParams({
-    annualPrepayId: 'ap_1', customerId: 'cus_1', subscriptionId: 'sub_1', lineUserId: 'U1', monthly: 8980, annual: 89800,
+    annualPrepayId: 'ap_1', customerId: 'cus_1', subscriptionId: 'sub_1', lineUserId: 'U1', monthly: 8980, annual: 89800, priceMonths: 10,
     taxRateId: 'txr_1', expiresAt: 1, periodEndSec: PERIOD_END, workerPublicUrl: 'https://w',
   });
   it('一括払い（mode=payment）・既存の顧客・都度の金額・10% 外税', () => {
@@ -160,11 +186,23 @@ describe('Checkout の中身', () => {
     expect(p['custom_text[submit][message]']).toContain('2026/12/05');
     expect(p['custom_text[submit][message]']).toContain('2027/12/04');
   });
+  it('決算セールは「2か月分無料」、常設は「11か月分のお支払い」と出す。月数は metadata にも入れる', () => {
+    expect(p['line_items[0][price_data][product_data][name]']).toContain('決算セール 2か月分無料');
+    expect(p['custom_text[submit][message]']).toContain('12か月分を10か月分のお支払い（決算セール・2か月分無料）');
+    expect(p['payment_intent_data[metadata][priceMonths]']).toBe('10');
+    const std = buildCheckoutParams({
+      annualPrepayId: 'ap_2', customerId: 'cus_1', subscriptionId: 'sub_1', lineUserId: 'U1', monthly: 8980, annual: 98780, priceMonths: 11,
+      taxRateId: 'txr_1', expiresAt: 1, periodEndSec: PERIOD_END,
+    });
+    expect(std['line_items[0][price_data][product_data][name]']).toBe('FurimAuto 年払いプラン（12か月）');
+    expect(std['custom_text[submit][message]']).toContain('12か月分を11か月分のお支払い（1か月分無料）');
+    expect(std['payment_intent_data[metadata][priceMonths]']).toBe('11');
+  });
 });
 
 describe('付与の前の確かめ', () => {
   const pi = { status: 'succeeded', amount: 98780, amount_received: 98780, customer: 'cus_1', metadata: { purchaseType: 'annual_prepay', lineUserId: 'U1', subscriptionId: 'sub_1', annualExclTax: '89800' } };
-  const row = { line_user_id: 'U1', subscription_id: 'sub_1', stripe_customer_id: 'cus_1', annual_excl_tax: 89800, amount_total: 98780 };
+  const row = { line_user_id: 'U1', subscription_id: 'sub_1', stripe_customer_id: 'cus_1', annual_excl_tax: 89800, price_months: 10, amount_total: 98780 };
   const q = { annual: 89800, otherDiscounts: [] as string[] };
   const base = { pi, row, lineUserId: 'U1', sub: sub(), quote: q };
   it('入金済み・金額一致・契約一致なら付けてよい', () => {
@@ -177,6 +215,7 @@ describe('付与の前の確かめ', () => {
     expect(applyBlock({ ...base, sub: sub({ id: 'sub_2' }) })?.reason).toBe('sub_mismatch');
     expect(applyBlock({ ...base, sub: sub({ customer: 'cus_2' }) })?.reason).toBe('customer_mismatch');
     expect(applyBlock({ ...base, pi: { ...pi, amount_received: 1000 } })?.reason).toBe('amount_mismatch');
+    expect(applyBlock({ ...base, pi: { ...pi, metadata: { ...pi.metadata, priceMonths: '11' } } })?.reason).toBe('amount_mismatch');
     expect(applyBlock({ ...base, quote: { ...q, annual: 79800 } })?.reason).toBe('plan_changed');
     expect(applyBlock({ ...base, sub: sub({ cancel_at_period_end: true }) })?.reason).toBe('cancel_scheduled');
     expect(applyBlock({ ...base, quote: { ...q, otherDiscounts: ['L5kbS7Pt'] } })?.reason).toBe('once_pending');
@@ -259,7 +298,7 @@ describe('POST checkout の流れ', () => {
     expect(cs.params.get('expires_at')).toBe(String(NOW / 1000 + 86400));
     expect(cs.headers['Idempotency-Key']).toMatch(/^annual-checkout-ap_/);
     expect(rows()).toHaveLength(1);
-    expect(rows()[0]).toMatchObject({ line_user_id: 'U1', stripe_customer_id: 'cus_1', subscription_id: 'sub_1', annual_excl_tax: 89800, amount_total: 98780 });
+    expect(rows()[0]).toMatchObject({ line_user_id: 'U1', stripe_customer_id: 'cus_1', subscription_id: 'sub_1', annual_excl_tax: 89800, price_months: 10, reply_at: null, amount_total: 98780 });
 
     const again = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: NOW + 60_000 });
     expect(again).toMatchObject({ ok: true, reused: true, url: (r as { url: string }).url });
@@ -281,11 +320,42 @@ describe('POST checkout の流れ', () => {
     expect(calls.some((c) => c.path === 'checkout/sessions')).toBe(false);
   });
 
-  it('締切（12/1 0:00 JST）を過ぎたら出さない', async () => {
+  it('「年払い」の返信が 11/27 19:00 より前なら、発行が 11/28 でも ×10（返信の日時は messages_log の最初の 1 件）', async () => {
+    const { db, sqlite, rows } = setup();
+    const log = sqlite.prepare("INSERT INTO messages_log VALUES (?, 'f1', ?, 'text', ?, ?)");
+    log.run('m0', 'outgoing', '年払いのご案内', '2026-11-21T09:00:00.000+09:00');
+    log.run('m1', 'incoming', '年払い', '2026-11-27T18:30:00.000+09:00');
+    log.run('m2', 'incoming', '年払いの内容に同意して申し込みます', '2026-11-28T09:00:00.000+09:00');
+    const calls = mockStripe({ sub: sub() });
+    const now = Date.parse('2026-11-28T10:00:00+09:00');
+    const r = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: now });
+    expect(r).toMatchObject({ ok: true, kind: 'sale', priceMonths: 10, replyAt: '2026-11-27T18:30:00.000+09:00', annual: 89800 });
+    expect(calls.find((c) => c.path === 'checkout/sessions')!.params.get('expires_at')).toBe(String(now / 1000 + 86400));
+    expect(rows()[0]).toMatchObject({ price_months: 10, reply_at: '2026-11-27T18:30:00.000+09:00' });
+  });
+
+  it('返信が 11/27 19:00 以降なら常設の ×11（期限は 24 時間・12/1 を過ぎても出す）', async () => {
+    const { db, sqlite, rows } = setup();
+    sqlite.prepare("INSERT INTO messages_log VALUES ('m1', 'f1', 'incoming', 'text', '年払いでお願いします', '2026-11-27T19:00:00.000+09:00')").run();
+    const calls = mockStripe({ sub: sub() });
+    const r = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: NOW });
+    expect(r).toMatchObject({ ok: true, kind: 'standard', priceMonths: 11, monthly: 8980, annual: 98780, amountTotal: 108658 });
+    expect(rows()[0]).toMatchObject({ price_months: 11, annual_excl_tax: 98780 });
+
+    const s2 = setup();
+    const dec = Date.parse('2026-12-03T10:00:00+09:00');
+    const r2 = await createAnnualCheckout(s2.db, env, { lineUserId: 'U1', nowMs: dec });
+    expect(r2).toMatchObject({ ok: true, kind: 'standard', priceMonths: 11, replyAt: null });
+    expect(calls.filter((c) => c.path === 'checkout/sessions').at(-1)!.params.get('expires_at')).toBe(String(dec / 1000 + 86400));
+  });
+
+  it('×10 の未払いリンクがあっても、×11 に変わったら同じリンクは返さない（金額の違うリンクを返さない）', async () => {
     const { db } = setup();
     const calls = mockStripe({ sub: sub() });
-    expect(await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-12-01T00:00:00+09:00') })).toMatchObject({ ok: false, reason: 'deadline_passed' });
-    expect(calls).toHaveLength(0);
+    await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T18:00:00+09:00') });
+    const r = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T19:30:00+09:00') });
+    expect(r).toMatchObject({ ok: true, reused: false, priceMonths: 11 });
+    expect(calls.filter((c) => c.path === 'checkout/sessions')).toHaveLength(2);
   });
 
   it('顧客マスターの契約と別の顧客の定期契約を指定されたら止める', async () => {
@@ -381,7 +451,14 @@ describe('webhook の記録（payment_intent.succeeded）', () => {
   it('API を通さずに作った Checkout でも metadata から 1 行起こす', async () => {
     const { db, rows } = setup();
     await recordAnnualPayment(db, env, { eventId: 'evt_2', paymentIntentId: 'pi_2', amount: 98780, customer: 'cus_1', metadata: meta });
-    expect(rows()[0]).toMatchObject({ id: 'pi:pi_2', line_user_id: 'U1', subscription_id: 'sub_1', annual_excl_tax: 89800, paid_at: '2026-11-21T10:00:00.000+09:00' });
+    expect(rows()[0]).toMatchObject({ id: 'pi:pi_2', line_user_id: 'U1', subscription_id: 'sub_1', annual_excl_tax: 89800, price_months: null, paid_at: '2026-11-21T10:00:00.000+09:00' });
+  });
+
+  it('常設（×11）の入金は通知に「×11 常設」と出す', async () => {
+    const { db, rows } = setup();
+    await recordAnnualPayment(db, env, { eventId: 'evt_3', paymentIntentId: 'pi_3', amount: 108658, customer: 'cus_1', metadata: { ...meta, annualExclTax: '98780', priceMonths: '11' } });
+    expect(rows()[0]).toMatchObject({ price_months: 11 });
+    expect(JSON.stringify(pushMessage.mock.calls[0][1])).toContain('月額×11 常設');
   });
 });
 
