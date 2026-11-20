@@ -5,17 +5,17 @@ import type { Env } from '../index.js';
 
 /**
  * 年払いプランの管理 API（TB-3929・runbook TB-3925 の 7 章）。認証は authMiddleware（スタッフ）・書き込みは owner/admin。
- * - POST /api/furim/annual-prepay/checkout { lineUserId, subscriptionId? } … 年払いの Checkout を発行して URL を返す（請求は変えない）
+ * - POST /api/furim/annual-prepay/checkout { lineUserId, subscriptionId?, dryRun? } … 年払いの Checkout を発行して URL を返す（請求は変えない）。dryRun は金額と期限だけ返し何も書かない
  * - POST /api/furim/annual-prepay/apply { lineUserId, paymentIntentId }   … 入金を確かめて年払いクーポンを足す（会員の請求の変更・くろさんの確認カードの後）
  * - POST /api/furim/annual-prepay/setup-coupon { dryRun?: boolean = true } … 年払いクーポン 1 枚を作る（冪等）
  */
 const furimAnnualPrepay = new Hono<Env>();
 
 furimAnnualPrepay.post('/api/furim/annual-prepay/checkout', requireRole('owner', 'admin'), async (c) => {
-  const body = await c.req.json<{ lineUserId?: string; subscriptionId?: string }>().catch(() => ({}) as { lineUserId?: string; subscriptionId?: string });
+  const body = await c.req.json<{ lineUserId?: string; subscriptionId?: string; dryRun?: boolean }>().catch(() => ({}) as { lineUserId?: string; subscriptionId?: string; dryRun?: boolean });
   if (!body.lineUserId) return c.json({ success: false, error: 'lineUserId required' }, 400);
   try {
-    const r = await createAnnualCheckout(c.env.DB, c.env, { lineUserId: body.lineUserId, subscriptionId: body.subscriptionId, createdBy: c.get('staff')?.name });
+    const r = await createAnnualCheckout(c.env.DB, c.env, { lineUserId: body.lineUserId, subscriptionId: body.subscriptionId, createdBy: c.get('staff')?.name, dryRun: body.dryRun === true });
     if (!r.ok) return c.json({ success: false, reason: r.reason, error: r.message }, 409);
     return c.json({ success: true, ...r });
   } catch (e) {

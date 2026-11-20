@@ -10,9 +10,9 @@ import { notifyStaff } from './staff-notify.js';
 import type { PushEnv } from '../services/push-notify.js';
 
 export const DEFAULT_ANNUAL_COUPON_ID = 'annual-prepay-12m';
-// 決算セール（TB-3951）: 「年払い」の返信が 11/27（金）19:00 JST より前なら月額 × 10。お支払いは 11/30 まで（Checkout の期限はこれを超えない）
+// 決算セール（TB-3951・TB-3956）: 「年払い」の返信が 11/27（金）19:00 JST より前なら月額 × 10。お支払いも同じ 11/27 19:00 まで（Checkout の期限はこれを超えない）
 export const DEFAULT_SALE_REPLY_DEADLINE = '2026-11-27T19:00:00+09:00';
-export const DEFAULT_ANNUAL_DEADLINE = '2026-12-01T00:00:00+09:00';
+export const DEFAULT_ANNUAL_DEADLINE = '2026-11-27T19:00:00+09:00';
 export const ANNUAL_MONTHS = 12;
 export const SALE_PRICE_MONTHS = 10;
 export const STANDARD_PRICE_MONTHS = 11;
@@ -120,7 +120,7 @@ export function checkoutBlock(sub: AnnualSub, opts: { couponId: string; openInvo
   return null;
 }
 
-// Checkout の期限: 発行から 24 時間。締切（決算セールは 12/1 0:00 JST）があればそれを超えない。残り 30 分を切ったら出さない
+// Checkout の期限: 発行から 24 時間。締切（決算セールは 11/27 19:00 JST）があればそれを超えない。残り 30 分を切ったら出さない
 export function checkoutExpiresAt(nowMs: number, deadlineIso?: string): number | null {
   const now = Math.floor(nowMs / 1000);
   let exp = now + CHECKOUT_TTL_SEC;
@@ -368,13 +368,14 @@ type PrepayRow = {
 
 export type CheckoutResult =
   | { ok: true; reused: boolean; url: string; annualPrepayId: string; kind: 'sale' | 'standard'; priceMonths: number; replyAt: string | null; monthly: number; annual: number; amountTotal: number | null; expiresAt: string; subscriptionId: string; periodStart: string }
+  | { ok: true; dryRun: true; kind: 'sale' | 'standard'; priceMonths: number; replyAt: string | null; monthly: number; annual: number; expiresAt: string; subscriptionId: string; periodStart: string; openCheckoutId: string | null }
   | { ok: false; reason: string; message: string };
 
 // 1. 年払いの Checkout を発行する（runbook 7 章 1）
 export async function createAnnualCheckout(
   db: D1Database,
   env: AnnualPrepayEnv,
-  input: { lineUserId: string; subscriptionId?: string; createdBy?: string; nowMs?: number },
+  input: { lineUserId: string; subscriptionId?: string; createdBy?: string; nowMs?: number; dryRun?: boolean },
 ): Promise<CheckoutResult> {
   const secretKey = env.STRIPE_SECRET_KEY;
   if (!secretKey) throw new Error('STRIPE_SECRET_KEY not configured');
@@ -405,6 +406,13 @@ export async function createAnnualCheckout(
   const rows = (await db.prepare('SELECT * FROM furim_annual_prepay WHERE subscription_id = ? ORDER BY created_at DESC').bind(sub.id).all<PrepayRow>()).results ?? [];
   if (rows.some((r) => r.paid_at)) return { ok: false, reason: 'already_paid', message: 'この定期契約の年払いは入金済みです' };
   const open = rows.find((r) => r.expires_at && Date.parse(r.expires_at) - nowMs > CHECKOUT_MIN_TTL_SEC * 1000 && r.annual_excl_tax === quote.annual && r.checkout_url);
+  // dryRun: 金額と期限だけ返す。Stripe にも D1 にも書かない（本番の読み取り確認用）
+  if (input.dryRun) {
+    return {
+      ok: true, dryRun: true, kind: pricing.kind, priceMonths, replyAt: pricing.replyAt, monthly: quote.monthly, annual: quote.annual,
+      expiresAt: formatJstIso(expiresAt * 1000), subscriptionId: sub.id, periodStart: formatJstIso(periodEnd(sub) * 1000), openCheckoutId: open?.id ?? null,
+    };
+  }
   // 金額の違う（× 10 → × 11 に変わった等）期限内の未払いリンクは先に失効させる。払えるリンクを 2 本にしない
   for (const r of rows.filter((r) => r !== open && r.checkout_session_id && r.expires_at && Date.parse(r.expires_at) > nowMs)) {
     try {

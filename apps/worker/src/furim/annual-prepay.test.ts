@@ -15,7 +15,7 @@ vi.mock('../services/push-notify.js', () => ({ sendPushToAll: vi.fn() }));
 const ap = await import('./annual-prepay.js');
 const {
   itemAmount, quoteSubscription, checkoutBlock, checkoutExpiresAt, addMonths, buildCheckoutParams, applyBlock, verifyApplied,
-  createAnnualCheckout, applyAnnualCoupon, recordAnnualPayment, ensureAnnualCoupon, annualPricing,
+  createAnnualCheckout, applyAnnualCoupon, recordAnnualPayment, ensureAnnualCoupon, annualPricing, DEFAULT_ANNUAL_DEADLINE,
 } = ap;
 type AnnualSub = import('./annual-prepay.js').AnnualSub;
 
@@ -115,27 +115,30 @@ describe('Checkout を出してよいか', () => {
 });
 
 describe('Checkout の期限', () => {
-  const deadline = '2026-12-01T00:00:00+09:00';
+  const deadline = '2026-11-27T19:00:00+09:00';
   it('発行から 24 時間', () => {
     expect(checkoutExpiresAt(NOW, deadline)).toBe(NOW / 1000 + 86400);
   });
-  it('12/1 0:00 JST を超えない（11/30 15:00 に出すと 12/1 0:00 まで）', () => {
-    expect(checkoutExpiresAt(Date.parse('2026-11-30T15:00:00+09:00'), deadline)).toBe(Date.parse(deadline) / 1000);
+  it('11/27 19:00 JST を超えない（11/27 10:00 に出すと 11/27 19:00 まで）', () => {
+    expect(checkoutExpiresAt(Date.parse('2026-11-27T10:00:00+09:00'), deadline)).toBe(Date.parse(deadline) / 1000);
   });
   it('締切まで 30 分を切ったら・過ぎたら出さない', () => {
-    expect(checkoutExpiresAt(Date.parse('2026-11-30T23:40:00+09:00'), deadline)).toBeNull();
-    expect(checkoutExpiresAt(Date.parse('2026-12-01T09:00:00+09:00'), deadline)).toBeNull();
+    expect(checkoutExpiresAt(Date.parse('2026-11-27T18:40:00+09:00'), deadline)).toBeNull();
+    expect(checkoutExpiresAt(Date.parse('2026-11-28T09:00:00+09:00'), deadline)).toBeNull();
   });
 });
 
 describe('×10（決算セール）と ×11（常設）の分かれ目', () => {
-  const dl = { saleReplyDeadlineIso: '2026-11-27T19:00:00+09:00', saleCheckoutDeadlineIso: '2026-12-01T00:00:00+09:00' };
-  it('「年払い」の返信が 11/27 19:00 より前なら ×10。期限は 24 時間かつ 12/1 0:00 まで', () => {
-    const now = Date.parse('2026-11-28T10:00:00+09:00');
-    const r = annualPricing({ ...dl, nowMs: now, replyAt: '2026-11-27T18:59:59.999+09:00' });
+  const dl = { saleReplyDeadlineIso: '2026-11-27T19:00:00+09:00', saleCheckoutDeadlineIso: DEFAULT_ANNUAL_DEADLINE };
+  it('お支払いの期限の既定は返信と同じ 11/27 19:00 JST', () => {
+    expect(DEFAULT_ANNUAL_DEADLINE).toBe('2026-11-27T19:00:00+09:00');
+  });
+  it('「年払い」の返信が 11/27 19:00 より前なら ×10。期限は 24 時間かつ 11/27 19:00 まで', () => {
+    const now = Date.parse('2026-11-21T10:00:00+09:00');
+    const r = annualPricing({ ...dl, nowMs: now, replyAt: '2026-11-21T09:59:00.000+09:00' });
     expect(r).toMatchObject({ kind: 'sale', priceMonths: 10, expiresAt: now / 1000 + 86400 });
-    const late = annualPricing({ ...dl, nowMs: Date.parse('2026-11-30T15:00:00+09:00'), replyAt: '2026-11-27T10:00:00.000+09:00' });
-    expect(late).toMatchObject({ kind: 'sale', expiresAt: Date.parse('2026-12-01T00:00:00+09:00') / 1000 });
+    const late = annualPricing({ ...dl, nowMs: Date.parse('2026-11-27T12:00:00+09:00'), replyAt: '2026-11-27T10:00:00.000+09:00' });
+    expect(late).toMatchObject({ kind: 'sale', expiresAt: Date.parse('2026-11-27T19:00:00+09:00') / 1000 });
   });
   it('返信が 11/27 19:00 ちょうど以降なら ×11（常設・24 時間）', () => {
     const now = Date.parse('2026-11-27T20:00:00+09:00');
@@ -145,9 +148,11 @@ describe('×10（決算セール）と ×11（常設）の分かれ目', () => {
     expect(annualPricing({ ...dl, nowMs: NOW, replyAt: null }).priceMonths).toBe(10);
     expect(annualPricing({ ...dl, nowMs: Date.parse('2026-11-27T19:00:00+09:00'), replyAt: null }).priceMonths).toBe(11);
   });
-  it('締切前に返信していても、決算セールの Checkout が出せなくなったら（11/30 23:30 以降）×11', () => {
-    const now = Date.parse('2026-11-30T23:40:00+09:00');
+  it('締切前に返信していても、決算セールの Checkout が出せなくなったら（11/27 18:30 以降・11/28 以降）×11', () => {
+    const now = Date.parse('2026-11-27T18:40:00+09:00');
     expect(annualPricing({ ...dl, nowMs: now, replyAt: '2026-11-27T10:00:00.000+09:00' })).toMatchObject({ kind: 'standard', priceMonths: 11, expiresAt: now / 1000 + 86400 });
+    const after = Date.parse('2026-11-28T10:00:00+09:00');
+    expect(annualPricing({ ...dl, nowMs: after, replyAt: '2026-11-27T18:59:59.999+09:00' })).toMatchObject({ kind: 'standard', priceMonths: 11 });
   });
 });
 
@@ -307,6 +312,17 @@ describe('POST checkout の流れ', () => {
     expect(calls.filter((c) => c.path === 'checkout/sessions')).toHaveLength(1);
   });
 
+  it('dryRun は金額と期限だけ返し、Stripe にも D1 にも書かない', async () => {
+    const { db, rows } = setup();
+    const calls = mockStripe({ sub: sub() });
+    const r = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: NOW, dryRun: true });
+    expect(r).toMatchObject({ ok: true, dryRun: true, kind: 'sale', priceMonths: 10, monthly: 8980, annual: 89800, subscriptionId: 'sub_1', openCheckoutId: null });
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+    expect(rows()).toHaveLength(0);
+    mockStripe({ sub: sub({ status: 'past_due' }) });
+    expect(await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: NOW, dryRun: true })).toMatchObject({ ok: false, reason: 'not_active' });
+  });
+
   it('入金済みの定期契約・支払い遅れ・未払いの請求書がある人には出さない（Stripe に Checkout を作らない）', async () => {
     const { db, sqlite } = setup();
     sqlite.prepare("INSERT INTO furim_annual_prepay (id, line_user_id, stripe_customer_id, subscription_id, monthly_excl_tax, annual_excl_tax, created_at, paid_at) VALUES ('ap_old', 'U1', 'cus_1', 'sub_1', 8980, 89800, 'x', 'y')").run();
@@ -322,18 +338,21 @@ describe('POST checkout の流れ', () => {
     expect(calls.some((c) => c.path === 'checkout/sessions')).toBe(false);
   });
 
-  it('「年払い」の返信が 11/27 19:00 より前なら、発行が 11/28 でも ×10（返信の日時は messages_log の最初の 1 件）', async () => {
+  it('「年払い」の返信が 11/27 19:00 より前なら ×10・期限は 11/27 19:00 まで。発行が 11/28 になったら ×11（返信の日時は messages_log の最初の 1 件）', async () => {
     const { db, sqlite, rows } = setup();
     const log = sqlite.prepare("INSERT INTO messages_log VALUES (?, 'f1', ?, 'text', ?, ?)");
     log.run('m0', 'outgoing', '年払いのご案内', '2026-11-21T09:00:00.000+09:00');
-    log.run('m1', 'incoming', '年払い', '2026-11-27T18:30:00.000+09:00');
-    log.run('m2', 'incoming', '年払いの内容に同意して申し込みます', '2026-11-28T09:00:00.000+09:00');
+    log.run('m1', 'incoming', '年払い', '2026-11-27T10:00:00.000+09:00');
+    log.run('m2', 'incoming', '年払いの内容に同意して申し込みます', '2026-11-27T11:00:00.000+09:00');
     const calls = mockStripe({ sub: sub() });
-    const now = Date.parse('2026-11-28T10:00:00+09:00');
+    const now = Date.parse('2026-11-27T12:00:00+09:00');
     const r = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: now });
-    expect(r).toMatchObject({ ok: true, kind: 'sale', priceMonths: 10, replyAt: '2026-11-27T18:30:00.000+09:00', annual: 89800 });
-    expect(calls.find((c) => c.path === 'checkout/sessions')!.params.get('expires_at')).toBe(String(now / 1000 + 86400));
-    expect(rows()[0]).toMatchObject({ price_months: 10, reply_at: '2026-11-27T18:30:00.000+09:00' });
+    expect(r).toMatchObject({ ok: true, kind: 'sale', priceMonths: 10, replyAt: '2026-11-27T10:00:00.000+09:00', annual: 89800 });
+    expect(calls.find((c) => c.path === 'checkout/sessions')!.params.get('expires_at')).toBe(String(Date.parse('2026-11-27T19:00:00+09:00') / 1000));
+    expect(rows()[0]).toMatchObject({ price_months: 10, reply_at: '2026-11-27T10:00:00.000+09:00' });
+
+    const r2 = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-28T10:00:00+09:00') });
+    expect(r2).toMatchObject({ ok: true, reused: false, kind: 'standard', priceMonths: 11, annual: 98780 });
   });
 
   it('返信が 11/27 19:00 以降なら常設の ×11（期限は 24 時間・12/1 を過ぎても出す）', async () => {
@@ -351,27 +370,27 @@ describe('POST checkout の流れ', () => {
     expect(calls.filter((c) => c.path === 'checkout/sessions').at(-1)!.params.get('expires_at')).toBe(String(dec / 1000 + 86400));
   });
 
-  it('×10 の未払いリンクがあっても、×11 に変わったら同じリンクは返さず、前のリンクを失効させてから出す', async () => {
+  it('×10 の未払いリンクがあっても、×11 に変わったら（11/27 18:30 以降で ×10 が出せない）同じリンクは返さず、前のリンクを失効させてから出す', async () => {
     const { db, rows } = setup();
     const calls = mockStripe({ sub: sub() });
-    await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T18:00:00+09:00') });
-    const r = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T19:30:00+09:00') });
+    await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T10:00:00+09:00') });
+    const r = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T18:40:00+09:00') });
     expect(r).toMatchObject({ ok: true, reused: false, priceMonths: 11 });
     expect(calls.filter((c) => c.path === 'checkout/sessions')).toHaveLength(2);
     const firstCs = calls.find((c) => c.path === 'checkout/sessions')!;
     expect(calls.filter((c) => c.path.endsWith('/expire'))).toHaveLength(1);
     expect(rows().find((x) => x.price_months === 10)!.checkout_session_id).toBe(calls.find((c) => c.path.endsWith('/expire'))!.path.split('/')[2]);
     expect(calls.indexOf(calls.find((c) => c.path.endsWith('/expire'))!)).toBeGreaterThan(calls.indexOf(firstCs));
-    expect(rows().find((x) => x.price_months === 10)!.expires_at).toBe('2026-11-27T19:30:00.000+09:00');
+    expect(rows().find((x) => x.price_months === 10)!.expires_at).toBe('2026-11-27T18:40:00.000+09:00');
   });
 
   it('前のリンクを失効できない（支払いが完了している等）ときは新しいリンクを出さない', async () => {
     const { db } = setup();
     const state: Parameters<typeof mockStripe>[0] = { sub: sub() };
     const calls = mockStripe(state);
-    await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T18:00:00+09:00') });
+    await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T10:00:00+09:00') });
     state.expireError = 'Only Checkout Sessions with a status in [\"open\"] can be expired. This Checkout Session has a status of \"complete\".';
-    const r = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T19:30:00+09:00') });
+    const r = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T18:40:00+09:00') });
     expect(r).toMatchObject({ ok: false, reason: 'previous_checkout_open' });
     expect(calls.filter((c) => c.path === 'checkout/sessions')).toHaveLength(1);
   });
