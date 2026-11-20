@@ -242,7 +242,7 @@ describe('付けた後の確かめ', () => {
 // ── Stripe を fetch の差し替えで再現して、API の流れを通す ──
 
 type Call = { method: string; path: string; params: URLSearchParams; headers: Record<string, string> };
-function mockStripe(state: { sub: AnnualSub; pi?: Record<string, unknown>; openInvoices?: number; upcoming?: number; coupon?: Record<string, unknown> | null }) {
+function mockStripe(state: { sub: AnnualSub; pi?: Record<string, unknown>; openInvoices?: number; upcoming?: number; coupon?: Record<string, unknown> | null; expireError?: string }) {
   const calls: Call[] = [];
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: { method?: string; body?: URLSearchParams; headers?: Record<string, string> }) => {
     const u = new URL(url);
@@ -268,6 +268,8 @@ function mockStripe(state: { sub: AnnualSub; pi?: Record<string, unknown>; openI
     if (path === 'invoices' && method === 'GET') return json({ data: Array.from({ length: state.openInvoices ?? 0 }, (_, i) => ({ id: `in_${i}` })) });
     if (path === 'invoices/upcoming') return json({ amount_due: state.upcoming ?? 0 });
     if (path === 'tax_rates') return json({ data: [{ id: 'txr_incl', percentage: 10, inclusive: true }, { id: 'txr_10', percentage: 10, inclusive: false }] });
+    if (/^checkout\/sessions\/[^/]+$/.test(path) && method === 'GET') return json({ id: path.split('/')[2], status: state.expireError ? 'complete' : 'expired' });
+    if (/^checkout\/sessions\/[^/]+\/expire$/.test(path) && method === 'POST') return state.expireError ? json({ error: { message: state.expireError } }, 400) : json({ id: path.split('/')[2], status: 'expired' });
     if (path === 'checkout/sessions' && method === 'POST') return json({ id: `cs_${calls.length}`, url: `https://checkout.stripe.com/c/${calls.length}`, amount_total: Math.round(Number(params.get('line_items[0][price_data][unit_amount]')) * 1.1) });
     if (path.startsWith('payment_intents/')) return json(state.pi);
     if (path.startsWith('coupons/') && method === 'GET') return state.coupon ? json(state.coupon) : json({ error: { message: `No such coupon: '${path.slice(8)}'` } }, 404);
@@ -349,13 +351,29 @@ describe('POST checkout の流れ', () => {
     expect(calls.filter((c) => c.path === 'checkout/sessions').at(-1)!.params.get('expires_at')).toBe(String(dec / 1000 + 86400));
   });
 
-  it('×10 の未払いリンクがあっても、×11 に変わったら同じリンクは返さない（金額の違うリンクを返さない）', async () => {
-    const { db } = setup();
+  it('×10 の未払いリンクがあっても、×11 に変わったら同じリンクは返さず、前のリンクを失効させてから出す', async () => {
+    const { db, rows } = setup();
     const calls = mockStripe({ sub: sub() });
     await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T18:00:00+09:00') });
     const r = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T19:30:00+09:00') });
     expect(r).toMatchObject({ ok: true, reused: false, priceMonths: 11 });
     expect(calls.filter((c) => c.path === 'checkout/sessions')).toHaveLength(2);
+    const firstCs = calls.find((c) => c.path === 'checkout/sessions')!;
+    expect(calls.filter((c) => c.path.endsWith('/expire'))).toHaveLength(1);
+    expect(rows().find((x) => x.price_months === 10)!.checkout_session_id).toBe(calls.find((c) => c.path.endsWith('/expire'))!.path.split('/')[2]);
+    expect(calls.indexOf(calls.find((c) => c.path.endsWith('/expire'))!)).toBeGreaterThan(calls.indexOf(firstCs));
+    expect(rows().find((x) => x.price_months === 10)!.expires_at).toBe('2026-11-27T19:30:00.000+09:00');
+  });
+
+  it('前のリンクを失効できない（支払いが完了している等）ときは新しいリンクを出さない', async () => {
+    const { db } = setup();
+    const state: Parameters<typeof mockStripe>[0] = { sub: sub() };
+    const calls = mockStripe(state);
+    await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T18:00:00+09:00') });
+    state.expireError = 'Only Checkout Sessions with a status in [\"open\"] can be expired. This Checkout Session has a status of \"complete\".';
+    const r = await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: Date.parse('2026-11-27T19:30:00+09:00') });
+    expect(r).toMatchObject({ ok: false, reason: 'previous_checkout_open' });
+    expect(calls.filter((c) => c.path === 'checkout/sessions')).toHaveLength(1);
   });
 
   it('顧客マスターの契約と別の顧客の定期契約を指定されたら止める', async () => {
