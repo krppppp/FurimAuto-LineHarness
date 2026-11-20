@@ -355,6 +355,7 @@ type PrepayRow = {
   price_months: number | null;
   reply_at: string | null;
   amount_total: number | null;
+  checkout_session_id: string | null;
   checkout_url: string | null;
   expires_at: string | null;
   payment_intent_id: string | null;
@@ -404,6 +405,19 @@ export async function createAnnualCheckout(
   const rows = (await db.prepare('SELECT * FROM furim_annual_prepay WHERE subscription_id = ? ORDER BY created_at DESC').bind(sub.id).all<PrepayRow>()).results ?? [];
   if (rows.some((r) => r.paid_at)) return { ok: false, reason: 'already_paid', message: 'この定期契約の年払いは入金済みです' };
   const open = rows.find((r) => r.expires_at && Date.parse(r.expires_at) - nowMs > CHECKOUT_MIN_TTL_SEC * 1000 && r.annual_excl_tax === quote.annual && r.checkout_url);
+  // 金額の違う（× 10 → × 11 に変わった等）期限内の未払いリンクは先に失効させる。払えるリンクを 2 本にしない
+  for (const r of rows.filter((r) => r !== open && r.checkout_session_id && r.expires_at && Date.parse(r.expires_at) > nowMs)) {
+    try {
+      await stripe(secretKey, `checkout/sessions/${r.checkout_session_id}/expire`, {}, 'POST');
+    } catch (e) {
+      const cur = (await stripe(secretKey, `checkout/sessions/${r.checkout_session_id}`)) as { status?: string };
+      if (cur.status !== 'expired') {
+        return { ok: false, reason: 'previous_checkout_open', message: `前に出した Checkout（${r.id}）を失効できません。入金済みでないか確かめる: ${String(e).slice(0, 200)}` };
+      }
+    }
+    await db.prepare('UPDATE furim_annual_prepay SET expires_at = ? WHERE id = ?').bind(formatJstIso(nowMs), r.id).run();
+  }
+
   const pe = periodEnd(sub);
   if (open) {
     return {
