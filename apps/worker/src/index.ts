@@ -71,6 +71,7 @@ import { furimChats } from './routes/furim-chats.js';
 import { furimMasters } from './routes/furim-masters.js';
 import { furimAdmin } from './routes/furim-admin.js';
 import { furimDashboard } from './routes/furim-dashboard.js';
+import { furimAnnualPrepay } from './routes/furim-annual-prepay.js';
 import { extApi } from './routes/ext-api.js';
 import { furimBackfill } from './routes/furim-backfill.js';
 import { processPendingCouponNotifications } from './services/coupon-notifications.js';
@@ -161,6 +162,10 @@ export type Env = {
     FURIM_RENEWAL_UNLOCK_EXCLUDE_SUBS?: string;
     FURIM_RENEWAL_UNLOCK_ROUND_FROM?: string;
     FURIM_RENEWAL_UNLOCK_ROUND_UNTIL?: string;
+    // 年払いプラン（furim/annual-prepay.ts・TB-3929）。未設定なら既定値（annual-prepay-12m・2026-12-01 0:00 JST・10% 外税を一覧から）
+    FURIM_ANNUAL_PREPAY_COUPON_ID?: string;
+    FURIM_ANNUAL_PREPAY_DEADLINE?: string;
+    FURIM_ANNUAL_TAX_RATE_ID?: string;
     FIREBASE_DATABASE_URL?: string;
     FIREBASE_DB_SECRET?: string;
     STRIPE_SECRET_KEY?: string;
@@ -265,6 +270,7 @@ app.route('/', furimChats);
 app.route('/', furimMasters);
 app.route('/', furimAdmin);
 app.route('/', furimDashboard);
+app.route('/', furimAnnualPrepay);
 app.route('/', extApi);
 app.route('/', furimBackfill);
 app.route('/', planBuilder);

@@ -184,3 +184,5 @@ FURIM_RENEWAL_UNLOCK = "on"
 # UNTIL の 2 日前を過ぎると開放は止まる。次に回すときは FROM と UNTIL を新しい日にしてデプロイ
 FURIM_RENEWAL_UNLOCK_ROUND_FROM = "2026-10-05"
 FURIM_RENEWAL_UNLOCK_ROUND_UNTIL = "2026-11-25"
+# 年払いの Checkout の消費税（10%・外税・本番で active は 1 本だけ。TB-3925 で確認）。締切とクーポン ID はコードの既定値（12/1 0:00 JST・annual-prepay-12m）
+FURIM_ANNUAL_TAX_RATE_ID = "txr_1OrbXSF2C7KcCkFfFWHEAtRJ"
