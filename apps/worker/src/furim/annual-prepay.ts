@@ -1,5 +1,5 @@
 // 年払いプラン（TB-3929・手順は TB-3925 の runbook）。
-// 今の月払いの定期契約はそのまま残し、年払い額（月額 × 10）を Checkout（mode=payment・既存の Stripe 顧客）で一括でもらう。
+// 今の月払いの定期契約はそのまま残し、年払い額（常設は月額 × 11・決算セールは月額 × 10）を Checkout（mode=payment・既存の Stripe 顧客）で一括でもらう。
 // 入金を確かめたら、その定期契約に年払いクーポン（100%・repeating・12 か月）を 1 枚足す。各月の請求は
 // 「月払いで払う」か「クーポンで 0 円」のどちらか 1 つだけになるので、仕組みとして二重請求が起きない。
 // 請求書（invoice）は使わない: invoice.payment_succeeded が定期契約なしで流れ、月額継続課金フローが動くため（runbook 2 章 C）。
@@ -10,11 +10,14 @@ import { notifyStaff } from './staff-notify.js';
 import type { PushEnv } from '../services/push-notify.js';
 
 export const DEFAULT_ANNUAL_COUPON_ID = 'annual-prepay-12m';
-// お支払いは 11/30 まで（F事業リーダーの決定 2026-11-20）。Checkout の期限はこれを超えない
+// 決算セール（TB-3951）: 「年払い」の返信が 11/27（金）19:00 JST より前なら月額 × 10。お支払いは 11/30 まで（Checkout の期限はこれを超えない）
+export const DEFAULT_SALE_REPLY_DEADLINE = '2026-11-27T19:00:00+09:00';
 export const DEFAULT_ANNUAL_DEADLINE = '2026-12-01T00:00:00+09:00';
 export const ANNUAL_MONTHS = 12;
-export const ANNUAL_PRICE_MONTHS = 10;
-const CHECKOUT_TTL_SEC = 24 * 3600;
+export const SALE_PRICE_MONTHS = 10;
+export const STANDARD_PRICE_MONTHS = 11;
+const ANNUAL_REPLY_KEYWORD = '年払い';
+const CHECKOUT_TTL_SEC = 24 * 3600; // Stripe の expires_at の上限（常設も 24 時間。切れたら同じ API で出し直す）
 const CHECKOUT_MIN_TTL_SEC = 30 * 60; // Stripe の expires_at の下限
 const STACK_VERSION = '2026-05-27.dahlia';
 
@@ -24,6 +27,7 @@ export type AnnualPrepayEnv = PushEnv & {
   WORKER_PUBLIC_URL?: string;
   FURIM_ANNUAL_PREPAY_COUPON_ID?: string;
   FURIM_ANNUAL_PREPAY_DEADLINE?: string;
+  FURIM_ANNUAL_SALE_REPLY_DEADLINE?: string;
   FURIM_ANNUAL_TAX_RATE_ID?: string;
 };
 
@@ -81,8 +85,8 @@ export function expandedDiscounts(sub: AnnualSub): SubDiscount[] {
   });
 }
 
-// 月額 = 全品目の合計 − forever の割引。once・repeating は入れない（価格表 2026-11-20 と同じ）。年払い = 月額 × 10
-export function quoteSubscription(sub: AnnualSub): { gross: number; foreverOff: number; monthly: number; annual: number; otherDiscounts: string[] } {
+// 月額 = 全品目の合計 − forever の割引。once・repeating は入れない（価格表 2026-11-20 と同じ）。年払い = 月額 × priceMonths
+export function quoteSubscription(sub: AnnualSub, priceMonths: number): { gross: number; foreverOff: number; monthly: number; annual: number; otherDiscounts: string[] } {
   const gross = sub.items.data.reduce((t, it) => t + itemAmount(it), 0);
   let foreverOff = 0;
   const otherDiscounts: string[] = [];
@@ -93,7 +97,7 @@ export function quoteSubscription(sub: AnnualSub): { gross: number; foreverOff: 
     else otherDiscounts.push(c.id);
   }
   const monthly = gross - foreverOff;
-  return { gross, foreverOff, monthly, annual: monthly * ANNUAL_PRICE_MONTHS, otherDiscounts };
+  return { gross, foreverOff, monthly, annual: monthly * priceMonths, otherDiscounts };
 }
 
 export function periodEnd(sub: AnnualSub): number {
@@ -116,13 +120,44 @@ export function checkoutBlock(sub: AnnualSub, opts: { couponId: string; openInvo
   return null;
 }
 
-// Checkout の期限: 発行から 24 時間。ただし締切（既定 12/1 0:00 JST）を超えない。残り 30 分を切ったら出さない
-export function checkoutExpiresAt(nowMs: number, deadlineIso: string): number | null {
-  const deadline = Math.floor(Date.parse(deadlineIso) / 1000);
-  if (!Number.isFinite(deadline)) throw new Error(`bad deadline: ${deadlineIso}`);
+// Checkout の期限: 発行から 24 時間。締切（決算セールは 12/1 0:00 JST）があればそれを超えない。残り 30 分を切ったら出さない
+export function checkoutExpiresAt(nowMs: number, deadlineIso?: string): number | null {
   const now = Math.floor(nowMs / 1000);
-  const exp = Math.min(now + CHECKOUT_TTL_SEC, deadline);
+  let exp = now + CHECKOUT_TTL_SEC;
+  if (deadlineIso) {
+    const deadline = Math.floor(Date.parse(deadlineIso) / 1000);
+    if (!Number.isFinite(deadline)) throw new Error(`bad deadline: ${deadlineIso}`);
+    exp = Math.min(exp, deadline);
+  }
   return exp - now < CHECKOUT_MIN_TTL_SEC ? null : exp;
+}
+
+export type AnnualPricing = { kind: 'sale' | 'standard'; priceMonths: number; expiresAt: number; replyAt: string | null };
+
+// 年払い額の月数を決める（TB-3951）。「年払い」の最初の返信（無ければ今）が返信の締切より前で、決算セールの Checkout がまだ出せるなら × 10。
+// それ以外は常設の × 11（期限は発行から 24 時間）
+export function annualPricing(input: { nowMs: number; replyAt: string | null; saleReplyDeadlineIso: string; saleCheckoutDeadlineIso: string }): AnnualPricing {
+  const replyDeadline = Date.parse(input.saleReplyDeadlineIso);
+  if (!Number.isFinite(replyDeadline)) throw new Error(`bad sale reply deadline: ${input.saleReplyDeadlineIso}`);
+  const basis = input.replyAt ? Date.parse(input.replyAt) : input.nowMs;
+  if (basis < replyDeadline) {
+    const exp = checkoutExpiresAt(input.nowMs, input.saleCheckoutDeadlineIso);
+    if (exp) return { kind: 'sale', priceMonths: SALE_PRICE_MONTHS, expiresAt: exp, replyAt: input.replyAt };
+  }
+  return { kind: 'standard', priceMonths: STANDARD_PRICE_MONTHS, expiresAt: checkoutExpiresAt(input.nowMs)!, replyAt: input.replyAt };
+}
+
+// 「年払い」を含む本人の最初の返信の日時（messages_log の created_at・JST）
+export async function firstAnnualReplyAt(db: D1Database, lineUserId: string): Promise<string | null> {
+  const r = await db
+    .prepare(
+      `SELECT m.created_at FROM messages_log m JOIN friends f ON f.id = m.friend_id
+       WHERE f.line_user_id = ? AND m.direction = 'incoming' AND m.message_type = 'text' AND m.content LIKE ?
+       ORDER BY m.created_at ASC LIMIT 1`,
+    )
+    .bind(lineUserId, `%${ANNUAL_REPLY_KEYWORD}%`)
+    .first<{ created_at: string }>();
+  return r?.created_at ?? null;
 }
 
 // 月の足し算（Stripe の月次の更新と同じく、日が無い月は月末に寄せる）
@@ -144,6 +179,7 @@ export function buildCheckoutParams(input: {
   lineUserId: string;
   monthly: number;
   annual: number;
+  priceMonths: number;
   taxRateId: string;
   expiresAt: number;
   periodEndSec: number;
@@ -151,6 +187,8 @@ export function buildCheckoutParams(input: {
 }): Record<string, string> {
   const start = input.periodEndSec;
   const lastDay = addMonths(start, ANNUAL_MONTHS) - 24 * 3600;
+  const sale = input.priceMonths === SALE_PRICE_MONTHS;
+  const name = sale ? 'FurimAuto 年払いプラン（12か月・決算セール 2か月分無料）' : 'FurimAuto 年払いプラン（12か月）';
   const meta: Record<string, string> = {
     purchaseType: 'annual_prepay',
     annualPrepayId: input.annualPrepayId,
@@ -158,6 +196,7 @@ export function buildCheckoutParams(input: {
     subscriptionId: input.subscriptionId,
     monthlyExclTax: String(input.monthly),
     annualExclTax: String(input.annual),
+    priceMonths: String(input.priceMonths),
   };
   const params: Record<string, string> = {
     mode: 'payment',
@@ -168,12 +207,13 @@ export function buildCheckoutParams(input: {
     'line_items[0][price_data][currency]': 'jpy',
     'line_items[0][price_data][unit_amount]': String(input.annual),
     'line_items[0][price_data][tax_behavior]': 'exclusive',
-    'line_items[0][price_data][product_data][name]': 'FurimAuto 年払いプラン（12か月）',
+    'line_items[0][price_data][product_data][name]': name,
     'line_items[0][tax_rates][0]': input.taxRateId,
     expires_at: String(input.expiresAt),
     success_url: `${input.workerPublicUrl ?? ''}/plan-builder/thanks`,
-    'payment_intent_data[description]': `FurimAuto 年払いプラン（12か月） ${input.subscriptionId}`,
+    'payment_intent_data[description]': `${name} ${input.subscriptionId}`,
     'custom_text[submit][message]':
+      `12か月分を${input.priceMonths}か月分のお支払い（${sale ? '決算セール・2か月分無料' : '1か月分無料'}）。` +
       `期間: 次回の更新日（${jstDate(start)}）から12か月（${jstDate(lastDay)}まで）。お支払いは今回の1回だけで、期間中の月々のお支払いはありません。` +
       '途中解約・返金は原則できません。',
   };
@@ -187,7 +227,7 @@ export function buildCheckoutParams(input: {
 // 付与の前の確かめ（入金・金額・契約の一致）。null なら付けてよい
 export function applyBlock(input: {
   pi: { status?: string; amount?: number; amount_received?: number; customer?: string | null; metadata?: Record<string, string> };
-  row: { line_user_id: string; subscription_id: string; stripe_customer_id: string; annual_excl_tax: number; amount_total: number | null } | null;
+  row: { line_user_id: string; subscription_id: string; stripe_customer_id: string; annual_excl_tax: number; price_months: number | null; amount_total: number | null } | null;
   lineUserId: string;
   sub: AnnualSub;
   quote: { annual: number; otherDiscounts: string[] };
@@ -202,6 +242,7 @@ export function applyBlock(input: {
   if (sub.id !== m.subscriptionId) return { reason: 'sub_mismatch', message: '決済の定期契約と今の定期契約が違います' };
   if (sub.customer !== pi.customer || sub.customer !== row.stripe_customer_id) return { reason: 'customer_mismatch', message: '決済の顧客と定期契約の顧客が違います' };
   if (Number(m.annualExclTax) !== row.annual_excl_tax) return { reason: 'amount_mismatch', message: '決済の金額（税抜）が台帳と違います' };
+  if (m.priceMonths && row.price_months != null && Number(m.priceMonths) !== row.price_months) return { reason: 'amount_mismatch', message: '決済の月数（×10／×11）が台帳と違います' };
   if (row.amount_total != null && (pi.amount_received ?? pi.amount) !== row.amount_total) return { reason: 'amount_mismatch', message: `入金額 ${pi.amount_received ?? pi.amount} 円が Checkout の合計 ${row.amount_total} 円と違います` };
   if (quote.annual !== row.annual_excl_tax) return { reason: 'plan_changed', message: `発行後に月額が変わっています（今の年払い額 ${quote.annual} 円・入金の基準 ${row.annual_excl_tax} 円）` };
   if (sub.status !== 'active') return { reason: 'not_active', message: `定期契約が active ではありません（${sub.status}）` };
@@ -311,6 +352,8 @@ type PrepayRow = {
   subscription_id: string;
   monthly_excl_tax: number;
   annual_excl_tax: number;
+  price_months: number | null;
+  reply_at: string | null;
   amount_total: number | null;
   checkout_url: string | null;
   expires_at: string | null;
@@ -323,7 +366,7 @@ type PrepayRow = {
 };
 
 export type CheckoutResult =
-  | { ok: true; reused: boolean; url: string; annualPrepayId: string; monthly: number; annual: number; amountTotal: number | null; expiresAt: string; subscriptionId: string; periodStart: string }
+  | { ok: true; reused: boolean; url: string; annualPrepayId: string; kind: 'sale' | 'standard'; priceMonths: number; replyAt: string | null; monthly: number; annual: number; amountTotal: number | null; expiresAt: string; subscriptionId: string; periodStart: string }
   | { ok: false; reason: string; message: string };
 
 // 1. 年払いの Checkout を発行する（runbook 7 章 1）
@@ -335,8 +378,13 @@ export async function createAnnualCheckout(
   const secretKey = env.STRIPE_SECRET_KEY;
   if (!secretKey) throw new Error('STRIPE_SECRET_KEY not configured');
   const nowMs = input.nowMs ?? Date.now();
-  const expiresAt = checkoutExpiresAt(nowMs, env.FURIM_ANNUAL_PREPAY_DEADLINE || DEFAULT_ANNUAL_DEADLINE);
-  if (!expiresAt) return { ok: false, reason: 'deadline_passed', message: '締切まで 30 分を切ったため発行しません' };
+  const pricing = annualPricing({
+    nowMs,
+    replyAt: await firstAnnualReplyAt(db, input.lineUserId),
+    saleReplyDeadlineIso: env.FURIM_ANNUAL_SALE_REPLY_DEADLINE || DEFAULT_SALE_REPLY_DEADLINE,
+    saleCheckoutDeadlineIso: env.FURIM_ANNUAL_PREPAY_DEADLINE || DEFAULT_ANNUAL_DEADLINE,
+  });
+  const { expiresAt, priceMonths } = pricing;
 
   let found: { customerId: string; sub: AnnualSub };
   try {
@@ -347,7 +395,7 @@ export async function createAnnualCheckout(
   }
   const { customerId, sub } = found;
   const couponId = annualCouponId(env);
-  const quote = quoteSubscription(sub);
+  const quote = quoteSubscription(sub, priceMonths);
   const invoices = (await stripe(secretKey, 'invoices', { subscription: sub.id, status: 'open', limit: '3' })) as unknown as { data: unknown[] };
   const block = checkoutBlock(sub, { couponId, openInvoiceCount: invoices.data.length, monthly: quote.monthly });
   if (block) return { ok: false, ...block };
@@ -359,7 +407,7 @@ export async function createAnnualCheckout(
   const pe = periodEnd(sub);
   if (open) {
     return {
-      ok: true, reused: true, url: open.checkout_url!, annualPrepayId: open.id, monthly: open.monthly_excl_tax, annual: open.annual_excl_tax,
+      ok: true, reused: true, url: open.checkout_url!, annualPrepayId: open.id, kind: pricing.kind, priceMonths, replyAt: pricing.replyAt, monthly: open.monthly_excl_tax, annual: open.annual_excl_tax,
       amountTotal: open.amount_total, expiresAt: open.expires_at!, subscriptionId: sub.id, periodStart: formatJstIso(pe * 1000),
     };
   }
@@ -368,20 +416,20 @@ export async function createAnnualCheckout(
   const taxRateId = await resolveTaxRate(env, secretKey);
   const params = buildCheckoutParams({
     annualPrepayId, customerId, subscriptionId: sub.id, lineUserId: input.lineUserId,
-    monthly: quote.monthly, annual: quote.annual, taxRateId, expiresAt, periodEndSec: pe, workerPublicUrl: env.WORKER_PUBLIC_URL,
+    monthly: quote.monthly, annual: quote.annual, priceMonths, taxRateId, expiresAt, periodEndSec: pe, workerPublicUrl: env.WORKER_PUBLIC_URL,
   });
   const session = (await stripe(secretKey, 'checkout/sessions', params, 'POST', { idempotencyKey: `annual-checkout-${annualPrepayId}` })) as unknown as { id: string; url: string; amount_total?: number };
   const expiresIso = formatJstIso(expiresAt * 1000);
   await db
     .prepare(
-      `INSERT INTO furim_annual_prepay (id, line_user_id, stripe_customer_id, subscription_id, monthly_excl_tax, annual_excl_tax, amount_total,
+      `INSERT INTO furim_annual_prepay (id, line_user_id, stripe_customer_id, subscription_id, monthly_excl_tax, annual_excl_tax, price_months, reply_at, amount_total,
          checkout_session_id, checkout_url, expires_at, created_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(annualPrepayId, input.lineUserId, customerId, sub.id, quote.monthly, quote.annual, session.amount_total ?? null, session.id, session.url, expiresIso, jstNow(), input.createdBy ?? null)
+    .bind(annualPrepayId, input.lineUserId, customerId, sub.id, quote.monthly, quote.annual, priceMonths, pricing.replyAt, session.amount_total ?? null, session.id, session.url, expiresIso, jstNow(), input.createdBy ?? null)
     .run();
   return {
-    ok: true, reused: false, url: session.url, annualPrepayId, monthly: quote.monthly, annual: quote.annual,
+    ok: true, reused: false, url: session.url, annualPrepayId, kind: pricing.kind, priceMonths, replyAt: pricing.replyAt, monthly: quote.monthly, annual: quote.annual,
     amountTotal: session.amount_total ?? null, expiresAt: expiresIso, subscriptionId: sub.id, periodStart: formatJstIso(pe * 1000),
   };
 }
@@ -410,7 +458,8 @@ export async function applyAnnualCoupon(
   if (row?.payment_intent_id && row.payment_intent_id !== pi.id) return { ok: false, reason: 'record_mismatch', message: `台帳の決済（${row.payment_intent_id}）と違います` };
 
   const sub = await readSub(secretKey, pi.metadata?.subscriptionId ?? '');
-  const quote = quoteSubscription(sub);
+  // 台帳の月数で比べる（092 だけの行・metadata の無い古い Checkout は × 10）
+  const quote = quoteSubscription(sub, row?.price_months ?? (Number(pi.metadata?.priceMonths) || SALE_PRICE_MONTHS));
   // 年払いのクーポンが付いていたら、付与の途中で落ちた（Stripe は付いた・台帳は未記録）とみなし、確かめ直しだけ行う
   const already = hasAnnualCoupon(sub, couponId);
   if (!already) {
@@ -483,11 +532,11 @@ export async function recordAnnualPayment(
   if (!recorded) {
     const ins = await db
       .prepare(
-        `INSERT OR IGNORE INTO furim_annual_prepay (id, line_user_id, stripe_customer_id, subscription_id, monthly_excl_tax, annual_excl_tax, created_at,
+        `INSERT OR IGNORE INTO furim_annual_prepay (id, line_user_id, stripe_customer_id, subscription_id, monthly_excl_tax, annual_excl_tax, price_months, created_at,
            payment_intent_id, amount_paid, paid_at, stripe_event_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(id, m.lineUserId ?? '', input.customer ?? '', m.subscriptionId ?? '', Number(m.monthlyExclTax ?? 0), Number(m.annualExclTax ?? 0), now, input.paymentIntentId, input.amount, now, input.eventId)
+      .bind(id, m.lineUserId ?? '', input.customer ?? '', m.subscriptionId ?? '', Number(m.monthlyExclTax ?? 0), Number(m.annualExclTax ?? 0), m.priceMonths ? Number(m.priceMonths) : null, now, input.paymentIntentId, input.amount, now, input.eventId)
       .run();
     recorded = (ins.meta?.changes ?? 0) > 0;
   }
@@ -497,7 +546,7 @@ export async function recordAnnualPayment(
       : null;
     const body = [
       `${friend?.display_name ?? '(名前不明)'}　${input.amount.toLocaleString('ja-JP')}円（税込）`,
-      `月額 ${Number(m.monthlyExclTax ?? 0).toLocaleString('ja-JP')}円 → 年払い ${Number(m.annualExclTax ?? 0).toLocaleString('ja-JP')}円（税抜）`,
+      `月額 ${Number(m.monthlyExclTax ?? 0).toLocaleString('ja-JP')}円 → 年払い ${Number(m.annualExclTax ?? 0).toLocaleString('ja-JP')}円（税抜・月額×${m.priceMonths ?? SALE_PRICE_MONTHS}${m.priceMonths === String(STANDARD_PRICE_MONTHS) ? ' 常設' : ' 決算セール'}）`,
       `line: ${m.lineUserId ?? ''}`,
       `sub: ${m.subscriptionId ?? ''}`,
       `pi: ${input.paymentIntentId}`,
