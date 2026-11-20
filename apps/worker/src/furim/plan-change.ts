@@ -97,6 +97,27 @@ export async function handlePlanChangeMessage(
     // once（1回限りクーポン）は差額invoiceに食われて価値ゼロで消滅しうるため、
     // 変更時に一旦外し、変更完了後に付け直して次回請求で効かせる
     const currentDiscounts = await getSubDiscounts(env.STRIPE_SECRET_KEY, sub.id);
+    // 年払い中（TB-3929）はここでは変えない。once 扱いで外して付け直すと 12 か月が数え直しになり、
+    // 付け直しに失敗すると翌月から月払いが復活する。intent は使わずに残し、担当が手で承る
+    const { annualCouponId } = await import('./annual-prepay.js');
+    if (currentDiscounts.some((d) => d.couponId === annualCouponId(env))) {
+      await setStage(db, code, 'blocked_annual_prepay');
+      await replyOrPush(lineClient, replyToken, lineUserId, [
+        {
+          type: 'text',
+          text: '年払いプランの期間中のため、この画面からはプラン変更ができません。ご希望の内容をこのLINEでお知らせください（担当者が承ります）。',
+        },
+      ]);
+      try {
+        await lineClient.pushMessage(STAFF_LINE_USER_ID, [{
+          type: 'text',
+          text: `ℹ️ 年払い中の人からプラン変更の申込がありました（変更はしていません）\ncode: ${code}\nline: ${lineUserId}\nsub: ${sub.id}`,
+        } as never]);
+      } catch (e) {
+        console.error('[plan-change] staff notify failed:', e);
+      }
+      return;
+    }
     const keepDiscounts = currentDiscounts.filter((d) => !d.couponId.startsWith('combo-'));
     const keepForever = keepDiscounts.filter((d) => d.duration === 'forever');
     const keepOnce = keepDiscounts.filter((d) => d.duration !== 'forever');

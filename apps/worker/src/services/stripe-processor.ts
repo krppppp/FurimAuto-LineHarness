@@ -381,7 +381,12 @@ export async function processStripeEvent(
           if (subscriptionId) {
             const { getSubDiscounts, stripeCall, STRIPE_STACK_VERSION } = await import('../routes/plan-builder.js');
             const existingDiscounts = await getSubDiscounts(env.STRIPE_SECRET_KEY, subscriptionId);
-            if (existingDiscounts.some((d) => d.couponId === ambassadorCouponId)) {
+            const { annualCouponId } = await import('../furim/annual-prepay.js');
+            if (existingDiscounts.some((d) => d.couponId === annualCouponId(env))) {
+              // 年払い中（TB-3929）は積まない。0 円の請求で消えて価値がなくなるため。reward_applied_at は立てずに残し、
+              // 年払いが終わって月払いの請求に戻った最初の継続課金で積まれる
+              console.log('[stripe/invoice] ambassador coupon deferred (annual prepay active):', ambassadorCouponId, subscriptionId);
+            } else if (existingDiscounts.some((d) => d.couponId === ambassadorCouponId)) {
               console.log('[stripe/invoice] ambassador coupon already stacked:', ambassadorCouponId);
               await markRewardApplied(db, pending.id);
             } else {
@@ -618,7 +623,18 @@ export async function processStripeEvent(
   // payment_intent.succeeded（一回決済）
   // ──────────────────────────────────────────
   if (body.type === 'payment_intent.succeeded') {
-    if (obj.metadata?.purchaseType === 'ticket') {
+    if (obj.metadata?.purchaseType === 'annual_prepay') {
+      // 年払い（TB-3929）: 台帳に記録してスタッフに知らせるだけ。クーポンの付与は管理 API（apply）で人が行う。
+      // 購入スコア・cv_fire には流さない（月払いの会員の前払いで、新しい購入ではない）。D1 が失敗したら throw して sweep に任せる
+      const { recordAnnualPayment } = await import('../furim/annual-prepay.js');
+      await recordAnnualPayment(db, env, {
+        eventId: body.id,
+        paymentIntentId: obj.id,
+        amount: obj.amount ?? 0,
+        customer: obj.customer ?? null,
+        metadata: obj.metadata ?? {},
+      });
+    } else if (obj.metadata?.purchaseType === 'ticket') {
       const ticketLineUserId = obj.metadata?.lineUserId ?? lineUserId;
       const quantity = parseInt(obj.metadata?.quantity ?? '0', 10);
       if (ticketLineUserId && quantity > 0) {

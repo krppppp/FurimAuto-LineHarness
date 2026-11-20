@@ -35,6 +35,17 @@ vi.mock('@line-crm/line-sdk', () => ({
   LineClient: vi.fn().mockImplementation(() => ({ pushMessage: vi.fn() })),
 }));
 
+// 年払い（TB-3929）: webhook は台帳への記録だけを呼ぶ。annualCouponId は本物を使う
+vi.mock('../furim/annual-prepay.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../furim/annual-prepay.js')>()),
+  recordAnnualPayment: vi.fn().mockResolvedValue({ recorded: true }),
+}));
+
+vi.mock('../furim/referral-store.js', () => ({
+  findUnappliedReward: vi.fn().mockResolvedValue(null),
+  markRewardApplied: vi.fn(),
+}));
+
 import {
   getFriendByLineUserId,
   getStalePendingStripeEvents,
@@ -675,5 +686,89 @@ describe('processStripeEvent — customer.subscription.deleted の解約理由�
 
     expect(trace).toEqual(['insert', 'fireEvent']);
     expect(pushMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('processStripeEvent — 年払いの入金（payment_intent.succeeded・TB-3929）', () => {
+  test('purchaseType=annual_prepay は台帳への記録だけを呼び、購入スコア・cv_fire・チケットには流さない', async () => {
+    const { recordAnnualPayment } = await import('../furim/annual-prepay.js');
+    const { applyScoring } = await import('@line-crm/db');
+    const { db } = makeDb(null);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+    const metadata = { purchaseType: 'annual_prepay', annualPrepayId: 'ap_1', lineUserId: 'U1', subscriptionId: 'sub_1', monthlyExclTax: '8980', annualExclTax: '89800' };
+
+    await processStripeEvent(db, env, {
+      id: 'evt_ap_1',
+      type: 'payment_intent.succeeded',
+      data: { object: { id: 'pi_1', amount: 98780, customer: 'cus_1', metadata } },
+    });
+
+    expect(recordAnnualPayment).toHaveBeenCalledWith(db, env, { eventId: 'evt_ap_1', paymentIntentId: 'pi_1', amount: 98780, customer: 'cus_1', metadata });
+    expect(fireEvent).not.toHaveBeenCalled();
+    expect(applyScoring).not.toHaveBeenCalled();
+  });
+
+  test('台帳の記録が落ちたら throw して sweep の再処理に任せる', async () => {
+    const { recordAnnualPayment } = await import('../furim/annual-prepay.js');
+    vi.mocked(recordAnnualPayment).mockRejectedValueOnce(new Error('D1 down'));
+    const { db } = makeDb(null);
+    await expect(processStripeEvent(db, env, {
+      id: 'evt_ap_2',
+      type: 'payment_intent.succeeded',
+      data: { object: { id: 'pi_2', amount: 98780, customer: 'cus_1', metadata: { purchaseType: 'annual_prepay', lineUserId: 'U1' } } },
+    })).rejects.toThrow(/D1 down/);
+  });
+});
+
+describe('processStripeEvent — 紹介報酬のガード（年払い中は積まない・TB-3929）', () => {
+  function stubStripe(discounts: Array<{ id: string; coupon: { id: string; duration: string } }>) {
+    const posts: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { method?: string }) => {
+      const u = new URL(url);
+      if ((init?.method ?? 'GET') === 'POST') posts.push(u.pathname);
+      if (u.pathname === '/v1/subscriptions/sub_ap') {
+        return new Response(JSON.stringify({ id: 'sub_ap', items: { data: [] }, metadata: {}, discounts }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }));
+    return posts;
+  }
+  const cycleBody = {
+    id: 'evt_amb',
+    type: 'invoice.payment_succeeded',
+    data: { object: { id: 'in_amb', customer: 'cus_ap', subscription: 'sub_ap', billing_reason: 'subscription_cycle', metadata: { lineUserId: 'U1' } } },
+  };
+  const envWithKey = { LINE_CHANNEL_ACCESS_TOKEN: 'tok', STRIPE_SECRET_KEY: 'sk_test' } as never;
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  test('年払いクーポンが付いた定期契約には報酬クーポンを積まず、未適用のまま残す', async () => {
+    const { findUnappliedReward, markRewardApplied } = await import('../furim/referral-store.js');
+    vi.mocked(findUnappliedReward).mockResolvedValueOnce({ id: 'ref_1', reward_coupon_id: 'amb-1000' } as never);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+    const posts = stubStripe([
+      { id: 'di_combo', coupon: { id: 'combo-f1-s0', duration: 'forever' } },
+      { id: 'di_ap', coupon: { id: 'annual-prepay-12m', duration: 'repeating' } },
+    ]);
+    const { db } = makeDb(null, 'U1');
+
+    await processStripeEvent(db, envWithKey, cycleBody);
+
+    expect(posts).not.toContain('/v1/subscriptions/sub_ap');
+    expect(markRewardApplied).not.toHaveBeenCalled();
+    expect(vi.mocked(fireEvent).mock.calls[0][2].eventData).toMatchObject({ ambassadorCouponApplied: false });
+  });
+
+  test('年払いでなければ今までどおり積む', async () => {
+    const { findUnappliedReward, markRewardApplied } = await import('../furim/referral-store.js');
+    vi.mocked(findUnappliedReward).mockResolvedValueOnce({ id: 'ref_1', reward_coupon_id: 'amb-1000' } as never);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({ id: 'friend-1' } as never);
+    const posts = stubStripe([{ id: 'di_combo', coupon: { id: 'combo-f1-s0', duration: 'forever' } }]);
+    const { db } = makeDb(null, 'U1');
+
+    await processStripeEvent(db, envWithKey, cycleBody);
+
+    expect(posts).toContain('/v1/subscriptions/sub_ap');
+    expect(markRewardApplied).toHaveBeenCalledWith(db, 'ref_1');
   });
 });

@@ -214,6 +214,8 @@ export type PlanCheckoutEnv = {
   DB?: D1Database;
   // 拡張の認証キャッシュ（プラン変更でキーコード・機能フラグを書き換えた時に消す）
   FURIM_EXT_CACHE?: KVNamespace;
+  // 年払いクーポンの ID（付いている定期契約はプラン変更を受けない・TB-3929）
+  FURIM_ANNUAL_PREPAY_COUPON_ID?: string;
 };
 
 /**
