@@ -380,11 +380,12 @@ async function handleEvent(
     }
 
     // 年払いの「この内容で申し込む」→ 登録済みのカードで決済（TB-3964・TB-3963）
-    const { ANNUAL_CONFIRM_POSTBACK } = await import('../furim/annual-prepay-line.js');
-    if (postbackData === ANNUAL_CONFIRM_POSTBACK && env) {
+    const { parseConfirmPostback } = await import('../furim/annual-prepay-line.js');
+    const annualConfirm = parseConfirmPostback(postbackData);
+    if (annualConfirm && env) {
       const { replyAnnualConfirm } = await import('../furim/annual-prepay-line-handler.js');
       try {
-        await replyAnnualConfirm(db, env, lineClient, event.replyToken, friend, lineAccountId);
+        await replyAnnualConfirm(db, env, lineClient, event.replyToken, friend, lineAccountId, annualConfirm.expectedAnnual);
       } catch (err) {
         console.error('[annual-prepay-line] confirm failed', err);
       }

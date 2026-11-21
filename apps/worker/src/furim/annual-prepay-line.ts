@@ -1,4 +1,5 @@
 import type { Message } from '@line-crm/line-sdk';
+import type { AnnualQuote, ChargeResult, QuoteResult } from './annual-prepay.js';
 
 /**
  * 年払いの LINE のやりとり（TB-3964）。
@@ -15,43 +16,26 @@ export const ANNUAL_DEADLINE_LABEL = '2026年11月27日（金）19:00まで';
 export const REFUND_EXCEPTION =
   'お申込みから1か月以内に、\nご利用中のフリマサイトの\n仕様変更などにより、\n当ツールで改修を行っても\n自動化処理が完結できない状態に\nなった場合に限り、\nお支払い額から使った1か月分\n（月額）を引いてお返しします。';
 
-export type AnnualQuote = {
-  ok: true;
-  dryRun: true;
-  kind: 'sale' | 'standard';
-  priceMonths: number;
-  monthly: number;
-  annual: number;
-  tax: number;
-  total: number;
-  startAt: string;
-  endAt: string;
-};
+/** postback のデータ。案内した年払い額（税抜）を載せ、決済のときに金額が変わっていないか確かめる */
+export function confirmPostbackData(annual: number): string {
+  return `${ANNUAL_CONFIRM_POSTBACK}&annual=${annual}`;
+}
 
-export type AnnualCharged = {
-  ok: true;
-  charged: true;
-  alreadyCharged: boolean;
-  annual: number;
-  total: number;
-  startAt: string;
-  endAt: string;
-  applied: boolean;
-};
-
-export type AnnualChargeFailure = { ok: false; reason: string; message: string; checkoutUrl?: string | null };
-
-export type AnnualQuoteResult = AnnualQuote | AnnualChargeFailure;
-export type AnnualChargeResult = AnnualCharged | AnnualChargeFailure;
+export function parseConfirmPostback(data: string): { expectedAnnual?: number } | null {
+  if (data !== ANNUAL_CONFIRM_POSTBACK && !data.startsWith(`${ANNUAL_CONFIRM_POSTBACK}&`)) return null;
+  const v = new URLSearchParams(data).get('annual');
+  const n = v != null && /^\d+$/.test(v) ? Number(v) : undefined;
+  return { expectedAnnual: n };
+}
 
 const WEEK = ['日', '月', '火', '水', '木', '金', '土'];
 
-/** JST の ISO（2026-12-05T10:00:00+09:00 など）→「2026年12月5日（土）」 */
-export function jpDate(iso: string): string {
-  const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) return iso;
-  const d = new Date(ms + 9 * 3600 * 1000);
-  return `${d.getUTCFullYear()}年${d.getUTCMonth() + 1}月${d.getUTCDate()}日（${WEEK[d.getUTCDay()]}）`;
+/** 2026/12/05（JST の日付）→「2026年12月5日（土）」 */
+export function jpDate(ymd: string): string {
+  const m = ymd.match(/^(\d{4})[/-](\d{2})[/-](\d{2})/);
+  if (!m) return ymd;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return `${+m[1]}年${+m[2]}月${+m[3]}日（${WEEK[d.getUTCDay()]}）`;
 }
 
 const yen = (n: number) => `${n.toLocaleString('ja-JP')}円`;
@@ -86,8 +70,11 @@ function heading(text: string, bar = BLUE) {
 }
 
 /** 金額案内の Flex。ボタンは postback（押した記録が同意の記録になる） */
-export function buildAnnualQuoteFlex(q: AnnualQuote): Message {
+export function buildAnnualQuoteFlex(q: AnnualQuote & { payWith: 'card' | 'checkout' }): Message {
   const sale = q.kind === 'sale';
+  const howToPay = q.payWith === 'card'
+    ? 'ボタンを押すと、ご登録のカードで\nお支払いが完了します。\n期間中の月々のお支払いはありません。'
+    : 'ボタンを押すと、お支払いの\nリンクをこのトークでお送りします。\n期間中の月々のお支払いはありません。';
   const contents = {
     type: 'bubble',
     size: 'giga',
@@ -109,12 +96,12 @@ export function buildAnnualQuoteFlex(q: AnnualQuote): Message {
             row('年払い（税抜）', yen(q.annual), { size: 'lg', color: RED, weight: 'bold' }),
             row('お支払い（税込）', yen(q.total), { weight: 'bold' }),
             { type: 'separator', color: '#DDE3EE' },
-            row('ご利用期間', `${jpDate(q.startAt)}\n〜${jpDate(q.endAt)}`),
+            row('ご利用期間', `${jpDate(q.periodStart)}\n〜${jpDate(q.periodLastDay)}`),
             ...(sale ? [row('締切', ANNUAL_DEADLINE_LABEL, { color: RED, weight: 'bold' })] : []),
           ],
         },
         heading('お支払いについて'),
-        t('ボタンを押すと、ご登録のカードで\nお支払いが完了します。\n期間中の月々のお支払いはありません。', { margin: 'md' }),
+        t(howToPay, { margin: 'md' }),
         heading('返金について', '#F9B233'),
         t('お申込み後の途中解約・返金は\n原則できません。', { weight: 'bold', margin: 'md' }),
         t(REFUND_EXCEPTION, { margin: 'sm' }),
@@ -125,7 +112,7 @@ export function buildAnnualQuoteFlex(q: AnnualQuote): Message {
       contents: [
         {
           type: 'button', style: 'primary', color: RED, height: 'md',
-          action: { type: 'postback', label: ANNUAL_CONFIRM_LABEL, data: ANNUAL_CONFIRM_POSTBACK, displayText: ANNUAL_CONFIRM_LABEL },
+          action: { type: 'postback', label: ANNUAL_CONFIRM_LABEL, data: confirmPostbackData(q.annual), displayText: ANNUAL_CONFIRM_LABEL },
         },
         t('上の内容と返金の条件に同意のうえ、お申込みください', { size: 'xxs', color: '#777777', align: 'center' }),
       ],
@@ -135,55 +122,40 @@ export function buildAnnualQuoteFlex(q: AnnualQuote): Message {
 }
 
 const CONTACT = 'ご契約の状態を確かめて、担当からこのトークでご連絡します。';
+const DONE = '年払いのお手続きは、すでに済んでいます。';
+const DONE_REASONS = ['already_annual', 'already_paid'];
+const NOT_TARGET_REASONS = ['too_small', 'no_customer'];
 
-/** 金額を出せなかったときの返事 */
-function quoteFailureText(r: AnnualChargeFailure): string {
-  switch (r.reason) {
-    case 'already_annual':
-    case 'already_paid':
-    case 'already_charged':
-      return '年払いのお手続きは、すでに済んでいます。';
-    case 'no_customer':
-    case 'no_subscription':
-    case 'not_member':
-    case 'too_small':
-      return '年払いは、月額プランをご契約中の方が対象です。\nご不明な点は、このLINEでお聞きください。';
-    default:
-      return `年払いのご希望を受け付けました。\n${CONTACT}`;
-  }
-}
+const text = (s: string) => ({ type: 'text', text: s }) as Message;
 
 /** 「年払い」への返事 */
-export function annualQuoteMessages(r: AnnualQuoteResult): Message[] {
+export function annualQuoteMessages(r: QuoteResult): Message[] {
   if (r.ok) return [buildAnnualQuoteFlex(r)];
-  return [{ type: 'text', text: quoteFailureText(r) } as Message];
+  if (DONE_REASONS.includes(r.reason)) return [text(DONE)];
+  if (NOT_TARGET_REASONS.includes(r.reason)) return [text('年払いは、月額プランをご契約中の方が対象です。\nご不明な点は、このLINEでお聞きください。')];
+  return [text(`年払いのご希望を受け付けました。\n${CONTACT}`)];
 }
 
 /** 「この内容で申し込む」への返事 */
-export function annualConfirmMessages(r: AnnualChargeResult): Message[] {
+export function annualConfirmMessages(r: ChargeResult): Message[] {
   if (r.ok) {
-    const period = `${jpDate(r.startAt)}〜${jpDate(r.endAt)}`;
-    if (r.alreadyCharged) {
-      return [{ type: 'text', text: `年払いのお手続きは、すでに済んでいます。\nご利用期間: ${period}` } as Message];
-    }
-    return [{
-      type: 'text',
-      text:
-        'お申込みありがとうございます。\nご登録のカードでお支払いが完了しました。\n\n' +
-        `お支払い額: ${yen(r.total)}（税込）\nご利用期間: ${period}\n\n` +
+    if ('dryRun' in r) return [];
+    return [text(
+      'お申込みありがとうございます。\nご登録のカードでお支払いが完了しました。\n\n' +
+        `お支払い額: ${yen(r.total)}（税込）\nご利用期間: ${jpDate(r.periodStart)}〜${jpDate(r.periodLastDay)}\n\n` +
         '期間中の月々のお支払いはありません。\nキーコードは今までどおり毎月自動で延びます。',
-    } as Message];
+    )];
   }
   if (r.checkoutUrl) {
-    const why = r.reason === 'checkout_only'
-      ? 'お申込みありがとうございます。'
-      : r.reason === 'needs_action'
-        ? 'カード会社の本人確認が必要なため、ご登録のカードでのお支払いが完了しませんでした。'
+    const why = r.reason === 'authentication_required'
+      ? 'カード会社の本人確認が必要なため、ご登録のカードでのお支払いが完了しませんでした。'
+      : r.reason === 'no_payment_method'
+        ? 'お申込みありがとうございます。'
         : 'ご登録のカードでお支払いができませんでした。';
-    return [{ type: 'text', text: `${why}\n下のリンクからお支払いいただけます。\n${r.checkoutUrl}` } as Message];
+    return [text(`${why}\n下のリンクからお支払いいただけます。\n${r.checkoutUrl}`)];
   }
-  if (['already_annual', 'already_paid', 'already_charged'].includes(r.reason)) {
-    return [{ type: 'text', text: '年払いのお手続きは、すでに済んでいます。' } as Message];
-  }
-  return [{ type: 'text', text: `お申込みを受け付けました。\nお支払いはまだ完了していません。\n${CONTACT}` } as Message];
+  if (DONE_REASONS.includes(r.reason)) return [text(DONE)];
+  if (r.reason === 'in_progress') return [text('お手続き中です。\n少しお待ちください。')];
+  if (r.reason === 'price_changed') return [text('ご案内した金額から変わっています。\nお手数ですが、もう一度「年払い」とお送りください。')];
+  return [text(`お申込みを受け付けました。\nお支払いはまだ完了していません。\n${CONTACT}`)];
 }

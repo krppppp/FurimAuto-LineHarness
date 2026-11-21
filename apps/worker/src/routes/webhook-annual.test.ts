@@ -173,9 +173,10 @@ describe('POST /webhook — 年払いの金額案内と決済（TB-3964）', () 
   });
 
   test('「この内容で申し込む」の postback は決済に進み、auto_replies を見ない', async () => {
-    await post({ type: 'postback', postback: { data: 'annual_prepay=confirm' } });
+    await post({ type: 'postback', postback: { data: 'annual_prepay=confirm&annual=89800' } });
     expect(replyAnnualConfirm).toHaveBeenCalledTimes(1);
     expect(vi.mocked(replyAnnualConfirm).mock.calls[0][3]).toBe('reply-token');
+    expect(vi.mocked(replyAnnualConfirm).mock.calls[0][6]).toBe(89800);
     expect(replyAnnualQuote).not.toHaveBeenCalled();
   });
 

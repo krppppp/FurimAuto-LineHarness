@@ -1,17 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ANNUAL_CONFIRM_POSTBACK,
   REFUND_EXCEPTION,
   annualConfirmMessages,
   annualQuoteMessages,
   jpDate,
-  type AnnualQuote,
+  parseConfirmPostback,
 } from './annual-prepay-line.js';
+import type { AnnualQuote } from './annual-prepay.js';
 
-const quote: AnnualQuote = {
-  ok: true, dryRun: true, kind: 'sale', priceMonths: 10, monthly: 8980, annual: 89800, tax: 8980, total: 98780,
-  startAt: '2026-12-05T10:00:00+09:00', endAt: '2027-12-04T10:00:00+09:00',
+const base: AnnualQuote = {
+  kind: 'sale', priceMonths: 10, monthly: 8980, annual: 89800, tax: 8980, total: 98780,
+  periodStart: '2026/12/05', periodLastDay: '2027/12/04', subscriptionId: 'sub_1',
 };
+const quote = { ok: true as const, payWith: 'card' as const, ...base };
+const fail = (reason: string, extra: Record<string, unknown> = {}) => ({ ok: false as const, reason, message: 'x', customerAction: 'none' as const, ...extra });
+const charged = (status: 'succeeded' | 'paid_apply_pending') => ({ ok: true as const, status, annualPrepayId: 'ap_1', paymentIntentId: 'pi_1', ...base });
 
 const texts = (n: unknown, out: string[] = []): string[] => {
   if (Array.isArray(n)) n.forEach((v) => texts(v, out));
@@ -25,8 +28,8 @@ const texts = (n: unknown, out: string[] = []): string[] => {
 
 describe('jpDate', () => {
   it('JST の日付と曜日にする', () => {
-    expect(jpDate('2026-11-27T19:00:00+09:00')).toBe('2026年11月27日（金）');
-    expect(jpDate('2026-12-31T23:30:00+09:00')).toBe('2026年12月31日（木）');
+    expect(jpDate('2026/11/27')).toBe('2026年11月27日（金）');
+    expect(jpDate('2026/12/31')).toBe('2026年12月31日（木）');
   });
 });
 
@@ -46,7 +49,8 @@ describe('annualQuoteMessages', () => {
     expect(all).toContain(REFUND_EXCEPTION);
     expect(JSON.stringify(m.contents)).not.toContain('"span"');
     const button = (m.contents.footer as { contents: Array<{ action?: { type: string; data: string; label: string } }> }).contents[0].action!;
-    expect(button).toMatchObject({ type: 'postback', data: ANNUAL_CONFIRM_POSTBACK, label: 'この内容で申し込む' });
+    expect(button).toMatchObject({ type: 'postback', data: 'annual_prepay=confirm&annual=89800', label: 'この内容で申し込む' });
+    expect(all).toContain('ご登録のカードで');
   });
 
   it('常設（×11）は締切の行を出さない', () => {
@@ -57,38 +61,64 @@ describe('annualQuoteMessages', () => {
   });
 
   it('止まっている会員は金額を出さず担当から連絡', () => {
-    const [m] = annualQuoteMessages({ ok: false, reason: 'open_invoice', message: 'x' }) as unknown as [{ text: string }];
+    const [m] = annualQuoteMessages(fail('open_invoice')) as unknown as [{ text: string }];
     expect(m.text).toContain('担当からこのトークでご連絡します');
   });
 
   it('月額の契約が無い人は対象外と返す', () => {
-    const [m] = annualQuoteMessages({ ok: false, reason: 'too_small', message: 'x' }) as unknown as [{ text: string }];
+    const [m] = annualQuoteMessages(fail('too_small')) as unknown as [{ text: string }];
     expect(m.text).toContain('月額プランをご契約中の方が対象です');
   });
 });
 
+describe('parseConfirmPostback', () => {
+  it('案内した金額を読む', () => {
+    expect(parseConfirmPostback('annual_prepay=confirm&annual=89800')).toEqual({ expectedAnnual: 89800 });
+    expect(parseConfirmPostback('annual_prepay=confirm')).toEqual({ expectedAnnual: undefined });
+    expect(parseConfirmPostback('annual_prepay=confirmx')).toBeNull();
+    expect(parseConfirmPostback('seminar_vote=1')).toBeNull();
+  });
+});
+
+describe('annualQuoteMessages（カードが無い人）', () => {
+  it('リンクを送ると書く', () => {
+    const [m] = annualQuoteMessages({ ...quote, payWith: 'checkout' }) as unknown as [{ contents: unknown }];
+    expect(texts(m.contents).join('').replace(/\n/g, '')).toContain('お支払いのリンクをこのトークでお送りします');
+  });
+});
+
 describe('annualConfirmMessages', () => {
+  it('入金済みでクーポンが後追いでも、お客さんには完了と返す', () => {
+    const [m] = annualConfirmMessages(charged('paid_apply_pending')) as unknown as [{ text: string }];
+    expect(m.text).toContain('お支払いが完了しました');
+  });
+
+  it('金額が変わっていたら決済せず案内し直し', () => {
+    const [m] = annualConfirmMessages(fail('price_changed')) as unknown as [{ text: string }];
+    expect(m.text).toContain('もう一度「年払い」');
+  });
+
   it('成功は金額（税込）と期間', () => {
-    const [m] = annualConfirmMessages({ ok: true, charged: true, alreadyCharged: false, annual: 89800, total: 98780, startAt: quote.startAt, endAt: quote.endAt, applied: true }) as unknown as [{ text: string }];
+    const [m] = annualConfirmMessages(charged('succeeded')) as unknown as [{ text: string }];
     expect(m.text).toContain('お支払いが完了しました');
     expect(m.text).toContain('98,780円（税込）');
     expect(m.text).toContain('2026年12月5日（土）〜2027年12月4日（土）');
   });
 
   it('2 回目の押下は済んでいると返す', () => {
-    const [m] = annualConfirmMessages({ ok: true, charged: true, alreadyCharged: true, annual: 89800, total: 98780, startAt: quote.startAt, endAt: quote.endAt, applied: true }) as unknown as [{ text: string }];
+    const [m] = annualConfirmMessages(fail('already_paid')) as unknown as [{ text: string }];
     expect(m.text).toContain('すでに済んでいます');
     expect(m.text).not.toContain('完了しました');
   });
 
   it('本人確認で止まったら Checkout のリンク', () => {
-    const [m] = annualConfirmMessages({ ok: false, reason: 'needs_action', message: 'x', checkoutUrl: 'https://checkout.stripe.com/c/pay/cs_x' }) as unknown as [{ text: string }];
+    const [m] = annualConfirmMessages(fail('authentication_required', { checkoutUrl: 'https://checkout.stripe.com/c/pay/cs_x' })) as unknown as [{ text: string }];
     expect(m.text).toContain('本人確認');
     expect(m.text).toContain('https://checkout.stripe.com/c/pay/cs_x');
   });
 
   it('決済しなかったときは完了と言わない', () => {
-    const [m] = annualConfirmMessages({ ok: false, reason: 'past_due', message: 'x' }) as unknown as [{ text: string }];
+    const [m] = annualConfirmMessages(fail('not_active')) as unknown as [{ text: string }];
     expect(m.text).toContain('お支払いはまだ完了していません');
   });
 });
