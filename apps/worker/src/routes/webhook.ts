@@ -379,6 +379,18 @@ async function handleEvent(
       return;
     }
 
+    // 年払いの「この内容で申し込む」→ 登録済みのカードで決済（TB-3964・TB-3963）
+    const { ANNUAL_CONFIRM_POSTBACK } = await import('../furim/annual-prepay-line.js');
+    if (postbackData === ANNUAL_CONFIRM_POSTBACK && env) {
+      const { replyAnnualConfirm } = await import('../furim/annual-prepay-line-handler.js');
+      try {
+        await replyAnnualConfirm(db, env, lineClient, event.replyToken, friend, lineAccountId);
+      } catch (err) {
+        console.error('[annual-prepay-line] confirm failed', err);
+      }
+      return;
+    }
+
     // Match postback data against auto_replies (exact match on keyword)
     const autoReplyQuery = lineAccountId
       ? `SELECT * FROM auto_replies WHERE is_active = 1 AND (line_account_id IS NULL OR line_account_id = ?) ORDER BY created_at ASC`
@@ -888,7 +900,14 @@ async function handleEvent(
           : incomingText.includes(rule.keyword);
 
       if (isMatch) {
-        replyTokenConsumed = await replyWithAutoReply(db, lineClient, event.replyToken, friend, rule, workerUrl);
+        // 「年払い」は行の文面ではなく、その人の金額の案内を返す（TB-3964）。タグは下の message_received で付く
+        const { ANNUAL_KEYWORD } = await import('../furim/annual-prepay-line.js');
+        if (rule.match_type === 'exact' && rule.keyword === ANNUAL_KEYWORD && env) {
+          const { replyAnnualQuote } = await import('../furim/annual-prepay-line-handler.js');
+          replyTokenConsumed = await replyAnnualQuote(db, env, lineClient, event.replyToken, friend, lineAccountId);
+        } else {
+          replyTokenConsumed = await replyWithAutoReply(db, lineClient, event.replyToken, friend, rule, workerUrl);
+        }
         matched = true;
         break;
       }
