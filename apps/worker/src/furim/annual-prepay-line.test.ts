@@ -10,11 +10,11 @@ import type { AnnualQuote } from './annual-prepay.js';
 
 const base: AnnualQuote = {
   kind: 'sale', priceMonths: 10, monthly: 8980, annual: 89800, tax: 8980, total: 98780,
-  periodStart: '2026/12/05', periodLastDay: '2027/12/04', subscriptionId: 'sub_1',
+  periodStart: '2026/12/05', periodLastDay: '2027/12/04', startAt: '2026-12-05T10:00:00+09:00', endAt: '2027-12-04T23:59:59+09:00', subscriptionId: 'sub_1',
 };
 const quote = { ok: true as const, payWith: 'card' as const, ...base };
 const fail = (reason: string, extra: Record<string, unknown> = {}) => ({ ok: false as const, reason, message: 'x', customerAction: 'none' as const, ...extra });
-const charged = (status: 'succeeded' | 'paid_apply_pending') => ({ ok: true as const, status, annualPrepayId: 'ap_1', paymentIntentId: 'pi_1', ...base });
+const charged = (status: 'succeeded' | 'paid_apply_pending') => ({ ok: true as const, status, charged: true as const, applied: status === 'succeeded', alreadyCharged: false as const, annualPrepayId: 'ap_1', paymentIntentId: 'pi_1', ...base });
 
 const texts = (n: unknown, out: string[] = []): string[] => {
   if (Array.isArray(n)) n.forEach((v) => texts(v, out));
