@@ -635,13 +635,16 @@ export type AnnualQuote = {
   total: number;
   periodStart: string;
   periodLastDay: string;
+  // LINE の返事（annual-prepay-line.ts・TB-3964）が読む形: 期間の始まりと最終日（JST の ISO）
+  startAt: string;
+  endAt: string;
   subscriptionId: string;
 };
 
 export type QuoteResult = ({ ok: true; payWith: 'card' | 'checkout' } & AnnualQuote) | { ok: false; reason: string; message: string; customerAction: CustomerAction };
 
 export type ChargeResult =
-  | ({ ok: true; status: 'succeeded' | 'paid_apply_pending'; annualPrepayId: string; paymentIntentId: string; message?: string } & AnnualQuote)
+  | ({ ok: true; status: 'succeeded' | 'paid_apply_pending'; charged: true; applied: boolean; alreadyCharged: false; annualPrepayId: string; paymentIntentId: string; message?: string } & AnnualQuote)
   | ({ ok: true; dryRun: true; payWith: 'card' | 'checkout' } & AnnualQuote)
   | { ok: false; reason: string; message: string; customerAction: CustomerAction; checkoutUrl?: string; quote?: AnnualQuote };
 
@@ -713,7 +716,8 @@ async function prepareCharge(
     paymentMethod: pickPaymentMethod(sub, customer),
     quote: {
       kind: pricing.kind, priceMonths: pricing.priceMonths, monthly: q.monthly, annual: q.annual, tax, total: q.annual + tax,
-      periodStart: jstDate(pe), periodLastDay: jstDate(addMonths(pe, ANNUAL_MONTHS) - 24 * 3600), subscriptionId: sub.id,
+      periodStart: jstDate(pe), periodLastDay: jstDate(addMonths(pe, ANNUAL_MONTHS) - 24 * 3600),
+      startAt: formatJstIso(pe * 1000), endAt: formatJstIso((addMonths(pe, ANNUAL_MONTHS) - 24 * 3600) * 1000), subscriptionId: sub.id,
     },
   };
 }
@@ -859,10 +863,10 @@ export async function chargeAnnualPrepay(
     ];
     if (applied.ok) {
       await notifyCharge(db, env, '年払いのボタン決済が完了しました', [...head, 'クーポン付与・次回 0 円の確認まで済み']);
-      return { ok: true, status: 'succeeded', annualPrepayId, paymentIntentId: pi.id, ...quote };
+      return { ok: true, status: 'succeeded', charged: true, applied: true, alreadyCharged: false, annualPrepayId, paymentIntentId: pi.id, ...quote };
     }
     await notifyCharge(db, env, '【要確認】年払いの入金はあり・クーポンの付与が済んでいません', [...head, `${applied.reason}: ${applied.message}`, ...(applied.problems ?? [])]);
-    return { ok: true, status: 'paid_apply_pending', annualPrepayId, paymentIntentId: pi.id, message: applied.message, ...quote };
+    return { ok: true, status: 'paid_apply_pending', charged: true, applied: false, alreadyCharged: false, annualPrepayId, paymentIntentId: pi.id, message: applied.message, ...quote };
   }
 
   // 本人確認（3D セキュア）・カード不可: 決済を取り消して charge_key を外し、Checkout のリンクを返す

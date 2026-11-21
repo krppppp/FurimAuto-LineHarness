@@ -552,7 +552,7 @@ describe('ボタンの決済の流れ', () => {
     const { db, rows } = setup();
     const calls = mockStripe({ sub: sub({ default_payment_method: 'pm_sub' }), piCreate: succeed });
     const r = await chargeAnnualPrepay(db, env, { lineUserId: 'U1', expectedAnnual: 89800, nowMs: NOW });
-    expect(r).toMatchObject({ ok: true, status: 'succeeded', annual: 89800, tax: 8980, total: 98780, periodStart: '2026/12/05', periodLastDay: '2027/12/04' });
+    expect(r).toMatchObject({ ok: true, status: 'succeeded', charged: true, applied: true, annual: 89800, tax: 8980, total: 98780, periodStart: '2026/12/05', periodLastDay: '2027/12/04', startAt: '2026-12-05T10:00:00.000+09:00', endAt: '2027-12-04T10:00:00.000+09:00' });
     const pi = calls.find((c) => c.path === 'payment_intents' && c.method === 'POST')!;
     expect(pi.params.get('payment_method')).toBe('pm_sub');
     expect(pi.params.get('off_session')).toBe('true');
