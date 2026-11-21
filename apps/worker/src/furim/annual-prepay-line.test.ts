@@ -41,7 +41,8 @@ describe('annualQuoteMessages', () => {
     expect(all).toContain('2026年12月5日（土）');
     expect(all).toContain('2027年12月4日（土）');
     expect(all).toContain('2026年11月27日（金）19:00まで');
-    expect(all).toContain('お申込み後の途中解約・返金は原則できません。');
+    expect(all.replace(/\n/g, '')).toContain('お申込み後の途中解約・返金は原則できません。');
+    expect(all.replace(/\n/g, '')).toContain('お申込みから1か月以内に、ご利用中のフリマサイトの仕様変更などにより、当ツールで改修を行っても自動化処理が完結できない状態になった場合に限り、お支払い額から使った1か月分（月額）を引いてお返しします。');
     expect(all).toContain(REFUND_EXCEPTION);
     expect(JSON.stringify(m.contents)).not.toContain('"span"');
     const button = (m.contents.footer as { contents: Array<{ action?: { type: string; data: string; label: string } }> }).contents[0].action!;

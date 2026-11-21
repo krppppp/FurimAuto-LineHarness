@@ -12,9 +12,8 @@ export const ANNUAL_CONFIRM_LABEL = 'この内容で申し込む';
 export const ANNUAL_AGREED_TAG = '年払い同意';
 export const ANNUAL_DEADLINE_LABEL = '2026年11月27日（金）19:00まで';
 
-export const REFUND_NOTE = 'お申込み後の途中解約・返金は原則できません。';
 export const REFUND_EXCEPTION =
-  'お申込みから1か月以内に、ご利用中のフリマサイトの仕様変更などにより、当ツールで改修を行っても自動化処理が完結できない状態になった場合に限り、お支払い額から使った1か月分（月額）を引いてお返しします。';
+  'お申込みから1か月以内に、\nご利用中のフリマサイトの\n仕様変更などにより、\n当ツールで改修を行っても\n自動化処理が完結できない状態に\nなった場合に限り、\nお支払い額から使った1か月分\n（月額）を引いてお返しします。';
 
 export type AnnualQuote = {
   ok: true;
@@ -70,8 +69,8 @@ function row(label: string, value: string, valueExtra: Record<string, unknown> =
   return {
     type: 'box', layout: 'horizontal', spacing: 'md',
     contents: [
-      t(label, { color: SUB, flex: 4, gravity: 'center' }),
-      t(value, { align: 'end', flex: 6, ...valueExtra }),
+      t(label, { color: SUB, flex: 5, gravity: 'center' }),
+      t(value, { align: 'end', flex: 7, ...valueExtra }),
     ],
   };
 }
@@ -107,8 +106,8 @@ export function buildAnnualQuoteFlex(q: AnnualQuote): Message {
           type: 'box', layout: 'vertical', backgroundColor: '#F4F7FD', cornerRadius: '8px', paddingAll: '16px', spacing: 'md', margin: 'lg',
           contents: [
             row('今の月額（税抜）', yen(q.monthly)),
-            row(`年払い（${q.priceMonths}か月分・税抜）`, yen(q.annual), { size: 'lg', color: RED, weight: 'bold' }),
-            row('お支払い額（税込）', yen(q.total), { weight: 'bold' }),
+            row('年払い（税抜）', yen(q.annual), { size: 'lg', color: RED, weight: 'bold' }),
+            row('お支払い（税込）', yen(q.total), { weight: 'bold' }),
             { type: 'separator', color: '#DDE3EE' },
             row('ご利用期間', `${jpDate(q.startAt)}\n〜${jpDate(q.endAt)}`),
             ...(sale ? [row('締切', ANNUAL_DEADLINE_LABEL, { color: RED, weight: 'bold' })] : []),
@@ -117,7 +116,7 @@ export function buildAnnualQuoteFlex(q: AnnualQuote): Message {
         heading('お支払いについて'),
         t('ボタンを押すと、ご登録のカードで\nお支払いが完了します。\n期間中の月々のお支払いはありません。', { margin: 'md' }),
         heading('返金について', '#F9B233'),
-        t(REFUND_NOTE, { weight: 'bold', margin: 'md' }),
+        t('お申込み後の途中解約・返金は\n原則できません。', { weight: 'bold', margin: 'md' }),
         t(REFUND_EXCEPTION, { margin: 'sm' }),
       ],
     },
