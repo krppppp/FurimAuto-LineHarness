@@ -56,6 +56,8 @@ export type AnnualSub = {
   cancel_at?: number | null;
   current_period_end?: number;
   metadata?: Record<string, string>;
+  default_payment_method?: string | { id: string } | null;
+  default_source?: string | { id: string } | null;
   items: { data: SubItem[] };
   discounts?: Array<SubDiscount | string>;
 };
@@ -364,6 +366,13 @@ type PrepayRow = {
   applied_at: string | null;
   discount_end_at: string | null;
   first_free_renewal_at: string | null;
+  created_at: string;
+  amount_paid?: number | null;
+  apply_error?: string | null;
+  tax_amount?: number | null;
+  pay_mode?: string | null;
+  charge_key?: string | null;
+  charge_status?: string | null;
 };
 
 export type CheckoutResult =
@@ -562,7 +571,8 @@ export async function recordAnnualPayment(
       .run();
     recorded = (ins.meta?.changes ?? 0) > 0;
   }
-  if (recorded) {
+  // ボタンでの決済（TB-3963）は chargeAnnualPrepay が付与と知らせまで行う。ここでは記録だけ
+  if (recorded && m.payMode !== 'one_click') {
     const friend = m.lineUserId
       ? await db.prepare('SELECT display_name FROM friends WHERE line_user_id = ?').bind(m.lineUserId).first<{ display_name: string | null }>()
       : null;
@@ -606,4 +616,294 @@ export async function ensureAnnualCoupon(env: AnnualPrepayEnv, dryRun: boolean):
     'metadata[purpose]': 'annual_prepay',
   }, 'POST', { idempotencyKey: `annual-coupon-${id}` });
   return { status: 'created', coupon };
+}
+
+// ── ボタン 1 つで決済（TB-3963） ──────────────────────────
+// 金額の案内 → 「この内容で申し込む」→ 定期契約の既定のカードで PaymentIntent（off_session・confirm）→ 成功したら applyAnnualCoupon まで続けて行う。
+// 二重の決済は D1 の charge_key（定期契約＋期間の始まり）の UNIQUE で止める。3D セキュア・カード不可・既定のカードなしは決済せず Checkout のリンクを返す
+
+export const TAX_PERCENT = 10;
+
+export type CustomerAction = 'none' | 'open_checkout' | 'staff_contact';
+
+export type AnnualQuote = {
+  kind: 'sale' | 'standard';
+  priceMonths: number;
+  monthly: number;
+  annual: number;
+  tax: number;
+  total: number;
+  periodStart: string;
+  periodLastDay: string;
+  subscriptionId: string;
+};
+
+export type QuoteResult = ({ ok: true; payWith: 'card' | 'checkout' } & AnnualQuote) | { ok: false; reason: string; message: string; customerAction: CustomerAction };
+
+export type ChargeResult =
+  | ({ ok: true; status: 'succeeded' | 'paid_apply_pending'; annualPrepayId: string; paymentIntentId: string; message?: string } & AnnualQuote)
+  | ({ ok: true; dryRun: true; payWith: 'card' | 'checkout' } & AnnualQuote)
+  | { ok: false; reason: string; message: string; customerAction: CustomerAction; checkoutUrl?: string; quote?: AnnualQuote };
+
+export function taxOf(annual: number): number {
+  return Math.round((annual * TAX_PERCENT) / 100);
+}
+
+// 決済の月数: 「年払い」の最初の返信（無ければ今）が返信の締切より前で、今がお支払いの締切より前なら × 10。それ以外は × 11
+export function chargePricing(input: { nowMs: number; replyAt: string | null; saleReplyDeadlineIso: string; saleDeadlineIso: string }): { kind: 'sale' | 'standard'; priceMonths: number } {
+  const replyDeadline = Date.parse(input.saleReplyDeadlineIso);
+  const saleDeadline = Date.parse(input.saleDeadlineIso);
+  if (!Number.isFinite(replyDeadline) || !Number.isFinite(saleDeadline)) throw new Error('bad sale deadline');
+  const basis = input.replyAt ? Date.parse(input.replyAt) : input.nowMs;
+  return basis < replyDeadline && input.nowMs < saleDeadline
+    ? { kind: 'sale', priceMonths: SALE_PRICE_MONTHS }
+    : { kind: 'standard', priceMonths: STANDARD_PRICE_MONTHS };
+}
+
+const refId = (v: string | { id: string } | null | undefined) => (typeof v === 'string' ? v : v?.id) || null;
+
+// 月々の請求と同じ順で既定のカードを選ぶ（定期契約の既定 → 顧客の請求書の既定 → 古い source）
+export function pickPaymentMethod(sub: AnnualSub, customer: { invoice_settings?: { default_payment_method?: string | { id: string } | null }; default_source?: string | { id: string } | null }): string | null {
+  return refId(sub.default_payment_method) ?? refId(customer.invoice_settings?.default_payment_method) ?? refId(sub.default_source) ?? refId(customer.default_source);
+}
+
+export function staffContactFor(reason: string): boolean {
+  return ['not_active', 'cancel_scheduled', 'open_invoice', 'too_small', 'once_pending', 'no_customer', 'ambiguous_subscription', 'customer_mismatch', 'previous_checkout_open', 'charge_unknown'].includes(reason);
+}
+
+const fail = (reason: string, message: string, extra: { checkoutUrl?: string; quote?: AnnualQuote } = {}) => ({
+  ok: false as const, reason, message, customerAction: (extra.checkoutUrl ? 'open_checkout' : staffContactFor(reason) ? 'staff_contact' : 'none') as CustomerAction, ...extra,
+});
+
+type ChargeContext = { customerId: string; sub: AnnualSub; quote: AnnualQuote; paymentMethod: string | null; rows: PrepayRow[]; periodEndSec: number };
+
+async function prepareCharge(
+  db: D1Database,
+  env: AnnualPrepayEnv,
+  secretKey: string,
+  input: { lineUserId: string; subscriptionId?: string; nowMs: number },
+): Promise<ChargeContext | { ok: false; reason: string; message: string; customerAction: CustomerAction }> {
+  const pricing = chargePricing({
+    nowMs: input.nowMs,
+    replyAt: await firstAnnualReplyAt(db, input.lineUserId),
+    saleReplyDeadlineIso: env.FURIM_ANNUAL_SALE_REPLY_DEADLINE || DEFAULT_SALE_REPLY_DEADLINE,
+    saleDeadlineIso: env.FURIM_ANNUAL_PREPAY_DEADLINE || DEFAULT_ANNUAL_DEADLINE,
+  });
+  let found: { customerId: string; sub: AnnualSub };
+  try {
+    found = await resolveSubscription(db, secretKey, input.lineUserId, input.subscriptionId);
+  } catch (e) {
+    if (e instanceof AnnualPrepayError) return fail(e.reason, e.message);
+    throw e;
+  }
+  const { customerId, sub } = found;
+  const q = quoteSubscription(sub, pricing.priceMonths);
+  const invoices = (await stripe(secretKey, 'invoices', { subscription: sub.id, status: 'open', limit: '3' })) as unknown as { data: unknown[] };
+  const block = checkoutBlock(sub, { couponId: annualCouponId(env), openInvoiceCount: invoices.data.length, monthly: q.monthly });
+  if (block) return fail(block.reason, block.message);
+  // once・repeating の割引が残っていると、付けた年払いクーポンが次の 0 円の請求で消える（applyBlock の once_pending）。決済の前に止める
+  if (q.otherDiscounts.length > 0) return fail('once_pending', `forever 以外の割引が残っています（${q.otherDiscounts.join(',')}）`);
+  const rows = (await db.prepare('SELECT * FROM furim_annual_prepay WHERE subscription_id = ? ORDER BY created_at DESC').bind(sub.id).all<PrepayRow>()).results ?? [];
+  if (rows.some((r) => r.paid_at)) return fail('already_paid', 'この定期契約の年払いはお支払い済みです');
+  const customer = (await stripe(secretKey, `customers/${customerId}`)) as { invoice_settings?: { default_payment_method?: string | null }; default_source?: string | null };
+  const pe = periodEnd(sub);
+  const tax = taxOf(q.annual);
+  return {
+    customerId, sub, rows, periodEndSec: pe,
+    paymentMethod: pickPaymentMethod(sub, customer),
+    quote: {
+      kind: pricing.kind, priceMonths: pricing.priceMonths, monthly: q.monthly, annual: q.annual, tax, total: q.annual + tax,
+      periodStart: jstDate(pe), periodLastDay: jstDate(addMonths(pe, ANNUAL_MONTHS) - 24 * 3600), subscriptionId: sub.id,
+    },
+  };
+}
+
+// 金額の案内（Flex 用）。Stripe にも D1 にも書かない
+export async function quoteAnnualCharge(db: D1Database, env: AnnualPrepayEnv, input: { lineUserId: string; subscriptionId?: string; nowMs?: number }): Promise<QuoteResult> {
+  const secretKey = env.STRIPE_SECRET_KEY;
+  if (!secretKey) throw new Error('STRIPE_SECRET_KEY not configured');
+  const ctx = await prepareCharge(db, env, secretKey, { ...input, nowMs: input.nowMs ?? Date.now() });
+  if ('ok' in ctx) return ctx;
+  return { ok: true, payWith: ctx.paymentMethod ? 'card' : 'checkout', ...ctx.quote };
+}
+
+async function stripeRaw(secretKey: string, path: string, params: Record<string, string>, idempotencyKey: string): Promise<{ ok: boolean; json: Record<string, unknown> }> {
+  const res = await fetch(`https://api.stripe.com/v1/${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${secretKey}`, 'Idempotency-Key': idempotencyKey, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(params),
+  });
+  return { ok: res.ok, json: (await res.json()) as Record<string, unknown> };
+}
+
+export function buildChargeParams(input: { annualPrepayId: string; customerId: string; paymentMethod: string; lineUserId: string; quote: AnnualQuote }): Record<string, string> {
+  const q = input.quote;
+  const name = q.priceMonths === SALE_PRICE_MONTHS ? 'FurimAuto 年払いプラン（12か月・決算セール 2か月分無料）' : 'FurimAuto 年払いプラン（12か月）';
+  const params: Record<string, string> = {
+    amount: String(q.total),
+    currency: 'jpy',
+    customer: input.customerId,
+    payment_method: input.paymentMethod,
+    'payment_method_types[0]': 'card',
+    off_session: 'true',
+    confirm: 'true',
+    description: `${name} ${q.periodStart}〜${q.periodLastDay} ${q.subscriptionId}`,
+  };
+  const meta: Record<string, string> = {
+    purchaseType: 'annual_prepay',
+    payMode: 'one_click',
+    annualPrepayId: input.annualPrepayId,
+    lineUserId: input.lineUserId,
+    subscriptionId: q.subscriptionId,
+    monthlyExclTax: String(q.monthly),
+    annualExclTax: String(q.annual),
+    taxAmount: String(q.tax),
+    priceMonths: String(q.priceMonths),
+    periodStart: q.periodStart,
+    periodLastDay: q.periodLastDay,
+  };
+  for (const [k, v] of Object.entries(meta)) params[`metadata[${k}]`] = v;
+  return params;
+}
+
+async function notifyCharge(db: D1Database, env: AnnualPrepayEnv, title: string, lines: string[]): Promise<void> {
+  try {
+    const body = lines.join('\n');
+    await notifyStaff(db, env.LINE_CHANNEL_ACCESS_TOKEN ? new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN) : null, env, { title, body, lineText: `💴 ${title}\n${body}` }, 'annual-prepay');
+  } catch (e) {
+    console.error('[annual-prepay/charge] notify failed:', e);
+  }
+}
+
+// 失敗のときの逃げ道: 今の Checkout のリンク（出せなければ担当から連絡）
+async function fallbackCheckout(db: D1Database, env: AnnualPrepayEnv, input: { lineUserId: string; subscriptionId: string; nowMs: number }, reason: string, message: string, quote: AnnualQuote): Promise<ChargeResult> {
+  const co = await createAnnualCheckout(db, env, { lineUserId: input.lineUserId, subscriptionId: input.subscriptionId, createdBy: 'one-click-fallback', nowMs: input.nowMs });
+  if (co.ok && 'url' in co) return fail(reason, message, { checkoutUrl: co.url, quote });
+  return fail(co.ok ? reason : co.reason, co.ok ? message : `${message}／Checkout も出せません: ${co.message}`, { quote });
+}
+
+export async function chargeAnnualPrepay(
+  db: D1Database,
+  env: AnnualPrepayEnv,
+  input: { lineUserId: string; expectedAnnual?: number; subscriptionId?: string; nowMs?: number; dryRun?: boolean },
+): Promise<ChargeResult> {
+  const secretKey = env.STRIPE_SECRET_KEY;
+  if (!secretKey) throw new Error('STRIPE_SECRET_KEY not configured');
+  const nowMs = input.nowMs ?? Date.now();
+  const ctx = await prepareCharge(db, env, secretKey, { lineUserId: input.lineUserId, subscriptionId: input.subscriptionId, nowMs });
+  if ('ok' in ctx) return ctx;
+  const { customerId, sub, quote, paymentMethod, rows } = ctx;
+  if (input.dryRun) return { ok: true, dryRun: true, payWith: paymentMethod ? 'card' : 'checkout', ...quote };
+  // 案内に出した額と違えば決済しない（× 10 の締切をまたいだ・プランが変わった）
+  if (input.expectedAnnual != null && input.expectedAnnual !== quote.annual) {
+    return fail('price_changed', `ご案内した金額（${input.expectedAnnual.toLocaleString('ja-JP')}円）から変わっています`, { quote });
+  }
+  const chargeKey = `${sub.id}:${ctx.periodEndSec}`;
+  const holding = rows.find((r) => r.charge_key === chargeKey);
+  if (holding) return fail('in_progress', 'お手続き中です');
+  if (!paymentMethod) return fallbackCheckout(db, env, { lineUserId: input.lineUserId, subscriptionId: sub.id, nowMs }, 'no_payment_method', '登録済みのカードが見つかりません', quote);
+
+  // 期限内の未払いの Checkout は先に失効させる（ボタンの決済のあとにリンクでも払えてしまうのを止める）
+  for (const r of rows.filter((r) => r.checkout_session_id && r.expires_at && Date.parse(r.expires_at) > nowMs)) {
+    try {
+      await stripe(secretKey, `checkout/sessions/${r.checkout_session_id}/expire`, {}, 'POST');
+    } catch (e) {
+      const cur = (await stripe(secretKey, `checkout/sessions/${r.checkout_session_id}`)) as { status?: string };
+      if (cur.status !== 'expired') return fail('previous_checkout_open', `前に出した Checkout（${r.id}）を失効できません: ${String(e).slice(0, 200)}`);
+    }
+    await db.prepare('UPDATE furim_annual_prepay SET expires_at = ? WHERE id = ?').bind(formatJstIso(nowMs), r.id).run();
+  }
+
+  const annualPrepayId = `ap_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
+  try {
+    await db
+      .prepare(
+        `INSERT INTO furim_annual_prepay (id, line_user_id, stripe_customer_id, subscription_id, monthly_excl_tax, annual_excl_tax, price_months, reply_at, amount_total,
+           tax_amount, pay_mode, charge_key, charge_status, created_at, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'one_click', ?, 'processing', ?, 'line-button')`,
+      )
+      .bind(annualPrepayId, input.lineUserId, customerId, sub.id, quote.monthly, quote.annual, quote.priceMonths, await firstAnnualReplyAt(db, input.lineUserId), quote.total, quote.tax, chargeKey, jstNow())
+      .run();
+  } catch (e) {
+    if (String(e).includes('UNIQUE')) return fail('in_progress', 'お手続き中です');
+    throw e;
+  }
+
+  const params = buildChargeParams({ annualPrepayId, customerId, paymentMethod, lineUserId: input.lineUserId, quote });
+  let res: { ok: boolean; json: Record<string, unknown> };
+  try {
+    res = await stripeRaw(secretKey, 'payment_intents', params, `annual-charge-${annualPrepayId}`);
+  } catch (e) {
+    // 届いたか分からない。charge_key は持ったまま（2 回目を弾く）にして担当が Stripe を読み取りで確かめる
+    await db.prepare("UPDATE furim_annual_prepay SET charge_status = 'unknown', charge_error = ? WHERE id = ?").bind(String(e).slice(0, 500), annualPrepayId).run();
+    await notifyCharge(db, env, '年払いのボタン決済の結果が分かりません', [`line: ${input.lineUserId}`, `sub: ${sub.id}`, `ap: ${annualPrepayId}`, String(e).slice(0, 200)]);
+    return fail('charge_unknown', '決済の結果を確かめています');
+  }
+  const err = res.json.error as { code?: string; decline_code?: string; message?: string; payment_intent?: { id: string; status?: string } } | undefined;
+  const pi = (res.ok ? res.json : err?.payment_intent) as { id: string; status?: string } | undefined;
+
+  if (res.ok && pi?.status === 'succeeded') {
+    await db.prepare("UPDATE furim_annual_prepay SET charge_status = 'succeeded', payment_intent_id = ? WHERE id = ?").bind(pi.id, annualPrepayId).run();
+    let applied: ApplyResult;
+    try {
+      applied = await applyAnnualCoupon(db, env, { lineUserId: input.lineUserId, paymentIntentId: pi.id });
+    } catch (e) {
+      applied = { ok: false, reason: 'apply_error', message: String(e).slice(0, 300) };
+    }
+    const friend = await db.prepare('SELECT display_name FROM friends WHERE line_user_id = ?').bind(input.lineUserId).first<{ display_name: string | null }>();
+    const head = [
+      `${friend?.display_name ?? '(名前不明)'}　${quote.total.toLocaleString('ja-JP')}円（税込）`,
+      `月額 ${quote.monthly.toLocaleString('ja-JP')}円 → 年払い ${quote.annual.toLocaleString('ja-JP')}円（税抜・月額×${quote.priceMonths}${quote.kind === 'sale' ? ' 決算セール' : ' 常設'}）`,
+      `期間 ${quote.periodStart}〜${quote.periodLastDay}`,
+      `line: ${input.lineUserId}`, `sub: ${sub.id}`, `pi: ${pi.id}`,
+    ];
+    if (applied.ok) {
+      await notifyCharge(db, env, '年払いのボタン決済が完了しました', [...head, 'クーポン付与・次回 0 円の確認まで済み']);
+      return { ok: true, status: 'succeeded', annualPrepayId, paymentIntentId: pi.id, ...quote };
+    }
+    await notifyCharge(db, env, '【要確認】年払いの入金はあり・クーポンの付与が済んでいません', [...head, `${applied.reason}: ${applied.message}`, ...(applied.problems ?? [])]);
+    return { ok: true, status: 'paid_apply_pending', annualPrepayId, paymentIntentId: pi.id, message: applied.message, ...quote };
+  }
+
+  // 本人確認（3D セキュア）・カード不可: 決済を取り消して charge_key を外し、Checkout のリンクを返す
+  if (pi?.id && pi.status !== 'canceled') {
+    try {
+      await stripe(secretKey, `payment_intents/${pi.id}/cancel`, {}, 'POST');
+    } catch (e) {
+      console.error('[annual-prepay/charge] cancel failed:', pi.id, e);
+    }
+  }
+  const reason = pi?.status === 'requires_action' || err?.code === 'authentication_required' ? 'authentication_required' : 'card_failed';
+  const detail = err ? `${err.code ?? ''} ${err.decline_code ?? ''} ${err.message ?? ''}`.trim() : `status=${pi?.status ?? '?'}`;
+  await db
+    .prepare("UPDATE furim_annual_prepay SET charge_status = ?, charge_key = NULL, charge_error = ?, payment_intent_id = ? WHERE id = ?")
+    .bind(reason, detail.slice(0, 500), pi?.id ?? null, annualPrepayId)
+    .run();
+  return fallbackCheckout(db, env, { lineUserId: input.lineUserId, subscriptionId: sub.id, nowMs }, reason,
+    reason === 'authentication_required' ? 'カード会社の本人確認が必要です' : '登録済みのカードで決済できませんでした', quote);
+}
+
+// その日（JST）の年払いの申込の一覧（21:00 の報告用）。ボタンの決済と Checkout の両方
+export type DailyRow = { name: string; lineUserId: string; mode: string; monthly: number; annual: number; total: number | null; priceMonths: number | null; periodStart: string | null; result: string; createdAt: string };
+
+export async function annualDailyReport(db: D1Database, dateJst: string): Promise<DailyRow[]> {
+  const rows = (await db
+    .prepare(
+      `SELECT a.*, f.display_name FROM furim_annual_prepay a LEFT JOIN friends f ON f.line_user_id = a.line_user_id
+       WHERE substr(a.created_at, 1, 10) = ? OR substr(a.paid_at, 1, 10) = ? ORDER BY a.created_at`,
+    )
+    .bind(dateJst, dateJst)
+    .all<PrepayRow & { display_name: string | null }>()).results ?? [];
+  return rows.map((r) => ({
+    name: r.display_name ?? '(名前不明)',
+    lineUserId: r.line_user_id,
+    mode: r.pay_mode === 'one_click' ? 'ボタン' : 'Checkout',
+    monthly: r.monthly_excl_tax,
+    annual: r.annual_excl_tax,
+    total: r.amount_paid ?? r.amount_total,
+    priceMonths: r.price_months,
+    periodStart: r.first_free_renewal_at,
+    result: r.applied_at ? '完了（クーポン付与済み）' : r.paid_at ? `入金あり・付与まだ${r.apply_error ? `（${r.apply_error.slice(0, 80)}）` : ''}` : r.charge_status && r.charge_status !== 'processing' ? `決済できず（${r.charge_status}）` : r.pay_mode === 'one_click' ? '処理中' : 'リンク発行のみ',
+    createdAt: r.created_at,
+  }));
 }

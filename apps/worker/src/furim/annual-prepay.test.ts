@@ -16,6 +16,7 @@ const ap = await import('./annual-prepay.js');
 const {
   itemAmount, quoteSubscription, checkoutBlock, checkoutExpiresAt, addMonths, buildCheckoutParams, applyBlock, verifyApplied,
   createAnnualCheckout, applyAnnualCoupon, recordAnnualPayment, ensureAnnualCoupon, annualPricing, DEFAULT_ANNUAL_DEADLINE,
+  chargeAnnualPrepay, quoteAnnualCharge, chargePricing, annualDailyReport,
 } = ap;
 type AnnualSub = import('./annual-prepay.js').AnnualSub;
 
@@ -44,6 +45,7 @@ function setup() {
   sqlite.exec("CREATE TABLE messages_log (id TEXT PRIMARY KEY, friend_id TEXT, direction TEXT, message_type TEXT, content TEXT, created_at TEXT)");
   sqlite.exec(migration('092_furim_annual_prepay.sql'));
   sqlite.exec(migration('093_furim_annual_prepay_price_months.sql'));
+  sqlite.exec(migration('094_furim_annual_prepay_one_click.sql'));
   sqlite.prepare("INSERT INTO furim_customers (line_user_id, stripe_customer_id, subscription_id, created_at, updated_at) VALUES ('U1', 'cus_1', 'sub_1', 'x', 'x')").run();
   sqlite.prepare("INSERT INTO friends VALUES ('f1', 'U1', 'テスト太郎')").run();
   const rows = () => sqlite.prepare('SELECT * FROM furim_annual_prepay').all() as Array<Record<string, unknown>>;
@@ -247,7 +249,7 @@ describe('付けた後の確かめ', () => {
 // ── Stripe を fetch の差し替えで再現して、API の流れを通す ──
 
 type Call = { method: string; path: string; params: URLSearchParams; headers: Record<string, string> };
-function mockStripe(state: { sub: AnnualSub; pi?: Record<string, unknown>; openInvoices?: number; upcoming?: number; coupon?: Record<string, unknown> | null; expireError?: string }) {
+function mockStripe(state: { sub: AnnualSub; pi?: Record<string, unknown>; openInvoices?: number; upcoming?: number; coupon?: Record<string, unknown> | null; expireError?: string; customer?: Record<string, unknown>; piCreate?: (params: URLSearchParams) => [unknown, number] }) {
   const calls: Call[] = [];
   vi.stubGlobal('fetch', vi.fn(async (url: string, init: { method?: string; body?: URLSearchParams; headers?: Record<string, string> }) => {
     const u = new URL(url);
@@ -276,6 +278,13 @@ function mockStripe(state: { sub: AnnualSub; pi?: Record<string, unknown>; openI
     if (/^checkout\/sessions\/[^/]+$/.test(path) && method === 'GET') return json({ id: path.split('/')[2], status: state.expireError ? 'complete' : 'expired' });
     if (/^checkout\/sessions\/[^/]+\/expire$/.test(path) && method === 'POST') return state.expireError ? json({ error: { message: state.expireError } }, 400) : json({ id: path.split('/')[2], status: 'expired' });
     if (path === 'checkout/sessions' && method === 'POST') return json({ id: `cs_${calls.length}`, url: `https://checkout.stripe.com/c/${calls.length}`, amount_total: Math.round(Number(params.get('line_items[0][price_data][unit_amount]')) * 1.1) });
+    if (path === 'customers/cus_1') return json(state.customer ?? { id: 'cus_1', invoice_settings: { default_payment_method: 'pm_cust' } });
+    if (path === 'payment_intents' && method === 'POST') {
+      const [b, st] = state.piCreate!(params);
+      if (st === 200) state.pi = b as Record<string, unknown>;
+      return json(b, st);
+    }
+    if (/^payment_intents\/[^/]+\/cancel$/.test(path)) return json({ id: path.split('/')[1], status: 'canceled' });
     if (path.startsWith('payment_intents/')) return json(state.pi);
     if (path.startsWith('coupons/') && method === 'GET') return state.coupon ? json(state.coupon) : json({ error: { message: `No such coupon: '${path.slice(8)}'` } }, 404);
     if (path === 'coupons' && method === 'POST') return json({ id: params.get('id'), percent_off: 100, duration: 'repeating', duration_in_months: 12 });
@@ -511,5 +520,166 @@ describe('年払いクーポン', () => {
     calls = mockStripe({ sub: sub(), coupon: { id: 'annual-prepay-12m', percent_off: 100, duration: 'repeating', duration_in_months: 12 } });
     expect((await ensureAnnualCoupon(env, false)).status).toBe('existing');
     expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+});
+
+// ── ボタン 1 つで決済（TB-3963） ──
+const succeed = (params: URLSearchParams): [unknown, number] => [{
+  id: 'pi_one', status: 'succeeded', amount: Number(params.get('amount')), amount_received: Number(params.get('amount')), customer: params.get('customer'),
+  metadata: Object.fromEntries([...params.entries()].filter(([k]) => k.startsWith('metadata[')).map(([k, v]) => [k.slice(9, -1), v])),
+}, 200];
+
+describe('ボタンの決済の月数', () => {
+  const base = { saleReplyDeadlineIso: '2026-11-27T19:00:00+09:00', saleDeadlineIso: '2026-11-27T19:00:00+09:00' };
+  it('返信も決済も 11/27 19:00 より前なら ×10・決済が 19:00 を過ぎたら ×11・返信が 19:00 以降なら ×11', () => {
+    expect(chargePricing({ ...base, nowMs: Date.parse('2026-11-27T18:59:00+09:00'), replyAt: null })).toEqual({ kind: 'sale', priceMonths: 10 });
+    expect(chargePricing({ ...base, nowMs: Date.parse('2026-11-27T19:00:00+09:00'), replyAt: '2026-11-27T10:00:00.000+09:00' })).toEqual({ kind: 'standard', priceMonths: 11 });
+    expect(chargePricing({ ...base, nowMs: Date.parse('2026-11-27T19:00:00+09:00') - 1, replyAt: '2026-11-27T19:00:00.000+09:00' })).toEqual({ kind: 'standard', priceMonths: 11 });
+  });
+});
+
+describe('ボタンの決済の流れ', () => {
+  it('案内は税抜・税込・期間を返し、何も書かない', async () => {
+    const { db, rows } = setup();
+    const calls = mockStripe({ sub: sub() });
+    const q = await quoteAnnualCharge(db, env, { lineUserId: 'U1', nowMs: NOW });
+    expect(q).toMatchObject({ ok: true, payWith: 'card', kind: 'sale', priceMonths: 10, monthly: 8980, annual: 89800, tax: 8980, total: 98780, periodStart: '2026/12/05', periodLastDay: '2027/12/04' });
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('既定のカードで off_session の決済 → 継続割を残して年払いクーポン → 次回 0 円を確かめて完了。台帳は 1 行', async () => {
+    const { db, rows } = setup();
+    const calls = mockStripe({ sub: sub({ default_payment_method: 'pm_sub' }), piCreate: succeed });
+    const r = await chargeAnnualPrepay(db, env, { lineUserId: 'U1', expectedAnnual: 89800, nowMs: NOW });
+    expect(r).toMatchObject({ ok: true, status: 'succeeded', annual: 89800, tax: 8980, total: 98780, periodStart: '2026/12/05', periodLastDay: '2027/12/04' });
+    const pi = calls.find((c) => c.path === 'payment_intents' && c.method === 'POST')!;
+    expect(pi.params.get('payment_method')).toBe('pm_sub');
+    expect(pi.params.get('off_session')).toBe('true');
+    expect(pi.params.get('confirm')).toBe('true');
+    expect(pi.params.get('amount')).toBe('98780');
+    expect(pi.params.get('metadata[purchaseType]')).toBe('annual_prepay');
+    expect(pi.params.get('metadata[subscriptionId]')).toBe('sub_1');
+    expect(pi.params.get('metadata[lineUserId]')).toBe('U1');
+    expect(pi.headers['Idempotency-Key']).toMatch(/^annual-charge-ap_/);
+    const up = calls.find((c) => c.path === 'subscriptions/sub_1' && c.method === 'POST')!;
+    expect(up.params.get('discounts[0][discount]')).toBe('di_combo');
+    expect(up.params.get('discounts[1][coupon]')).toBe('annual-prepay-12m');
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toMatchObject({ pay_mode: 'one_click', charge_status: 'succeeded', payment_intent_id: 'pi_one', amount_paid: 98780, tax_amount: 8980, price_months: 10 });
+    expect(rows()[0].applied_at).toBeTruthy();
+    expect(pushMessage).toHaveBeenCalled();
+  });
+
+  it('2 回目の押下は決済しない（入金済み）。処理中の行があっても決済しない', async () => {
+    const { db, sqlite } = setup();
+    const calls = mockStripe({ sub: sub(), piCreate: succeed });
+    await chargeAnnualPrepay(db, env, { lineUserId: 'U1', expectedAnnual: 89800, nowMs: NOW });
+    const again = await chargeAnnualPrepay(db, env, { lineUserId: 'U1', expectedAnnual: 89800, nowMs: NOW });
+    expect(again).toMatchObject({ ok: false, reason: 'already_annual' });
+    expect(calls.filter((c) => c.path === 'payment_intents' && c.method === 'POST')).toHaveLength(1);
+
+    const s2 = setup();
+    const calls2 = mockStripe({ sub: sub(), piCreate: succeed });
+    s2.sqlite.prepare(`INSERT INTO furim_annual_prepay (id, line_user_id, stripe_customer_id, subscription_id, monthly_excl_tax, annual_excl_tax, created_at, pay_mode, charge_key, charge_status)
+      VALUES ('ap_x', 'U1', 'cus_1', 'sub_1', 8980, 89800, 'x', 'one_click', 'sub_1:${PERIOD_END}', 'processing')`).run();
+    const busy = await chargeAnnualPrepay(s2.db, env, { lineUserId: 'U1', expectedAnnual: 89800, nowMs: NOW });
+    expect(busy).toMatchObject({ ok: false, reason: 'in_progress', customerAction: 'none' });
+    expect(calls2.filter((c) => c.path === 'payment_intents' && c.method === 'POST')).toHaveLength(0);
+    void sqlite;
+  });
+
+  it('同時の 2 本目は charge_key の UNIQUE で弾く', async () => {
+    const { db, sqlite } = setup();
+    sqlite.exec(`CREATE TRIGGER t BEFORE INSERT ON furim_annual_prepay WHEN NEW.id NOT LIKE 'ap_other%' BEGIN
+      INSERT INTO furim_annual_prepay (id, line_user_id, stripe_customer_id, subscription_id, monthly_excl_tax, annual_excl_tax, created_at, charge_key) VALUES ('ap_other', 'U1', 'cus_1', 'sub_1', 1, 1, 'x', NEW.charge_key); END`);
+    const calls = mockStripe({ sub: sub(), piCreate: succeed });
+    const r = await chargeAnnualPrepay(db, env, { lineUserId: 'U1', expectedAnnual: 89800, nowMs: NOW });
+    expect(r).toMatchObject({ ok: false, reason: 'in_progress' });
+    expect(calls.filter((c) => c.path === 'payment_intents' && c.method === 'POST')).toHaveLength(0);
+  });
+
+  it('案内の金額と違えば決済せず新しい案内を返す', async () => {
+    const { db } = setup();
+    const calls = mockStripe({ sub: sub(), piCreate: succeed });
+    const r = await chargeAnnualPrepay(db, env, { lineUserId: 'U1', expectedAnnual: 98780, nowMs: NOW });
+    expect(r).toMatchObject({ ok: false, reason: 'price_changed', quote: { annual: 89800 } });
+    expect(calls.filter((c) => c.path === 'payment_intents')).toHaveLength(0);
+  });
+
+  it('支払い遅れ・解約予約・未払い・once の割引が残る人は決済せず「担当から連絡」', async () => {
+    for (const [s, o, reason] of [
+      [sub({ status: 'past_due' }), 0, 'not_active'],
+      [sub({ cancel_at_period_end: true }), 0, 'cancel_scheduled'],
+      [sub(), 1, 'open_invoice'],
+      [sub({ discounts: [combo, { id: 'di_once', end: null, coupon: { id: 'welcome', amount_off: 500, duration: 'once' } }] }), 0, 'once_pending'],
+    ] as Array<[AnnualSub, number, string]>) {
+      const { db } = setup();
+      const calls = mockStripe({ sub: s, openInvoices: o, piCreate: succeed });
+      const r = await chargeAnnualPrepay(db, env, { lineUserId: 'U1', nowMs: NOW });
+      expect(r).toMatchObject({ ok: false, reason, customerAction: 'staff_contact' });
+      expect(calls.filter((c) => c.path === 'payment_intents')).toHaveLength(0);
+    }
+  });
+
+  it('3D セキュアが要るときは決済を取り消し、Checkout のリンクを返す。もう一度押せる', async () => {
+    const { db, rows } = setup();
+    const calls = mockStripe({
+      sub: sub(),
+      piCreate: () => [{ error: { code: 'authentication_required', message: 'auth', payment_intent: { id: 'pi_3ds', status: 'requires_action' } } }, 402],
+    });
+    const r = await chargeAnnualPrepay(db, env, { lineUserId: 'U1', expectedAnnual: 89800, nowMs: NOW });
+    expect(r).toMatchObject({ ok: false, reason: 'authentication_required', customerAction: 'open_checkout' });
+    expect((r as { checkoutUrl: string }).checkoutUrl).toMatch(/^https:\/\/checkout\.stripe\.com/);
+    expect(calls.some((c) => c.path === 'payment_intents/pi_3ds/cancel')).toBe(true);
+    expect(calls.some((c) => c.path === 'subscriptions/sub_1' && c.method === 'POST')).toBe(false);
+    const one = rows().find((x) => x.pay_mode === 'one_click')!;
+    expect(one).toMatchObject({ charge_status: 'authentication_required', charge_key: null });
+  });
+
+  it('カード不可も Checkout のリンクを返す。既定のカードが無ければ決済を試さずリンク', async () => {
+    const { db } = setup();
+    mockStripe({ sub: sub(), piCreate: () => [{ error: { code: 'card_declined', decline_code: 'insufficient_funds', message: 'declined', payment_intent: { id: 'pi_dec', status: 'requires_payment_method' } } }, 402] });
+    expect(await chargeAnnualPrepay(db, env, { lineUserId: 'U1', nowMs: NOW })).toMatchObject({ ok: false, reason: 'card_failed', customerAction: 'open_checkout' });
+
+    const s2 = setup();
+    const calls = mockStripe({ sub: sub(), customer: { id: 'cus_1', invoice_settings: { default_payment_method: null } }, piCreate: succeed });
+    expect(await chargeAnnualPrepay(s2.db, env, { lineUserId: 'U1', nowMs: NOW })).toMatchObject({ ok: false, reason: 'no_payment_method', customerAction: 'open_checkout' });
+    expect(calls.filter((c) => c.path === 'payment_intents')).toHaveLength(0);
+  });
+
+  it('期限内の未払いの Checkout があれば、決済の前に失効させる', async () => {
+    const { db, rows } = setup();
+    const calls = mockStripe({ sub: sub(), piCreate: succeed });
+    await createAnnualCheckout(db, env, { lineUserId: 'U1', nowMs: NOW });
+    const r = await chargeAnnualPrepay(db, env, { lineUserId: 'U1', nowMs: NOW + 60_000 });
+    expect(r).toMatchObject({ ok: true, status: 'succeeded' });
+    const exp = calls.findIndex((c) => /\/expire$/.test(c.path));
+    const pi = calls.findIndex((c) => c.path === 'payment_intents' && c.method === 'POST');
+    expect(exp).toBeGreaterThan(-1);
+    expect(exp).toBeLessThan(pi);
+    expect(rows()).toHaveLength(2);
+  });
+
+  it('入金後に次回 0 円が確かめられなければ paid_apply_pending を返し、要確認で知らせる', async () => {
+    const { db } = setup();
+    mockStripe({ sub: sub(), piCreate: succeed, upcoming: 500 });
+    const r = await chargeAnnualPrepay(db, env, { lineUserId: 'U1', nowMs: NOW });
+    expect(r).toMatchObject({ ok: true, status: 'paid_apply_pending' });
+    expect(String(pushMessage.mock.calls.at(-1)?.[1]?.[0]?.text ?? JSON.stringify(pushMessage.mock.calls.at(-1)))).toMatch(/要確認/);
+  });
+
+  it('webhook はボタンの決済を記録だけしてスタッフに知らせない（決済の側で知らせる）', async () => {
+    const { db } = setup();
+    await recordAnnualPayment(db, env, { eventId: 'evt_1', paymentIntentId: 'pi_w', amount: 98780, customer: 'cus_1', metadata: { purchaseType: 'annual_prepay', payMode: 'one_click', annualPrepayId: 'ap_w', lineUserId: 'U1', subscriptionId: 'sub_1', annualExclTax: '89800' } });
+    expect(pushMessage).not.toHaveBeenCalled();
+  });
+
+  it('その日の一覧に名前・月額・年払い額・成否が出る', async () => {
+    const { db } = setup();
+    mockStripe({ sub: sub(), piCreate: succeed });
+    await chargeAnnualPrepay(db, env, { lineUserId: 'U1', nowMs: NOW });
+    const list = await annualDailyReport(db, '2026-11-21');
+    expect(list).toEqual([expect.objectContaining({ name: 'テスト太郎', mode: 'ボタン', monthly: 8980, annual: 89800, total: 98780, result: '完了（クーポン付与済み）' })]);
   });
 });
