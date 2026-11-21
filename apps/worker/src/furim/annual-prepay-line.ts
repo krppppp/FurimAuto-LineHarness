@@ -14,7 +14,7 @@ export const ANNUAL_AGREED_TAG = '年払い同意';
 export const ANNUAL_DEADLINE_LABEL = '2026年11月27日（金）19:00まで';
 
 export const REFUND_EXCEPTION =
-  'お申込みから1か月以内に、\nご利用中のフリマサイトの\n仕様変更などにより、\n当ツールで改修を行っても\n自動化処理が完結できない状態に\nなった場合に限り、\nお支払い額から使った1か月分\n（月額）を引いてお返しします。';
+  '例外は、お申込みから1か月以内に、\nお客様がご利用中のサービスの\nWEBサイトの構成が変わり、\n当ツールで改修を行っても\n自動化処理ができなくなった\n場合だけです。\nこのときは、お支払い額から\n使った1か月分を引いてお返しします。';
 
 /** postback のデータ。案内した年払い額（税抜）を載せ、決済のときに金額が変わっていないか確かめる */
 export function confirmPostbackData(annual: number): string {
