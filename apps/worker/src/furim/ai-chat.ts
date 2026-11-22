@@ -58,7 +58,7 @@ const NON_MEMBER_NOTE = `【このお客様の契約状況】
 
 export const AI_MODEL = '@cf/google/gemma-4-26b-a4b-it';
 /** webhook の処理は応答後の約 30 秒で打ち切られるため、それより前に諦めてエラーの返信と記録を残す */
-const AI_DEADLINE_MS = 20_000;
+const AI_DEADLINE_MS = 27_000;
 
 type WorkersAIResult = {
   choices?: Array<{ message?: { content?: string | null } }>;
