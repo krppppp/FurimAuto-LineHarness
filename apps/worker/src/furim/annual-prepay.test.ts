@@ -683,3 +683,74 @@ describe('ボタンの決済の流れ', () => {
     expect(list).toEqual([expect.objectContaining({ name: 'テスト太郎', mode: 'ボタン', monthly: 8980, annual: 89800, total: 98780, result: '完了（クーポン付与済み）' })]);
   });
 });
+
+describe('入金あり・付与まだと Stripe との突き合わせ（TB-4045）', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function stubSearch(pis: unknown[], coupon: unknown | null) {
+    const queries: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const u = new URL(url);
+      const path = u.pathname.replace('/v1/', '');
+      const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status });
+      if (path === 'payment_intents/search') {
+        queries.push(u.searchParams.get('query') ?? '');
+        return json({ data: pis, has_more: false });
+      }
+      if (path.startsWith('coupons/')) return coupon ? json(coupon) : json({ error: { message: `No such coupon: '${path.split('/')[1]}'` } }, 404);
+      return json({ error: { message: `unexpected ${path}` } }, 500);
+    }));
+    return queries;
+  }
+  const goodCoupon = { id: 'annual-prepay-12m', percent_off: 100, duration: 'repeating', duration_in_months: 12 };
+  const insertRow = (sqlite: DatabaseSync, id: string, pi: string, paidAt: string | null, appliedAt: string | null, applyError: string | null = null) =>
+    sqlite.prepare(`INSERT INTO furim_annual_prepay (id, line_user_id, stripe_customer_id, subscription_id, monthly_excl_tax, annual_excl_tax, price_months, created_at, payment_intent_id, amount_paid, paid_at, applied_at, apply_error, pay_mode, charge_status)
+      VALUES (?, 'U1', 'cus_1', 'sub_1', 8980, 89800, 10, '2026-11-24T12:34:00.000+09:00', ?, 98780, ?, ?, ?, 'one_click', 'succeeded')`).run(id, pi, paidAt, appliedAt, applyError);
+  const piOf = (id: string, ap: string) => ({ id, status: 'succeeded', amount: 98780, amount_received: 98780, created: Math.floor(Date.parse('2026-11-24T12:34:00+09:00') / 1000), metadata: { purchaseType: 'annual_prepay', annualPrepayId: ap, lineUserId: 'U1', subscriptionId: 'sub_1' } });
+
+  it('前の日に入金して付与が失敗した行も、日付を問わず pending に出る', async () => {
+    const { sqlite, db } = setup();
+    insertRow(sqlite, 'ap_old', 'pi_old', '2026-11-20T12:00:00.000+09:00', null, 'Stripe subscriptions/sub_1: No such coupon');
+    insertRow(sqlite, 'ap_done', 'pi_done', '2026-11-20T12:00:00.000+09:00', '2026-11-20T12:00:05.000+09:00');
+    const p = await ap.annualPendingApply(db);
+    expect(p).toEqual([expect.objectContaining({ id: 'ap_old', name: 'テスト太郎', paymentIntentId: 'pi_old', applyError: expect.stringMatching(/No such coupon/) })]);
+  });
+
+  it('クーポンが本番に無ければ ok=false・coupon.status=would-create（11/24 の事故の形）', async () => {
+    const { sqlite, db } = setup();
+    insertRow(sqlite, 'ap_a', 'pi_a', '2026-11-24T12:34:10.000+09:00', null, 'No such coupon');
+    const q = stubSearch([piOf('pi_a', 'ap_a')], null);
+    const r = await ap.reconcileAnnualPrepay(db, env, { sinceIso: '2026-11-21T00:00:00+09:00' });
+    expect(q[0]).toContain("metadata['purchaseType']:'annual_prepay'");
+    expect(q[0]).toContain("status:'succeeded'");
+    expect(r).toMatchObject({ ok: false, coupon: { status: 'would-create' }, stripe: { succeeded: 1, amount: 98780 }, d1: { paid: 1, applied: 0 } });
+    expect(r.pending).toHaveLength(1);
+    expect(r.missingInD1).toEqual([]);
+  });
+
+  it('Stripe で成功・台帳に行が無い入金を missingInD1 に出す', async () => {
+    const { sqlite, db } = setup();
+    insertRow(sqlite, 'ap_a', 'pi_a', '2026-11-24T12:34:10.000+09:00', '2026-11-24T12:34:20.000+09:00');
+    stubSearch([piOf('pi_a', 'ap_a'), piOf('pi_x', 'ap_x')], goodCoupon);
+    const r = await ap.reconcileAnnualPrepay(db, env, { sinceIso: '2026-11-21T00:00:00+09:00' });
+    expect(r.ok).toBe(false);
+    expect(r.missingInD1).toEqual([expect.objectContaining({ paymentIntentId: 'pi_x', lineUserId: 'U1', amount: 98780, d1: 'no_row' })]);
+    expect(r).toMatchObject({ stripe: { succeeded: 2 }, d1: { paid: 1, applied: 1 } });
+  });
+
+  it('全部そろっていれば ok=true', async () => {
+    const { sqlite, db } = setup();
+    insertRow(sqlite, 'ap_a', 'pi_a', '2026-11-24T12:34:10.000+09:00', '2026-11-24T12:34:20.000+09:00');
+    stubSearch([piOf('pi_a', 'ap_a')], goodCoupon);
+    const r = await ap.reconcileAnnualPrepay(db, env, { sinceIso: '2026-11-21T00:00:00+09:00' });
+    expect(r).toMatchObject({ ok: true, coupon: { status: 'existing' }, pending: [], missingInD1: [], notInStripe: [] });
+  });
+
+  it('台帳は入金済みなのに Stripe の成功に無い行を notInStripe に出す', async () => {
+    const { sqlite, db } = setup();
+    insertRow(sqlite, 'ap_a', 'pi_gone', '2026-11-24T12:34:10.000+09:00', '2026-11-24T12:34:20.000+09:00');
+    stubSearch([], goodCoupon);
+    const r = await ap.reconcileAnnualPrepay(db, env, { sinceIso: '2026-11-21T00:00:00+09:00' });
+    expect(r.notInStripe).toEqual([{ id: 'ap_a', paymentIntentId: 'pi_gone', lineUserId: 'U1' }]);
+  });
+});

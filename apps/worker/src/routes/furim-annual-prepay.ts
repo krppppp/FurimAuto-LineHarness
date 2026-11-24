@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { requireRole } from '../middleware/role-guard.js';
-import { annualDailyReport, applyAnnualCoupon, chargeAnnualPrepay, createAnnualCheckout, ensureAnnualCoupon } from '../furim/annual-prepay.js';
+import { annualDailyReport, annualPendingApply, applyAnnualCoupon, chargeAnnualPrepay, createAnnualCheckout, ensureAnnualCoupon, reconcileAnnualPrepay } from '../furim/annual-prepay.js';
 import type { Env } from '../index.js';
 
 /**
@@ -8,7 +8,8 @@ import type { Env } from '../index.js';
  * - POST /api/furim/annual-prepay/checkout { lineUserId, subscriptionId?, dryRun? } … 年払いの Checkout を発行して URL を返す（請求は変えない）。dryRun は金額と期限だけ返し何も書かない
  * - POST /api/furim/annual-prepay/apply { lineUserId, paymentIntentId }   … 入金を確かめて年払いクーポンを足す（会員の請求の変更・くろさんの確認カードの後）
  * - POST /api/furim/annual-prepay/charge { lineUserId, expectedAnnual?, subscriptionId?, dryRun? } … 登録済みのカードで決済し、成功したらクーポン付与まで（TB-3963）。dryRun は金額の案内だけ
- * - GET  /api/furim/annual-prepay/report?date=YYYY-MM-DD … その日（JST）の申込の一覧
+ * - GET  /api/furim/annual-prepay/report?date=YYYY-MM-DD … その日（JST）の申込の一覧＋入金あり・付与まだ（日付を問わない pending）
+ * - GET  /api/furim/annual-prepay/reconcile?since=ISO … Stripe の入金（purchaseType=annual_prepay・succeeded）と台帳の突き合わせ・クーポンの有無（読み取りだけ・TB-4045）
  * - POST /api/furim/annual-prepay/setup-coupon { dryRun?: boolean = true } … 年払いクーポン 1 枚を作る（冪等）
  */
 const furimAnnualPrepay = new Hono<Env>();
@@ -56,7 +57,17 @@ furimAnnualPrepay.post('/api/furim/annual-prepay/charge', requireRole('owner', '
 furimAnnualPrepay.get('/api/furim/annual-prepay/report', requireRole('owner', 'admin'), async (c) => {
   const date = c.req.query('date') ?? '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ success: false, error: 'date=YYYY-MM-DD required' }, 400);
-  return c.json({ success: true, date, rows: await annualDailyReport(c.env.DB, date) });
+  return c.json({ success: true, date, rows: await annualDailyReport(c.env.DB, date), pending: await annualPendingApply(c.env.DB) });
+});
+
+furimAnnualPrepay.get('/api/furim/annual-prepay/reconcile', requireRole('owner', 'admin'), async (c) => {
+  const since = c.req.query('since') ?? '2026-11-21T00:00:00+09:00';
+  try {
+    return c.json({ success: true, ...(await reconcileAnnualPrepay(c.env.DB, c.env, { sinceIso: since })) });
+  } catch (e) {
+    console.error('[annual-prepay/reconcile] error:', e);
+    return c.json({ success: false, error: String(e) }, 500);
+  }
 });
 
 furimAnnualPrepay.post('/api/furim/annual-prepay/setup-coupon', requireRole('owner', 'admin'), async (c) => {

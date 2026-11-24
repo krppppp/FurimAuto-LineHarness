@@ -911,3 +911,87 @@ export async function annualDailyReport(db: D1Database, dateJst: string): Promis
     createdAt: r.created_at,
   }));
 }
+
+// 入金あり・付与まだ（日付を問わない）。21:00 の報告と突き合わせで毎回出す（TB-4045）
+export type PendingRow = { id: string; name: string; lineUserId: string; subscriptionId: string; paymentIntentId: string | null; paidAt: string | null; applyError: string | null };
+
+export async function annualPendingApply(db: D1Database): Promise<PendingRow[]> {
+  const rows = (await db
+    .prepare(
+      `SELECT a.*, f.display_name FROM furim_annual_prepay a LEFT JOIN friends f ON f.line_user_id = a.line_user_id
+       WHERE a.applied_at IS NULL AND (a.paid_at IS NOT NULL OR a.charge_status IN ('succeeded', 'unknown')) ORDER BY a.created_at`,
+    )
+    .all<PrepayRow & { display_name: string | null }>()).results ?? [];
+  return rows.map((r) => ({
+    id: r.id, name: r.display_name ?? '(名前不明)', lineUserId: r.line_user_id, subscriptionId: r.subscription_id,
+    paymentIntentId: r.payment_intent_id, paidAt: r.paid_at, applyError: r.apply_error ?? (r.charge_status === 'unknown' ? 'charge_unknown' : null),
+  }));
+}
+
+// Stripe の入金（PaymentIntent・purchaseType=annual_prepay・succeeded）と D1 の台帳を突き合わせる（TB-4045）。読み取りだけ
+export type ReconcileResult = {
+  ok: boolean;
+  since: string;
+  coupon: { status: string; error?: string };
+  stripe: { succeeded: number; amount: number };
+  d1: { paid: number; applied: number };
+  pending: PendingRow[];
+  missingInD1: Array<{ paymentIntentId: string; lineUserId: string; subscriptionId: string; amount: number; createdAt: string; d1: 'no_row' | 'not_paid' }>;
+  notInStripe: Array<{ id: string; paymentIntentId: string | null; lineUserId: string }>;
+};
+
+type SearchPi = { id: string; amount_received?: number; amount?: number; created: number; status?: string; metadata?: Record<string, string> };
+
+export async function reconcileAnnualPrepay(db: D1Database, env: AnnualPrepayEnv, input: { sinceIso: string }): Promise<ReconcileResult> {
+  const secretKey = env.STRIPE_SECRET_KEY;
+  if (!secretKey) throw new Error('STRIPE_SECRET_KEY not configured');
+  const sinceSec = Math.floor(Date.parse(input.sinceIso) / 1000);
+  if (!Number.isFinite(sinceSec)) throw new Error(`bad since: ${input.sinceIso}`);
+
+  let coupon: ReconcileResult['coupon'];
+  try {
+    coupon = { status: (await ensureAnnualCoupon(env, true)).status };
+  } catch (e) {
+    coupon = { status: 'error', error: String(e).slice(0, 300) };
+  }
+
+  const pis: SearchPi[] = [];
+  let page: string | undefined;
+  for (let i = 0; i < 20; i++) {
+    const params: Record<string, string> = { query: `metadata['purchaseType']:'annual_prepay' AND status:'succeeded' AND created>=${sinceSec}`, limit: '100' };
+    if (page) params.page = page;
+    const res = (await stripe(secretKey, 'payment_intents/search', params)) as unknown as { data: SearchPi[]; has_more?: boolean; next_page?: string | null };
+    pis.push(...res.data.filter((p) => p.status === 'succeeded'));
+    if (!res.has_more || !res.next_page) break;
+    page = res.next_page;
+  }
+
+  const rows = (await db.prepare('SELECT * FROM furim_annual_prepay WHERE paid_at IS NOT NULL OR payment_intent_id IS NOT NULL').all<PrepayRow>()).results ?? [];
+  const byPi = new Map(rows.filter((r) => r.payment_intent_id).map((r) => [r.payment_intent_id!, r]));
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const missingInD1: ReconcileResult['missingInD1'] = [];
+  for (const p of pis) {
+    const r = byPi.get(p.id) ?? (p.metadata?.annualPrepayId ? byId.get(p.metadata.annualPrepayId) : undefined);
+    if (r?.paid_at || (r && r.charge_status === 'succeeded')) continue;
+    missingInD1.push({
+      paymentIntentId: p.id, lineUserId: p.metadata?.lineUserId ?? '', subscriptionId: p.metadata?.subscriptionId ?? '',
+      amount: p.amount_received ?? p.amount ?? 0, createdAt: formatJstIso(p.created * 1000), d1: r ? 'not_paid' : 'no_row',
+    });
+  }
+  const stripeIds = new Set(pis.map((p) => p.id));
+  const sinceMs = sinceSec * 1000;
+  const paidRows = rows.filter((r) => r.paid_at && Date.parse(r.paid_at) >= sinceMs);
+  const notInStripe = paidRows.filter((r) => !r.payment_intent_id || !stripeIds.has(r.payment_intent_id)).map((r) => ({ id: r.id, paymentIntentId: r.payment_intent_id, lineUserId: r.line_user_id }));
+  const pending = await annualPendingApply(db);
+
+  return {
+    ok: coupon.status === 'existing' && pending.length === 0 && missingInD1.length === 0 && notInStripe.length === 0,
+    since: formatJstIso(sinceMs),
+    coupon,
+    stripe: { succeeded: pis.length, amount: pis.reduce((t, p) => t + (p.amount_received ?? p.amount ?? 0), 0) },
+    d1: { paid: paidRows.length, applied: paidRows.filter((r) => r.applied_at).length },
+    pending,
+    missingInD1,
+    notInStripe,
+  };
+}
