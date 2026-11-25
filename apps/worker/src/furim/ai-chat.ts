@@ -44,6 +44,19 @@ export const JOIN_STEPS_TEXT =
   '有料プランは次の4ステップでお申し込みいただけます。\n1. リッチメニューの「ガイド」タブ →「プラン診断」をタップ\n2. 自動返信で届くURLをタップ\n3. プランを選択して申し込み\n4. その後LINEに送られてくる決済URLからクレジットカード決済';
 export const PLAN_CHANGE_STEPS_TEXT =
   'ご契約中のプランの変更・機能やサイトの追加は、次の4ステップでお手続きいただけます。\n1. リッチメニューの「ガイド」タブ →「プラン診断」をタップ\n2. 自動返信で届くURLをタップ（今のご契約内容が選ばれた状態で開きます）\n3. 変更したい内容に選び直して「この内容にプラン変更する」をタップし、確認画面の金額を見て確定\n4. LINEに「プラン変更が完了しました」が届いたら、続けて届く新しいキーコードを拡張機能に入力し直してください\n・決済URLは届きません。月額が上がる変更は、残り期間の差額（日割り）が登録済みのカードに請求され、すぐに切り替わります。下がる変更は返金なしで、次回の更新日に切り替わります（新しいキーコードは更新日に届きます）。\n・一度解約して申し込み直す必要はありません。\n・開いた画面で今のご契約内容が選ばれていない場合や、ご契約中なのに「決済ページへ進む」ボタンが届いた場合は、申し込み・決済をせずに、リッチメニュー下部の「AIチャットボットを終了する」→「追加サポートを希望する」からご連絡ください。';
+// プラン診断からお申し込みまでの流れの案内画像（2 枚）。StaticHP の howto/images/ にある（TB-4107）
+export const PLAN_GUIDE_IMAGE_URLS = [
+  'https://furimauto.com/howto/images/planGuide1.png',
+  'https://furimauto.com/howto/images/planGuide2.png',
+] as const;
+
+// 答えが「プラン診断」からの申し込み・プラン変更の案内のときだけ、案内画像を添える。
+// 入会・プラン変更の定型文（JOIN_STEPS_TEXT・PLAN_CHANGE_STEPS_TEXT）はどちらも「プラン診断」を含む
+export function planGuideImageMessages(answerText: string, fallback: boolean): unknown[] {
+  if (fallback || !answerText.includes('プラン診断')) return [];
+  return PLAN_GUIDE_IMAGE_URLS.map((url) => ({ type: 'image', originalContentUrl: url, previewImageUrl: url }));
+}
+
 const AI_ERROR_TEXT ='AIからの応答中にエラーが発生しました。少し時間をおいて、もう一度お試しください。';
 
 /** 月額会員だけが使う章（会員情報の確認・確認ページの発行・請求先・月額プランのキャンセル）。非会員には URL を付けない（TB-2976） */
@@ -279,6 +292,7 @@ async function generateAIResponse(queryText: string, lineUserId: string, env: AI
   if (parsed.keycodeReset) {
     messages.push({ type: 'text', text: '【キーワード】キーコードリセット' });
   }
+  messages.push(...planGuideImageMessages(parsed.text, parsed.fallback));
 
   await recordUsage(env.FURIM_EXT_CACHE, {
     at: new Date(startedAt).toISOString(),

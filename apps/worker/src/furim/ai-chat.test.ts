@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FALLBACK_TEXT, JOIN_STEPS_TEXT, PLAN_CHANGE_STEPS_TEXT, MEMBER_ONLY_HOWTO_IDS, buildAIChatPrompt, howtoAnchorUrl, parseAIReply } from './ai-chat.js';
+import { FALLBACK_TEXT, JOIN_STEPS_TEXT, PLAN_CHANGE_STEPS_TEXT, MEMBER_ONLY_HOWTO_IDS, PLAN_GUIDE_IMAGE_URLS, buildAIChatPrompt, howtoAnchorUrl, parseAIReply, planGuideImageMessages } from './ai-chat.js';
 
 describe('AI チャットのプロンプト（Capsec #307）', () => {
   const history = [
@@ -119,5 +119,22 @@ describe('非会員の解約の問い合わせ（TB-2976）', () => {
 
   it('会員向けの章は 会員情報の確認・確認ページの発行・請求先・月額プランのキャンセル の 4 つ', () => {
     expect([...MEMBER_ONLY_HOWTO_IDS].sort()).toEqual(['billing', 'billingUrl', 'controllBillingInfo', 'planCancel']);
+  });
+});
+
+describe('プラン診断の案内画像（TB-4107）', () => {
+  it('入会・プラン変更の定型文には、案内画像 2 枚を添える', () => {
+    for (const text of [JOIN_STEPS_TEXT, PLAN_CHANGE_STEPS_TEXT]) {
+      const msgs = planGuideImageMessages(text, false) as Array<{ type: string; originalContentUrl: string; previewImageUrl: string }>;
+      expect(msgs.map((m) => m.type)).toEqual(['image', 'image']);
+      expect(msgs.map((m) => m.originalContentUrl)).toEqual([...PLAN_GUIDE_IMAGE_URLS]);
+      expect(msgs.every((m) => m.previewImageUrl === m.originalContentUrl)).toBe(true);
+    }
+  });
+
+  it('プラン診断に触れない答えと、答えられないときの定型文には添えない', () => {
+    expect(planGuideImageMessages('値下げは出品一覧から実行できます。', false)).toEqual([]);
+    expect(planGuideImageMessages(FALLBACK_TEXT, true)).toEqual([]);
+    expect(planGuideImageMessages('プラン診断は…' + FALLBACK_TEXT, true)).toEqual([]);
   });
 });
