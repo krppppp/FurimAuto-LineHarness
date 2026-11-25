@@ -11,6 +11,36 @@ export type RichMenuEnv = {
   FIREBASE_DATABASE_URL?: string;
 };
 
+// AI チャットボットの使い方（4 枚）と注意点（1 枚）を横スライドで見せる（TB-4107）。
+// 使い方の画像は StaticHP の howto/images/aichat/、注意点は今までどおり GCS の ai_chatbot.jpg
+export const AI_CHAT_GUIDE_IMAGE_URLS = [1, 2, 3, 4].map((n) => `https://furimauto.com/howto/images/aichat/guide${n}.png`);
+export const AI_CHAT_NOTICE_IMAGE_URL = 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ai_chatbot.jpg';
+
+export function aiChatGuideCarousel(): Record<string, unknown> {
+  const slide = (url: string, aspectRatio: string, extra: Record<string, unknown> = {}) => ({
+    type: 'bubble',
+    size: 'giga',
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '0px',
+      ...extra,
+      contents: [{ type: 'image', url, size: 'full', aspectRatio, aspectMode: 'cover' }],
+    },
+  });
+  return {
+    type: 'flex',
+    altText: 'AIチャットボットの使い方（4ステップ）と注意点',
+    contents: {
+      type: 'carousel',
+      contents: [
+        ...AI_CHAT_GUIDE_IMAGE_URLS.map((url) => slide(url, '1:1')),
+        slide(AI_CHAT_NOTICE_IMAGE_URL, '16:9', { justifyContent: 'center', backgroundColor: '#FFE074' }),
+      ],
+    },
+  };
+}
+
 export async function isMember(db: D1Database, friendId: string): Promise<boolean> {
   const result = await db
     .prepare(
@@ -60,17 +90,7 @@ export async function handleRichMenuSwitch(
         type: 'text',
         text: `【AIが担当するQ&Aです！】\n\n簡単な質問をするとFurimAutoのマニュアルや説明書を参考にAIが適切な回答をいたします🤖\n\nこのやりとりは開発担当者が閲覧できるので回答が不十分な場合は後ほど開発担当者が直々に回答いたします🙇\n\n📝 メッセージは左下のキーボードボタンから入力できます。\n\n※AIチャットボットを終了する場合は、「AIチャットボットを終了する」をタップしてください。`,
       } as never,
-      {
-        type: 'image',
-        originalContentUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ai_chatbot.jpg',
-        previewImageUrl: 'https://storage.googleapis.com/furimauto_line/images/messageEvent/ai_chatbot.jpg',
-      } as never,
-      {
-        type: 'video',
-        originalContentUrl: 'https://storage.googleapis.com/furimauto_line/video/ai_chatbot.mp4',
-        previewImageUrl: 'https://storage.googleapis.com/furimauto_line/video/install_thumnail.png',
-        trackingId: 'setup',
-      } as never,
+      aiChatGuideCarousel() as never,
     ]);
     return true;
   } else if (tab === 'AIチャットボットを終了する') {
