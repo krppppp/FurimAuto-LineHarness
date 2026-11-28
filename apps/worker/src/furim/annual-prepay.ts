@@ -384,17 +384,25 @@ export type CheckoutResult =
 export async function createAnnualCheckout(
   db: D1Database,
   env: AnnualPrepayEnv,
-  input: { lineUserId: string; subscriptionId?: string; createdBy?: string; nowMs?: number; dryRun?: boolean },
+  input: { lineUserId: string; subscriptionId?: string; createdBy?: string; nowMs?: number; dryRun?: boolean; quoted?: { kind: 'sale' | 'standard'; priceMonths: number; annual: number } },
 ): Promise<CheckoutResult> {
   const secretKey = env.STRIPE_SECRET_KEY;
   if (!secretKey) throw new Error('STRIPE_SECRET_KEY not configured');
   const nowMs = input.nowMs ?? Date.now();
-  const pricing = annualPricing({
-    nowMs,
-    replyAt: await firstAnnualReplyAt(db, input.lineUserId),
-    saleReplyDeadlineIso: env.FURIM_ANNUAL_SALE_REPLY_DEADLINE || DEFAULT_SALE_REPLY_DEADLINE,
-    saleCheckoutDeadlineIso: env.FURIM_ANNUAL_PREPAY_DEADLINE || DEFAULT_ANNUAL_DEADLINE,
-  });
+  const replyAt = await firstAnnualReplyAt(db, input.lineUserId);
+  const saleCheckoutDeadlineIso = env.FURIM_ANNUAL_PREPAY_DEADLINE || DEFAULT_ANNUAL_DEADLINE;
+  // ボタンの決済の代わり（TB-4346）: 案内した月数のまま出す。締切まで 30 分を切っていても ×10 は Stripe の下限の 31 分後まで払える
+  const pricing: AnnualPricing = input.quoted
+    ? {
+        kind: input.quoted.kind, priceMonths: input.quoted.priceMonths, replyAt,
+        expiresAt: input.quoted.kind === 'sale'
+          ? checkoutExpiresAt(nowMs, saleCheckoutDeadlineIso) ?? Math.floor(nowMs / 1000) + CHECKOUT_MIN_TTL_SEC + 60
+          : checkoutExpiresAt(nowMs)!,
+      }
+    : annualPricing({
+        nowMs, replyAt, saleCheckoutDeadlineIso,
+        saleReplyDeadlineIso: env.FURIM_ANNUAL_SALE_REPLY_DEADLINE || DEFAULT_SALE_REPLY_DEADLINE,
+      });
   const { expiresAt, priceMonths } = pricing;
 
   let found: { customerId: string; sub: AnnualSub };
@@ -407,6 +415,9 @@ export async function createAnnualCheckout(
   const { customerId, sub } = found;
   const couponId = annualCouponId(env);
   const quote = quoteSubscription(sub, priceMonths);
+  if (input.quoted && input.quoted.annual !== quote.annual) {
+    return { ok: false, reason: 'price_changed', message: `ご案内した金額（${input.quoted.annual.toLocaleString('ja-JP')}円）から変わっています` };
+  }
   const invoices = (await stripe(secretKey, 'invoices', { subscription: sub.id, status: 'open', limit: '3' })) as unknown as { data: unknown[] };
   const block = checkoutBlock(sub, { couponId, openInvoiceCount: invoices.data.length, monthly: quote.monthly });
   if (block) return { ok: false, ...block };
@@ -748,7 +759,9 @@ export function buildChargeParams(input: { annualPrepayId: string; customerId: s
     currency: 'jpy',
     customer: input.customerId,
     payment_method: input.paymentMethod,
+    // 既定の支払い方法が Link の人もいる（TB-4346）
     'payment_method_types[0]': 'card',
+    'payment_method_types[1]': 'link',
     off_session: 'true',
     confirm: 'true',
     description: `${name} ${q.periodStart}〜${q.periodLastDay} ${q.subscriptionId}`,
@@ -781,7 +794,8 @@ async function notifyCharge(db: D1Database, env: AnnualPrepayEnv, title: string,
 
 // 失敗のときの逃げ道: 今の Checkout のリンク（出せなければ担当から連絡）
 async function fallbackCheckout(db: D1Database, env: AnnualPrepayEnv, input: { lineUserId: string; subscriptionId: string; nowMs: number }, reason: string, message: string, quote: AnnualQuote): Promise<ChargeResult> {
-  const co = await createAnnualCheckout(db, env, { lineUserId: input.lineUserId, subscriptionId: input.subscriptionId, createdBy: 'one-click-fallback', nowMs: input.nowMs });
+  const co = await createAnnualCheckout(db, env, { lineUserId: input.lineUserId, subscriptionId: input.subscriptionId, createdBy: 'one-click-fallback', nowMs: input.nowMs,
+    quoted: { kind: quote.kind, priceMonths: quote.priceMonths, annual: quote.annual } });
   if (co.ok && 'url' in co) return fail(reason, message, { checkoutUrl: co.url, quote });
   return fail(co.ok ? reason : co.reason, co.ok ? message : `${message}／Checkout も出せません: ${co.message}`, { quote });
 }

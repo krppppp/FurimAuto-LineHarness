@@ -648,6 +648,38 @@ describe('ボタンの決済の流れ', () => {
     expect(calls.filter((c) => c.path === 'payment_intents')).toHaveLength(0);
   });
 
+  it('既定の支払い方法が Link でも決済できる（payment_method_types に card と link）', async () => {
+    const { db } = setup();
+    const calls = mockStripe({ sub: sub({ default_payment_method: 'pm_link' }), piCreate: succeed });
+    expect(await chargeAnnualPrepay(db, env, { lineUserId: 'U1', expectedAnnual: 89800, nowMs: NOW })).toMatchObject({ ok: true, status: 'succeeded' });
+    const pi = calls.find((c) => c.path === 'payment_intents' && c.method === 'POST')!;
+    expect(pi.params.getAll('payment_method_types[0]').concat(pi.params.getAll('payment_method_types[1]'))).toEqual(['card', 'link']);
+  });
+
+  it('締切の 30 分前を切ってからボタンの決済が落ちても、代わりの Checkout は案内した ×10 のまま（期限は 31 分後）', async () => {
+    const { db, sqlite, rows } = setup();
+    sqlite.prepare("INSERT INTO messages_log VALUES ('m1', 'f1', 'incoming', 'text', '年払い', '2026-11-27T18:32:45.000+09:00')").run();
+    const now = Date.parse('2026-11-27T18:34:02+09:00');
+    const calls = mockStripe({ sub: sub(), piCreate: () => [{ error: { code: 'card_declined', message: 'declined', payment_intent: { id: 'pi_dec', status: 'requires_payment_method' } } }, 402] });
+    const r = await chargeAnnualPrepay(db, env, { lineUserId: 'U1', expectedAnnual: 89800, nowMs: now });
+    expect(r).toMatchObject({ ok: false, reason: 'card_failed', customerAction: 'open_checkout', quote: { priceMonths: 10, annual: 89800 } });
+    const cs = calls.find((c) => c.path === 'checkout/sessions' && c.method === 'POST')!;
+    expect(cs.params.get('line_items[0][price_data][unit_amount]')).toBe('89800');
+    expect(cs.params.get('metadata[priceMonths]')).toBe('10');
+    expect(cs.params.get('expires_at')).toBe(String(Math.floor(now / 1000) + 31 * 60));
+    expect(rows().find((x) => x.created_by === 'one-click-fallback')).toMatchObject({ price_months: 10, annual_excl_tax: 89800, amount_total: 98780 });
+  });
+
+  it('締切まで 30 分以上あれば代わりの Checkout の期限は締切まで', async () => {
+    const { db, sqlite } = setup();
+    sqlite.prepare("INSERT INTO messages_log VALUES ('m1', 'f1', 'incoming', 'text', '年払い', '2026-11-27T18:00:00.000+09:00')").run();
+    const calls = mockStripe({ sub: sub(), customer: { id: 'cus_1', invoice_settings: { default_payment_method: null } } });
+    await chargeAnnualPrepay(db, env, { lineUserId: 'U1', expectedAnnual: 89800, nowMs: Date.parse('2026-11-27T18:10:00+09:00') });
+    const cs = calls.find((c) => c.path === 'checkout/sessions' && c.method === 'POST')!;
+    expect(cs.params.get('metadata[priceMonths]')).toBe('10');
+    expect(cs.params.get('expires_at')).toBe(String(Date.parse('2026-11-27T19:00:00+09:00') / 1000));
+  });
+
   it('期限内の未払いの Checkout があれば、決済の前に失効させる', async () => {
     const { db, rows } = setup();
     const calls = mockStripe({ sub: sub(), piCreate: succeed });
